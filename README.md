@@ -1,139 +1,210 @@
-# autobattle
+# Battlefield Simulator
 
-A deterministic 2D autonomous battle simulation written in C++20. Two or
-more armies fight on a 2D battlefield where every soldier decides and acts on
-its own; the player observes battles rather than micromanaging units.
+A deterministic, headless battle engine: two AI-driven armies fight on
+procedural or real-world terrain, and every run with the same seed produces
+byte-identical results. Written in C++20, with no required system
+dependencies beyond a compiler and CMake — the third-party libraries
+(nlohmann/json, stb, GoogleTest, and raylib for the optional window) are
+fetched at configure time, pinned to exact versions. An optional raylib
+window exists for watching battles; the engine itself, including rendering,
+runs fully headless.
 
-Current state: **Milestone 10 — tactical depth, variety, battle reports
-and replay** (headless, up to 20,000 units, sight-limited perception,
-personalities, morale with routing and recovery, squads with formations,
-commander orders and succession, a GUI viewer with headless PNG/ascii
-rendering, data-driven terrain maps with flow-field navigation,
-whole-file mods, an offline mapgen that turns NOAA ETOPO 2022 elevation
-plus Natural Earth rivers and lakes into battle maps — Lebanon, the Alps
-and the Nile delta are committed — and, with `--variance on` (default):
-per-type combat accuracy and damage variance from an order-independent
-counter RNG, personality-staggered decision intervals, personal memory
-with squad intel sharing, and the Search / Help / Flank actions with
-bounded pursuit and regroup; `--variance off` reproduces every M1-M9
-reference byte-for-byte). See `docs/ai.md` for the AI and the M10
-tactics, `docs/mapgen.md` for the generator and `docs/DATA_SOURCES.md`
-for the pinned data, `docs/terrain.md` for terrain, maps and mods,
-`docs/viewer.md` for the viewer (build, run, controls, required dev
-libraries per OS), `docs/squads.md` for the squad design,
-`docs/morale.md` for the morale design, `docs/milestone-10.md` for scope
-and results, and `docs/milestone-1.md` through `docs/milestone-9.md` for
-the earlier baselines.
+The project was developed milestone-by-milestone (M1–M10); each milestone
+has a design report under `docs/`.
 
-## Priorities
+## Features (through milestone M10)
 
-Emergent behavior, deterministic simulation, performance, explainable AI,
-modular architecture, testable behavior, data-driven configuration.
+- **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
+  of randomness; the same seed reproduces the same battle byte-for-byte,
+  and the spatial-hash neighbor mode produces identical output to the
+  brute-force mode (`grid == brute`, tested).
+- **Utility AI with morale** — units score actions (attack, approach,
+  advance, retreat, hold) from health, local strength, distance, cooldown
+  and personality (bravery / caution / aggression); morale states, routing,
+  contagion and recovery (M4–M5).
+- **Squads, commanders, orders** — formations, leadership radius, command
+  succession after a commander dies, commander orders (attack / regroup /
+  retreat), squad intel sharing and collapse detection (M6).
+- **Terrain from maps** — PNG maps with a per-terrain palette: movement
+  costs, line of sight, defense modifiers, impassable water with fords,
+  flow-field pathing, stuck detection and recovery (M8).
+- **Earth scenarios** — maps generated from real geodata (NOAA ETOPO 2022
+  elevation, Natural Earth rivers and lakes): Lebanon, Alps (Innsbruck),
+  Nile Delta, with reproducible generation and checksums (M9, see
+  [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)).
+- **Tactical depth** — per-unit combat variance, tactical memory, squad
+  intel, Search / Help / Flank actions, bounded pursuit of routed enemies,
+  contact seeking, spawn patterns; `--variance off` reproduces every
+  M1–M9 reference byte-for-byte (M10).
+- **Events, timelines, reports** — JSONL event logs (deaths with killer,
+  routs, recoveries, command changes, ...), CSV timelines, markdown + JSON
+  battle reports with turning points, and report charts rendered with the
+  built-in software rasterizer (M10.2a).
+- **Replay** — record a battle to a file (setup, interventions, state
+  hashes every 25 ticks) and verify a re-run against it; `--seek` re-runs
+  to any tick (M10.2b).
+- **Headless rendering** — the same drawing pipeline feeds a PNG renderer
+  and an ASCII map; the optional raylib window (`BUILD_GAME=ON`) reuses it
+  (M7).
 
-## Layout
+## Build and test (headless)
 
-```
-project/
-├── CMakeLists.txt      Root build; pins dependencies, FP flags, BUILD_GAME
-├── sim/                Static simulation library (no I/O, no rendering)
-├── render/             Reserved for the future renderer (not part of M1)
-├── game/               Reserved for the optional raylib app (not part of M1)
-├── sim/terrain          Terrain types, grid, rules; flow-field navigation
-├── tools/mapgen         Offline real-Earth map generator (ETOPO + Natural Earth)
-├── tools/analysis       balance.cpp, profiling and experiment tools
-├── render/             Pure DrawList + software rasterizer + PNG writer
-├── game/               game_core (pure viewer logic) + battle_game window
-├── cli/                battle_cli headless executable
-├── tests/              GoogleTest suite
-├── data/               JSON gameplay configuration (unit types, scenarios)
-├── docs/               Architecture and determinism notes
-├── tools/              Analysis scripts (faction-balance sweeps)
-├── logs/               Complete command logs from verification runs
-└── output/             Generated artifacts (JSON exports)
-```
+Needs: a C++20 compiler (GCC 14 tested), CMake ≥ 3.16, git, and internet
+access at configure time (FetchContent pulls the pinned dependencies).
 
-## Requirements
-
-- C++20 compiler (GCC 14 tested)
-- CMake ≥ 3.16
-- Internet access at configure time (dependencies are fetched via
-  FetchContent and pinned to exact Git tags):
-
-| Dependency   | Version | Used by            |
-| ------------ | ------- | ------------------ |
-| nlohmann/json | v3.11.3 | sim (JSON export)  |
-| GoogleTest   | v1.14.0 | tests              |
-
-raylib is *not* fetched in M1: building `sim`, `battle_cli` and `tests`
-requires no raylib, X11, OpenGL or display libraries (`-DBUILD_GAME=OFF` is
-the default; the graphical application arrives in a later milestone).
-
-## Build
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GAME=OFF
-cmake --build build -j2
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
 
-Floating-point determinism flags (`-fno-fast-math -ffp-contract=off`) are
-applied to every GCC/Clang build. Use the same Release configuration for any
-determinism comparison.
+This builds the `sim` library, the `battle_cli` headless tool and the
+`battle_tests` suite (309 tests). No windowing or OpenGL libraries are
+required. Floating-point determinism flags (`-fno-fast-math
+-ffp-contract=off`) are applied automatically for GCC/Clang; use the same
+Release configuration for any determinism comparison.
 
-## Usage
+## The optional window (BUILD_GAME=ON)
 
-```bash
-./build/battle_cli --help
-./build/battle_cli --seed 42 --units 500 --ticks 3000 --export-json output/final.json
-./build/battle_cli --seed 42 --scenario data/scenarios/mixed.json
-# Benchmark recipe (--ticks 600, large armies; report prints ticks actually
-# run, ticks/s and ms/tick):
-./build/battle_cli --scenario data/scenarios/perf-5000.json --ticks 600
-./build/battle_cli --scenario data/scenarios/perf-20000.json --ticks 600
+`battle_game` is the raylib viewer. raylib (pinned to 5.5) is fetched at
+configure time; its bundled GLFW needs the windowing/OpenGL headers below.
+
+**Debian / Ubuntu**
+
+```sh
+sudo apt install libx11-dev libxcursor-dev libxrandr-dev \
+                 libxinerama-dev libxi-dev libgl-dev libasound2-dev
 ```
 
-Battles are data-driven: unit types come from `data/units.json` (infantry,
-archer, cavalry — field reference in `data/README.md`) and the battlefield,
-spawn bands and per-faction army composition from a scenario file
-(`data/scenarios/default.json` by default, `mixed.json` for a 100/100/50
-army, `perf-5000.json`/`perf-20000.json` for benchmarks). `--config`/
-`--scenario` load other files; invalid data (missing fields, zero/negative
-values, duplicate ids, unknown types, missing files, malformed JSON,
-over-cap totals) fails with a descriptive error and nothing is silently
-defaulted. Editing the JSON changes battles without recompiling.
+**Fedora** (same libraries, RPM names)
 
-`--units N` keeps the M1 army split: an infantry-only split of N units (Red
-receives the extra unit when odd; 2 ≤ N ≤ 20,000); it cannot be combined
-with `--scenario`. Nearest-enemy search for legacy targeting uses the M3
-spatial hash grid by default; `--neighbor-mode brute` selects the M1/M2 scan
-(identical results, kept as a test oracle and baseline), and `--grid-cell`
-tunes the grid cell size (default 16.0). The AI is the M4 utility model by
-default: units see only within their `sight_radius`, carry hash-derived
-personalities (`data/personalities.json`) and score five actions
-(`docs/ai.md`); `--ai-mode legacy` reproduces every M1-M3 reference result,
-`--personalities` loads another archetype table, and `--ai-debug <unit id>`
-(+ `--ai-debug-tick N`) prints one unit's perception, morale, action scores
-and choice. Morale and routing (M5) are on by default (`docs/morale.md`,
-configured by `data/morale.json`): units break, flee and can recover, and a
-faction with no active units for 30 ticks ends the battle by FACTION_ROUTED;
-`--morale off` makes utility battles bit-identical to their M4 runs. The
-battle ends when a faction has no surviving units, when it has no active
-units for the rout timeout, or at the tick limit. The CLI prints winner,
-survivors, active counts, routing statistics, per-type statistics,
-termination reason, timing, throughput and peak memory, and optionally
-writes a deterministic JSON final-state export (format v4 with morale on:
-per-unit morale/state/routed and per-faction routing statistics; v3
-otherwise).
+```sh
+sudo dnf install libX11-devel libXcursor-devel libXrandr-devel \
+                 libXinerama-devel libXi-devel mesa-libGL-devel alsa-lib-devel
+```
+
+**Windows** (MinGW-w64 or MSVC): no extra system libraries — GLFW uses
+Win32 and OpenGL via the SDK. From an "x64 Native Tools" or MSYS2 UCRT64
+shell:
+
+```sh
+cmake -S . -B build -DBUILD_GAME=ON && cmake --build build
+```
+
+**macOS**: install the Xcode command-line tools
+(`xcode-select --install`), then the same `cmake -S . -B build
+-DBUILD_GAME=ON && cmake --build build`.
+
+**Fedora / Bazzite via Distrobox** — on immutable distros, build inside a
+Fedora container with the headers installed once:
+
+```sh
+distrobox create --name bf-build --image fedora:40
+distrobox enter bf-build
+sudo dnf install -y gcc-c++ cmake git \
+     libX11-devel libXcursor-devel libXrandr-devel libXinerama-devel \
+     libXi-devel mesa-libGL-devel alsa-lib-devel
+cmake -S . -B build -DBUILD_GAME=ON && cmake --build build -j"$(nproc)"
+```
+
+More detail (including runtime controls) in
+[docs/viewer.md](docs/viewer.md).
+
+## Run a battle
+
+```sh
+# 250v250 on the open field, full report on stdout
+./build/battle_cli --scenario default --seed 42
+
+# JSON state export (the determinism guarantee: same seed, same bytes)
+./build/battle_cli --scenario default --seed 42 --export-json out.json
+
+# Event log, CSV timeline, markdown + JSON report, and a chart PNG
+./build/battle_cli --scenario default --seed 42 \
+    --events events.jsonl --export-csv timeline.csv \
+    --report report.md --report-png report.png
+
+# Record a battle and verify a replay of it
+./build/battle_cli --scenario default --seed 42 --record run.replay
+./build/battle_cli --replay run.replay --verify
+
+# Headless renders and an ASCII map
+./build/battle_cli --scenario demo-river --seed 42 \
+    --render-frames 100,200,300 --out-prefix frame
+./build/battle_cli --scenario demo-river --seed 42 --ascii 250
+
+# Benchmarks (the report prints ticks/s and ms/tick)
+./build/battle_cli --scenario perf-5000 --ticks 600
+./build/battle_cli --scenario perf-20000 --ticks 600
+```
+
+Shipped scenarios (see `data/scenarios/`): `default`, `mixed`,
+`viewer-demo`, `squads`, `demo-river`, `m10-line`, the earth maps
+`earth-lebanon`, `earth-alps-innsbruck`, `earth-nile-delta`, and the
+`perf-*` sizes (5,000 / 20,000 units) used for benchmarks. Battles are
+data-driven: unit types, personalities, morale, tactics and scenarios are
+JSON files under `data/` (`data/README.md` documents the formats), so
+battles change without recompiling.
+
+## Maps and mods
+
+- Terrain maps are palette-exact PNGs; each color is a terrain type with
+  movement cost, sight and defense modifiers, and passability
+  (`data/terrain.json`). See [docs/terrain.md](docs/terrain.md).
+- The `tools/mapgen/` Python package generates maps from real elevation
+  and hydrology data (needs `numpy` and `pillow`; tests run offline):
+
+  ```sh
+  python3 -m unittest discover -s tools/mapgen
+  ```
+
+  See [docs/mapgen.md](docs/mapgen.md).
+- Mods override data files (unit types, terrain, scenarios) from a single
+  directory: `--mod data/mods/example`. See `data/mods/example/`.
+
+## Data source credits
+
+The earth scenarios are built from public geodata — NOAA NCEI ETOPO 2022
+elevation and Natural Earth rivers/lakes — with exact versions, checksums
+and download URLs listed in
+[docs/DATA_SOURCES.md](docs/DATA_SOURCES.md).
+
+## Status — read this first
+
+- **The raylib window (`battle_game`) is unverified.** It has never been
+  run by the maintainers, and per `docs/viewer.md` it has never even been
+  compiled in the development environment (which lacked the X11/GL
+  headers); the CI `game-build` job is the first place it gets compiled.
+  Treat it as a prototype. Everything else — the engine, the CLI, the
+  headless PNG/ASCII rendering, events, reports and replay — is exercised
+  by the 309-test suite.
+- **This project was developed with AI coding agents**, milestone by
+  milestone, and verified by its test suite (determinism, byte-identical
+  baselines, per-feature behavior tests) rather than by traditional
+  manual review. Bugs are expected; the determinism guarantees make them
+  reproducible.
+- Known rough edges are documented in the milestone reports, e.g. the
+  swapped-orientation stall on earth maps
+  ([docs/milestone-10.md](docs/milestone-10.md)).
 
 ## Documentation
 
-- `docs/architecture.md` — modules and the fixed tick pipeline
-- `docs/determinism.md` — how reproducibility is guaranteed and verified
-- `docs/ai.md` — the utility AI: perception, personalities, score formulas
-- `docs/morale.md` — morale, routing, recovery and FACTION_ROUTED
-- `docs/milestone-1.md` — M1 scope, decisions and verification results
-- `docs/milestone-2.md` — M2 scope, decisions and verification results
-- `docs/milestone-3.md` — M3 scope, decisions and verification results
-- `docs/milestone-4.md` — M4 scope, decisions and verification results
-- `docs/milestone-5.md` — M5 scope, decisions and verification results
-- `data/README.md` — unit type and scenario file formats
+| File | Contents |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | Modules and the tick pipeline |
+| [docs/ai.md](docs/ai.md) | The utility AI, morale, M10 tactics |
+| [docs/determinism.md](docs/determinism.md) | The determinism rules |
+| [docs/terrain.md](docs/terrain.md) | Maps, movement, line of sight |
+| [docs/mapgen.md](docs/mapgen.md) | Generating maps from geodata |
+| [docs/squads.md](docs/squads.md) | Squads, commanders, formations |
+| [docs/morale.md](docs/morale.md) | Morale, routing, recovery |
+| [docs/reports.md](docs/reports.md) | Events, timelines, reports, replay |
+| [docs/viewer.md](docs/viewer.md) | The window and headless rendering |
+| [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | Geodata credits and checksums |
+| `docs/milestone-*.md` | Per-milestone design reports |
+
+## License
+
+MIT — see [LICENSE](LICENSE). Third-party licenses (nlohmann/json,
+GoogleTest, stb, raylib) are reproduced in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

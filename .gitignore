@@ -1,14 +1,28 @@
-skills/
-node_modules/
-upload/
-download/
+# Build directories
 build/
-output/*.json
-.env
+build-*/
 
-# Between-session sweep output, repeatedly auto-tracked otherwise
-logs/precheck-sweep-200.txt
-tools/mapgen/cache/
+# Local artifacts (exports, timelines, reports, replays, renders)
+output/
 download/
 logs/
+*.replay
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Python (tools/mapgen)
+__pycache__/
+*.pyc
+tools/mapgen/cache/
+
+# Environment / secrets — never commit
+.env
+.env.*
+
+# Core dumps (root-anchored: a bare `core` pattern would ignore the
+# game/core/ source directory)
 /core
+/core.*
