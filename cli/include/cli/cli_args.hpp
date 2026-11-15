@@ -6,6 +6,8 @@
 #include <ostream>
 #include <string>
 
+#include "sim/config.hpp"
+
 namespace cli {
 
 struct Arguments {
@@ -38,6 +40,11 @@ struct Arguments {
   bool variance_explicit = false;
   bool contact_seek_on = true;  // --contact-seek on (default) vs off
   bool swap_sides = false;
+  // m11a navigation generation: --nav v2 (default; fixed explicit-objective
+  // swap under --swap-sides, terrain-aware formation march) or v1 (the
+  // exact M10 navigation — byte-identical to the M10 binary, including
+  // the swapped-orientation stall it had).
+  bool nav_v2 = true;
   std::string tactics_path;  // empty -> data/tactics.json
   // M10: --tactic-scan <action> runs the battle tick by tick and arms the
   // AI debug capture on the first unit that chooses that action (search,
@@ -86,6 +93,13 @@ struct Arguments {
   bool replay_verify = false;  // --replay PATH --verify
   std::uint64_t replay_seek = 0;  // --seek T: re-run to tick T (0 = off)
   std::vector<std::string> interventions;  // --intervene kill:UNIT:TICK
+  // m11a: --trace out.jsonl writes one navigation-trace line per
+  // --trace-interval ticks (per-faction centroid, mean move, still
+  // fraction, Advance fraction, x histogram; see cli/trace.hpp). Pure
+  // observation: a traced battle is bit-identical to an untraced one.
+  bool trace_on = false;
+  std::string trace_path;
+  std::uint32_t trace_interval = 50;
 };
 
 struct ParseOutcome {
@@ -99,5 +113,13 @@ struct ParseOutcome {
 [[nodiscard]] ParseOutcome parse_args(int argc, char** argv);
 
 void print_usage(std::ostream& out);
+
+// m11a: the --swap-sides setup mirror, extracted from main so it is
+// unit-testable. Swaps compositions, squad plans, spawn patterns and —
+// exactly once — the explicit objectives between the factions (the M10
+// version swapped them per faction in a loop, which swapped them right
+// back: a swapped battle parked each army on the objective inside its
+// own spawn band; see docs/terrain.md). No-op without swap_sides.
+void apply_side_swap(sim::SimulationConfig& config);
 
 }  // namespace cli

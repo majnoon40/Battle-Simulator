@@ -23,10 +23,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from mapgen import (  # noqa: E402
-    BAND_FRACTIONS, CELL_SIZE, EtopoMosaic, bands_connectable,
-    classify, connected_components, dilate, generate_map, grid_axes,
-    load_palette, rasterize_lakes, snap_to_passable, slope_degrees,
-    stamp_rivers, validate_bbox, write_outputs)
+    BAND_FRACTIONS, CELL_SIZE, EtopoMosaic, TOOL_VERSION_V2,
+    band_mean_move_cost, bands_connectable, classify,
+    connected_components, dilate, dijkstra_cost, generate_map, grid_axes,
+    load_palette, march_analysis, rasterize_lakes, snap_to_passable,
+    slope_degrees, stamp_axis_fords, stamp_rivers, validate_bbox,
+    write_outputs)
 
 TERRAIN_JSON = HERE.parents[1] / "data" / "terrain.json"
 CFG = json.loads((HERE / "classify.json").read_text())
@@ -334,6 +336,136 @@ class EtopoNamingTest(unittest.TestCase):
                          "ETOPO_2022_v1_15s_N60E000_surface.tif")
         self.assertEqual(mosaic._tile_name(30, -30),
                          "ETOPO_2022_v1_15s_N30W030_surface.tif")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class AxisFordTest(unittest.TestCase):
+    """m11a: ford patches on river segments crossed by a march axis."""
+
+    def river_world(self):
+        """64x64 grassland with a 2-cell vertical river at x 30-31."""
+        types = np.zeros((64, 64), dtype=np.int64)
+        types[:, :] = INDEX["grassland"]
+        types[:, 30:32] = INDEX["water"]
+        river = np.zeros((64, 64), dtype=bool)
+        river[:, 30:32] = True
+        return types, river
+
+    def test_stamps_a_ford_on_an_unserved_crossing(self):
+        types, river = self.river_world()
+        crossings, stamped = stamp_axis_fords(
+            types, river, INDEX, [((0, 32), (63, 32))])
+        self.assertEqual(crossings, 1)
+        self.assertGreater(stamped, 0)
+        # The patch lands on the crossing row and makes the river
+        # passable there.
+        self.assertEqual(types[32, 30], INDEX["ford"])
+        self.assertEqual(types[32, 31], INDEX["ford"])
+
+    def test_existing_ford_within_radius_is_not_duplicated(self):
+        types, river = self.river_world()
+        types[32, 30] = INDEX["ford"]
+        types[32, 31] = INDEX["ford"]
+        crossings, stamped = stamp_axis_fords(
+            types, river, INDEX, [((0, 32), (63, 32))])
+        self.assertEqual(crossings, 1)
+        self.assertEqual(stamped, 0)
+
+    def test_sea_on_the_axis_is_not_a_crossing(self):
+        types, river = self.river_world()
+        # The water is sea, not river: nothing may be stamped.
+        sea = np.zeros((64, 64), dtype=bool)
+        crossings, stamped = stamp_axis_fords(
+            types, sea, INDEX, [((0, 32), (63, 32))])
+        self.assertEqual(crossings, 0)
+        self.assertEqual(stamped, 0)
+
+
+class DijkstraCostTest(unittest.TestCase):
+    """m11a: the march-cost field uses the sim's exact weights."""
+
+    def uniform(self):
+        types = np.zeros((8, 8), dtype=np.int64)
+        types[:, :] = INDEX["grassland"]
+        move_cost = np.array([t["move_cost"] for t in TABLE["types"]])
+        return types, move_cost
+
+    def test_open_grid_costs_are_monotone(self):
+        types, move_cost = self.uniform()
+        cost = dijkstra_cost(types, move_cost, 0, 0)
+        self.assertEqual(cost[0, 0], 0.0)
+        # Straight step costs 1, diagonal sqrt(2); (2,3) can be reached
+        # by two diagonals + one straight = 2*sqrt(2) + ... the optimum
+        # for (3, 2) is 3 straight steps? No: max(3,2) diagonals... the
+        # cheapest mixes: 2 diagonal + 1 straight = 2*sqrt(2) + 1.
+        self.assertAlmostEqual(cost[2, 3], 2 * 2 ** 0.5 + 1.0, places=9)
+
+    def test_wall_costs_infinite_behind(self):
+        types, move_cost = self.uniform()
+        types[:, 3] = INDEX["water"]  # full-height wall
+        cost = dijkstra_cost(types, move_cost, 0, 0)
+        self.assertEqual(cost[0, 0], 0.0)
+        # The wall seals the east side: cell (cx=4, cy=0) is unreachable.
+        self.assertEqual(cost[0, 4], float("inf"))
+
+
+class V2PipelineTest(unittest.TestCase):
+    """m11a: the --v2 variant of the full pipeline."""
+
+    def generate(self, variant="v2"):
+        return generate_map("fixture", BBOX, W, H, sample_grid,
+                            synthetic_river(), [], CFG, PALETTE,
+                            variant=variant)
+
+    def test_v2_meta_carries_the_analysis(self):
+        types, meta = self.generate()
+        self.assertEqual(meta["variant"], "v2")
+        self.assertIn("axis_river_crossings", meta)
+        self.assertGreaterEqual(meta["axis_river_crossings"], 1)
+        self.assertIn("balanced_band_pick", meta)
+        march = meta["march"]
+        self.assertGreater(
+            march["west_band_to_east_objective_median"], 0.0)
+        self.assertGreater(
+            march["east_band_to_west_objective_median"], 0.0)
+        self.assertGreater(march["ratio_east_over_west"], 0.0)
+        self.assertTrue(march["connectivity"]["normal_orientation"])
+        self.assertTrue(march["connectivity"]["swapped_orientation"])
+
+    def test_v1_meta_has_no_v2_fields(self):
+        # The v1 meta must stay byte-identical to the shipped M9 files:
+        # no m11a analysis keys.
+        types, meta = self.generate(variant="v1")
+        for key in ("variant", "balanced_band_pick", "axis_ford_cells",
+                    "axis_river_crossings", "march"):
+            self.assertNotIn(key, meta)
+
+    def test_v2_is_deterministic(self):
+        types_a, meta_a = self.generate()
+        types_b, meta_b = self.generate()
+        np.testing.assert_array_equal(types_a, types_b)
+        self.assertEqual(meta_a, meta_b)
+
+    def test_v2_write_outputs_name_and_version(self):
+        import tempfile
+        types, meta = self.generate()
+        with tempfile.TemporaryDirectory() as tmp:
+            lons, lats = grid_axes(BBOX, W, H)
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            elev = sample_grid(lon_grid, lat_grid)
+            png, meta_path, scen = write_outputs(
+                types, meta, "fixture", elev, BBOX, W, H, PALETTE,
+                out_root=tmp, variant="v2")
+            self.assertEqual(png.name, "fixture-v2.png")
+            self.assertEqual(scen.name, "earth-fixture-v2.json")
+            written = json.loads(meta_path.read_text())
+            self.assertEqual(written["tool_version"], TOOL_VERSION_V2)
+            self.assertEqual(written["scenario"], "earth-fixture-v2.json")
+            scenario = json.loads(scen.read_text())
+            self.assertEqual(scenario["map"]["file"], "fixture-v2.png")
 
 
 if __name__ == "__main__":

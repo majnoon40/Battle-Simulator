@@ -166,6 +166,19 @@ struct SimulationConfig {
   // legacy stats swap with them; explicit objectives are the caller's to
   // swap). Purely positional — unit factions are unchanged.
   bool swap_sides = false;
+
+  // Navigation v2 (m11a, --nav v2|v1; default v2). v2 fixes the m11a
+  // diagnosis findings: formation members far from their slot march
+  // along the faction flow field instead of beelining to the projected
+  // slot (which jams whole squads against rivers and valley walls in
+  // terrain corridors), and their march moves are goal-seeking so the
+  // stuck accounting sees them. v1 is the exact M10 navigation — with
+  // nav_v2 false every map battle (and every --swap-sides setup; the
+  // CLI's objective-swap fix is gated on this flag too) reproduces the
+  // M10 binary byte-for-byte. The flag only matters with a terrain map
+  // (or --swap-sides on a scenario with explicit objectives); no-map
+  // references are identical either way.
+  bool nav_v2 = true;
 };
 
 // Per-faction unit counts for a total: Red receives the extra unit when the

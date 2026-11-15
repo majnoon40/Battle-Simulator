@@ -19,13 +19,14 @@ namespace sim {
 // line-based text format:
 //
 //   BATTLESIM REPLAY 1
-//   version 10.2
+//   version 11.0
 //   scenario <name>            (as passed to --scenario)
 //   mod <dir or ->             (as passed to --mod, "-" = none)
 //   seed <n>
 //   ticks <n>                  (the tick limit used)
 //   flags variance=on|off contact_seek=on|off neighbor=grid|brute
-//         squads=on|off swap_sides=on|off
+//         squads=on|off swap_sides=on|off nav=v1|v2
+//         (nav is m11a; files without it parse as v1)
 //   intervene kill <unit> <tick>     (0+ lines, ascending tick)
 //   hash <tick> <32-hex>            (checkpoints, ascending tick)
 //

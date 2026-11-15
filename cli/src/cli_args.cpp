@@ -356,6 +356,29 @@ ParseOutcome parse_args(int argc, char** argv) {
       args.events_path = value;
       continue;
     }
+    if (flag == "--trace") {
+      const char* value = require_value("--trace");
+      if (value == nullptr) {
+        return outcome;
+      }
+      args.trace_on = true;
+      args.trace_path = value;
+      continue;
+    }
+    if (flag == "--trace-interval") {
+      const char* value = require_value("--trace-interval");
+      if (value == nullptr) {
+        return outcome;
+      }
+      const long interval = std::strtol(value, nullptr, 10);
+      if (interval < 1 || interval > 100000) {
+        outcome.ok = false;
+        outcome.error = "--trace-interval must be in [1, 100000]";
+        return outcome;
+      }
+      args.trace_interval = static_cast<std::uint32_t>(interval);
+      continue;
+    }
     if (flag == "--export-csv") {
       const char* value = require_value("--export-csv");
       if (value == nullptr) {
@@ -481,6 +504,25 @@ ParseOutcome parse_args(int argc, char** argv) {
         return outcome;
       }
       args.contact_seek_on = mode == "on";
+      continue;
+    }
+    if (flag == "--nav") {
+      const char* value = require_value("--nav");
+      if (value == nullptr) {
+        return outcome;
+      }
+      const std::string mode = value;
+      if (mode == "v2" || mode == "on") {
+        args.nav_v2 = true;
+      } else if (mode == "v1" || mode == "off") {
+        args.nav_v2 = false;
+      } else {
+        outcome.ok = false;
+        outcome.error =
+            "--nav expects 'v2' (default), 'v1', 'on' or 'off', got '" +
+            mode + "'";
+        return outcome;
+      }
       continue;
     }
     if (flag == "--swap-sides") {
@@ -736,6 +778,37 @@ ParseOutcome parse_args(int argc, char** argv) {
   return outcome;
 }
 
+void apply_side_swap(sim::SimulationConfig& config) {
+  // --swap-sides (M10): mirror the whole setup — compositions, explicit
+  // objectives, squad plans and spawn patterns swap with the bands
+  // (config.swap_sides flips which band each faction holds). Unit
+  // factions themselves are untouched: Red simply deploys in the east.
+  config.composition[static_cast<std::size_t>(sim::Faction::Red)]
+      .swap(config.composition[static_cast<std::size_t>(sim::Faction::Blue)]);
+  config.squad_plans[static_cast<std::size_t>(sim::Faction::Red)]
+      .swap(config.squad_plans[static_cast<std::size_t>(sim::Faction::Blue)]);
+  // m11a: the explicit-objective swap must happen exactly once. The
+  // previous per-faction loop swapped them on the Red iteration and
+  // swapped them right back on the Blue one, so explicit objectives
+  // never moved and a swapped battle parked each army on the objective
+  // inside its own spawn band (the universal 0/0/N tick-limit draws on
+  // the earth maps; every earth scenario sets explicit objectives).
+  // The once-only swaps. (The M10 loop form swapped per faction, which
+  // undid itself on the second iteration — objectives AND spawn
+  // patterns never actually moved.)
+  if (config.objectives[static_cast<std::size_t>(sim::Faction::Red)]
+          .explicit_set ||
+      config.objectives[static_cast<std::size_t>(sim::Faction::Blue)]
+          .explicit_set) {
+    std::swap(
+        config.objectives[static_cast<std::size_t>(sim::Faction::Red)],
+        config.objectives[static_cast<std::size_t>(sim::Faction::Blue)]);
+  }
+  std::swap(
+      config.spawn_patterns[static_cast<std::size_t>(sim::Faction::Red)],
+      config.spawn_patterns[static_cast<std::size_t>(sim::Faction::Blue)]);
+}
+
 void print_usage(std::ostream& out) {
   out << "autobattle — deterministic 2D autonomous battle simulation (M6)\n"
       << "\n"
@@ -807,6 +880,19 @@ void print_usage(std::ostream& out) {
       << "                         first tick it sees an enemy (utility mode)\n"
       << "  --ai-debug-tick <n>     Explicit 1-based tick for --ai-debug\n"
       << "  --export-json <file>    Write the final battle state as JSON\n"
+      << "  --trace <file>          Write a navigation trace line every\n"
+      << "                         --trace-interval ticks (per-faction\n"
+      << "                         centroid, mean move, still fraction,\n"
+      << "                         Advance fraction, x histogram). Pure\n"
+      << "                         observation: the battle is unchanged\n"
+      << "  --trace-interval <n>    Trace cadence in ticks [1, 100000]\n"
+      << "                         (default 50; needs --trace)\n"
+      << "  --nav <v1|v2>           Navigation generation (m11a): v2\n"
+      << "                         (default) marches formation members\n"
+      << "                         along the flow field when far from\n"
+      << "                         their slot and fixes the --swap-sides\n"
+      << "                         explicit-objective swap; v1 is the\n"
+      << "                         exact M10 navigation (byte-identical)\n"
       << "\n"
       << "Without --units or --scenario, the default scenario runs (with the\n"
       << "shipped data files: 250 infantry per faction). The battle ends when\n"

@@ -7,6 +7,6 @@ namespace sim {
 // --replay. Bump this whenever simulation-visible state or rules change
 // in a way old replays would not reproduce (terrain, morale, tactics,
 // events, ...). Format: major.minor where major = milestone.
-inline constexpr const char* kSimVersion = "10.2";
+inline constexpr const char* kSimVersion = "11.0";
 
 }  // namespace sim

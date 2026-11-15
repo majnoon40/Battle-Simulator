@@ -30,6 +30,8 @@ const char* event_type_name(EventType type) noexcept {
       return "seek_start";
     case EventType::SquadCollapse:
       return "squad_collapse";
+    case EventType::FirstContact:
+      return "first_contact";
   }
   return "unknown";
 }
@@ -84,6 +86,9 @@ void write_event_jsonl(std::ostream& out, const Event& event) {
       break;
     case EventType::SquadCollapse:
       out << ",\"squad\":" << event.a;
+      break;
+    case EventType::FirstContact:
+      out << ",\"unit\":" << event.a;
       break;
   }
   out << "}\n";

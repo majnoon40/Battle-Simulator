@@ -1,0 +1,130 @@
+{
+  "axis_ford_cells": 0,
+  "axis_river_crossings": 6,
+  "balanced_band_pick": {
+    "fraction": 0.15,
+    "mean_move_cost": {
+      "east": 0.973,
+      "west": 1.0
+    },
+    "passable_share": {
+      "east": 0.609,
+      "west": 0.631
+    }
+  },
+  "bbox": {
+    "lat_max": 31.7,
+    "lat_min": 29.9,
+    "lon_max": 32.5,
+    "lon_min": 29.5
+  },
+  "cell_size": 2.5,
+  "ford_rounds": [
+    {
+      "connected": true,
+      "ford_cells": 50,
+      "ford_spacing_cells": 60
+    }
+  ],
+  "fords": 50,
+  "grid": {
+    "height": 400,
+    "width": 400
+  },
+  "isolated_land_cells_flooded": 2137,
+  "map": "nile-delta-v2.png",
+  "march": {
+    "connectivity": {
+      "normal_orientation": true,
+      "swapped_orientation": true
+    },
+    "east_band_to_west_objective_median": 399.92885967180996,
+    "ratio_east_over_west": 1.0312626392923827,
+    "west_band_to_east_objective_median": 387.80505026947117
+  },
+  "objectives": {
+    "blue": [
+      76.25,
+      501.25
+    ],
+    "red": [
+      923.75,
+      501.25
+    ]
+  },
+  "region": "nile-delta",
+  "scale": {
+    "cell_meters_east_west": 717.1,
+    "cell_meters_north_south": 497.4,
+    "note": "world units are abstract game units, not meters",
+    "projection": "equirectangular (degrees, longitude NOT shrunk)"
+  },
+  "scenario": "earth-nile-delta-v2.json",
+  "sources": {
+    "etopo": {
+      "product": "NOAA NCEI ETOPO 2022, 15 arc-second surface elevation (GeoTIFF tiles)",
+      "tiles": {
+        "ETOPO_2022_v1_15s_N30E015_surface.tif": {
+          "sha256": "1ee225cb379eb7c95d446337004f413a2eb270a4682383afb6930270ec04515c",
+          "url": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif/ETOPO_2022_v1_15s_N30E015_surface.tif"
+        },
+        "ETOPO_2022_v1_15s_N30E030_surface.tif": {
+          "sha256": "deaa83101bcc301484382fbc350a444df5757674b9fd814635c10beaa5167a6b",
+          "url": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif/ETOPO_2022_v1_15s_N30E030_surface.tif"
+        },
+        "ETOPO_2022_v1_15s_N45E015_surface.tif": {
+          "sha256": "b4983c653eeb75a5a88d0dd5887192f3416aefa211e147e17a0298404cf2d5ea",
+          "url": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif/ETOPO_2022_v1_15s_N45E015_surface.tif"
+        },
+        "ETOPO_2022_v1_15s_N45E030_surface.tif": {
+          "sha256": "f4d1005d3c43defc9e33260e119e4d36ad5fc18f7d452febf13f3d6223fb4c73",
+          "url": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif/ETOPO_2022_v1_15s_N45E030_surface.tif"
+        }
+      },
+      "url_dir": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif",
+      "version": "v1 (2022)"
+    },
+    "natural_earth": {
+      "files": {
+        "ne_10m_lakes.zip": {
+          "sha256": "0803a06f9c3cb4671d89b68c48b142aad9366ba40f665245e12a913fbc61722a",
+          "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip"
+        },
+        "ne_10m_rivers_lake_centerlines.zip": {
+          "sha256": "ded71b01870855ccfe19b51f2ec14c9bb48fae23c0e9f3c11974d426433b5c38",
+          "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_rivers_lake_centerlines.zip"
+        }
+      },
+      "license": "public domain",
+      "product": "Natural Earth 10m physical"
+    }
+  },
+  "spawn_band_fraction": 0.15,
+  "spawn_band_passable_share": {
+    "east": 0.565,
+    "west": 0.63
+  },
+  "synthetic_forest": false,
+  "terrain_counts": {
+    "ford": 225,
+    "grassland": 109490,
+    "hills": 1266,
+    "mountain": 35,
+    "water": 48984
+  },
+  "thresholds": {
+    "ford_spacing_cells": 60,
+    "forest_max_elev_m": 500.0,
+    "forest_max_slope_deg": 6.0,
+    "high_elev_m": 1200.0,
+    "hills_elev_m": 400.0,
+    "sea_level_m": 0.0,
+    "steep_slope_deg": 14.0
+  },
+  "tool_version": "1.1.0",
+  "variant": "v2",
+  "world": {
+    "height": 1000.0,
+    "width": 1000.0
+  }
+}

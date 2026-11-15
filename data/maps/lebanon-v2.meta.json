@@ -1,0 +1,108 @@
+{
+  "axis_ford_cells": 0,
+  "axis_river_crossings": 0,
+  "balanced_band_pick": null,
+  "bbox": {
+    "lat_max": 34.7,
+    "lat_min": 33.0,
+    "lon_max": 36.7,
+    "lon_min": 35.0
+  },
+  "cell_size": 2.5,
+  "ford_rounds": [
+    {
+      "connected": true,
+      "ford_cells": 5,
+      "ford_spacing_cells": 60
+    }
+  ],
+  "fords": 5,
+  "grid": {
+    "height": 400,
+    "width": 400
+  },
+  "isolated_land_cells_flooded": 10,
+  "map": "lebanon-v2.png",
+  "march": {
+    "connectivity": {
+      "normal_orientation": true,
+      "swapped_orientation": true
+    },
+    "east_band_to_west_objective_median": 536.2225825768829,
+    "ratio_east_over_west": 0.6637735005436891,
+    "west_band_to_east_objective_median": 807.8396955251592
+  },
+  "objectives": {
+    "blue": [
+      253.75,
+      563.75
+    ],
+    "red": [
+      823.75,
+      501.25
+    ]
+  },
+  "region": "lebanon",
+  "scale": {
+    "cell_meters_east_west": 392.9,
+    "cell_meters_north_south": 469.8,
+    "note": "world units are abstract game units, not meters",
+    "projection": "equirectangular (degrees, longitude NOT shrunk)"
+  },
+  "scenario": "earth-lebanon-v2.json",
+  "sources": {
+    "etopo": {
+      "product": "NOAA NCEI ETOPO 2022, 15 arc-second surface elevation (GeoTIFF tiles)",
+      "tiles": {
+        "ETOPO_2022_v1_15s_N45E030_surface.tif": {
+          "sha256": "f4d1005d3c43defc9e33260e119e4d36ad5fc18f7d452febf13f3d6223fb4c73",
+          "url": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif/ETOPO_2022_v1_15s_N45E030_surface.tif"
+        }
+      },
+      "url_dir": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif",
+      "version": "v1 (2022)"
+    },
+    "natural_earth": {
+      "files": {
+        "ne_10m_lakes.zip": {
+          "sha256": "0803a06f9c3cb4671d89b68c48b142aad9366ba40f665245e12a913fbc61722a",
+          "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip"
+        },
+        "ne_10m_rivers_lake_centerlines.zip": {
+          "sha256": "ded71b01870855ccfe19b51f2ec14c9bb48fae23c0e9f3c11974d426433b5c38",
+          "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_rivers_lake_centerlines.zip"
+        }
+      },
+      "license": "public domain",
+      "product": "Natural Earth 10m physical"
+    }
+  },
+  "spawn_band_fraction": 0.35,
+  "spawn_band_passable_share": {
+    "east": 1.0,
+    "west": 0.263
+  },
+  "synthetic_forest": false,
+  "terrain_counts": {
+    "ford": 25,
+    "grassland": 14777,
+    "hills": 60869,
+    "mountain": 35588,
+    "water": 48741
+  },
+  "thresholds": {
+    "ford_spacing_cells": 60,
+    "forest_max_elev_m": 500.0,
+    "forest_max_slope_deg": 6.0,
+    "high_elev_m": 1200.0,
+    "hills_elev_m": 400.0,
+    "sea_level_m": 0.0,
+    "steep_slope_deg": 14.0
+  },
+  "tool_version": "1.1.0",
+  "variant": "v2",
+  "world": {
+    "height": 1000.0,
+    "width": 1000.0
+  }
+}

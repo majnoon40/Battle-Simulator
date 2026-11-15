@@ -24,6 +24,7 @@ enum class EventType : std::uint8_t {
   PursuitStart,    // a: unit id (starts chasing a routed enemy)
   SeekStart,       // a: unit id (contact seek escalates to the estimate)
   SquadCollapse,   // a: squad index (its last member just died)
+  FirstContact,    // a: unit id (first unit to see an enemy; once per battle)
 };
 
 [[nodiscard]] const char* event_type_name(EventType type) noexcept;

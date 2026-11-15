@@ -1000,3 +1000,196 @@ TEST(TerrainLayerTest, CountsAndDeterminism) {
     EXPECT_FALSE(cmd.kind == render::CmdKind::Rect && cmd.color == grass);
   }
 }
+
+// ---------------------------------------------------------------------------
+// m11a: navigation v2 — first contact, member field-march, the swap fix.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The m11a diagnosis fixtures: tables loaded once for the section.
+const sim::UnitTypeTable& m11a_types() {
+  static const sim::UnitTypeTable table = sim::parse_unit_types(
+      read_text(fs::path(TEST_DATA_DIR) / "units.json"));
+  return table;
+}
+const sim::PersonalityTable& m11a_personalities() {
+  static const sim::PersonalityTable table = sim::parse_personalities(
+      read_text(fs::path(TEST_DATA_DIR) / "personalities.json"));
+  return table;
+}
+const sim::FormationConfig& m11a_formations() {
+  static const sim::FormationConfig table = sim::parse_formations(
+      read_text(fs::path(TEST_DATA_DIR) / "formations.json"));
+  return table;
+}
+const sim::CommanderConfig& m11a_commanders() {
+  static const sim::CommanderConfig table = sim::parse_commanders(
+      read_text(fs::path(TEST_DATA_DIR) / "commanders.json"));
+  return table;
+}
+
+// A utility-mode battle of explicit units with a recorder attached.
+sim::Simulation m11a_battle(const sim::TerrainGrid* grid,
+                            std::vector<sim::Unit> units,
+                            sim::EventRecorder* recorder = nullptr,
+                            bool nav_v2 = true) {
+  sim::SimulationConfig config;
+  config.seed = 1;
+  config.max_ticks = 600;
+  config.ai_mode = sim::AiMode::Utility;
+  config.morale_enabled = false;
+  config.terrain = grid;
+  config.personalities = &m11a_personalities();
+  config.unit_types = &m11a_types();
+  config.formations = &m11a_formations();
+  config.commanders = &m11a_commanders();
+  config.nav_v2 = nav_v2;
+  config.events = recorder;
+  if (grid != nullptr) {
+    config.battlefield_width = grid->width * grid->cell_size;
+    config.battlefield_height = grid->height * grid->cell_size;
+  } else {
+    config.battlefield_width = 200.0;
+    config.battlefield_height = 100.0;
+  }
+  config.spawn_band_fraction = 0.15;
+  return sim::Simulation(config, std::move(units));
+}
+
+}  // namespace
+
+TEST(NavV2Test, FirstContactTickAndEvent) {
+  // Two units 30 apart (sight 40): contact on tick 1, one FirstContact
+  // event carrying the seer's id. Far units (150 apart on a 400-wide
+  // field): no contact for 40 ticks.
+  sim::EventRecorder recorder;
+  sim::Simulation close = m11a_battle(
+      nullptr, {make_unit(1, sim::Faction::Red, 50.0, 50.0),
+                make_unit(2, sim::Faction::Blue, 80.0, 50.0)},
+      &recorder);
+  close.tick();
+  EXPECT_EQ(close.result().first_contact_tick, 1u);
+  EXPECT_EQ(recorder.count(sim::EventType::FirstContact), 1u);
+  ASSERT_FALSE(recorder.events().empty());
+  EXPECT_EQ(recorder.events().front().type, sim::EventType::FirstContact);
+  EXPECT_EQ(recorder.events().front().tick, 1u);
+
+  sim::Simulation far = m11a_battle(
+      nullptr, {make_unit(1, sim::Faction::Red, 50.0, 50.0),
+                make_unit(2, sim::Faction::Blue, 240.0, 50.0)});
+  // Closing speed 4/tick, sight 40: contact would be at tick ~38; stop
+  // well before it.
+  for (int tick = 0; tick < 25; ++tick) {
+    far.tick();
+  }
+  EXPECT_EQ(far.result().first_contact_tick, 0u);
+}
+
+TEST(NavV2Test, FlagIsANoOpWithoutATerrainMap) {
+  // No map: v1 and v2 are byte-identical (the member field-march and
+  // every other v2 path needs terrain).
+  const auto run = [](bool nav_v2) {
+    sim::Simulation battle = m11a_battle(
+        nullptr, {make_unit(1, sim::Faction::Red, 50.0, 50.0),
+                  make_unit(2, sim::Faction::Blue, 80.0, 50.0)},
+        nullptr, nav_v2);
+    for (int tick = 0; tick < 60; ++tick) {
+      battle.tick();
+    }
+    return sim::export_state_json(battle);
+  };
+  EXPECT_EQ(run(true), run(false));
+}
+
+TEST(NavV2Test, MemberMarchCarriesTheArmyThroughACorridor) {
+  // The m11a corridor fixture: a water wall spans the map with a
+  // 2-cell gap; three squads per side must cross. v1 members beeline to
+  // their (projected) slots and jam against the wall; v2 members far
+  // from their slot march along the flow field and funnel through. The
+  // v2 army's mean progress east must beat v1's by a wide margin.
+  const sim::TerrainTypeTable table = test_table();
+  std::vector<std::string> rows;
+  for (std::uint32_t y = 0; y < 24; ++y) {
+    std::string row(40, 'g');
+    if (y != 11 && y != 12) {
+      row[20] = 'w';  // the wall, with a 2-cell gap at y in {11, 12}
+    }
+    rows.push_back(row);
+  }
+  const sim::TerrainGrid grid = grid_from(table, rows, 5.0);
+
+  const auto red_state = [&grid](bool nav_v2) {
+    sim::SimulationConfig config;
+    config.seed = 11;
+    config.max_ticks = 500;
+    config.ai_mode = sim::AiMode::Utility;
+    config.morale_enabled = false;
+    config.terrain = &grid;
+    config.personalities = &m11a_personalities();
+    config.unit_types = &m11a_types();
+    config.formations = &m11a_formations();
+    config.commanders = &m11a_commanders();
+    config.nav_v2 = nav_v2;
+    config.battlefield_width = grid.width * grid.cell_size;
+    config.battlefield_height = grid.height * grid.cell_size;
+    config.spawn_band_fraction = 0.15;
+    config.composition[kRed].push_back(sim::TypeCount{0, 30});
+    config.composition[kRed].push_back(sim::TypeCount{3, 3});
+    config.composition[kBlue].push_back(sim::TypeCount{0, 30});
+    config.composition[kBlue].push_back(sim::TypeCount{3, 3});
+    config.squad_plans[kRed] = sim::SquadPlan{3, 10};
+    config.squad_plans[kBlue] = sim::SquadPlan{3, 10};
+    sim::Simulation battle(config);
+    EXPECT_TRUE(battle.squads_active());
+    for (int tick = 0; tick < 400; ++tick) {
+      battle.tick();
+    }
+    double sum = 0.0;
+    std::uint32_t alive = 0;
+    for (const sim::Unit& unit : battle.world().units) {
+      if (unit.alive && unit.faction == sim::Faction::Red) {
+        sum += unit.x;
+        ++alive;
+      }
+    }
+    return std::pair<std::uint32_t, double>(
+        alive, alive > 0 ? sum / alive : 0.0);
+  };
+  // The wall sits at x = 100..105 with a 2-cell gap. Under v2 the Red
+  // army funnels through the gap along the flow field and keeps
+  // fighting past it; under v1 the members beeline to their projected
+  // slots, jam against the wall and feed into the enemy piecemeal (the
+  // m11a Lebanon signature). Both outcomes are deterministic for this
+  // fixture.
+  const auto [v1_alive, v1_x] = red_state(false);
+  const auto [v2_alive, v2_x] = red_state(true);
+  EXPECT_GT(v2_alive, 0u);
+  EXPECT_GT(v2_x, 140.0) << "v2 did not carry the army through";
+  EXPECT_TRUE(v1_alive == 0 || v1_x < 110.0)
+      << "v1 unexpectedly crossed (alive " << v1_alive << ", x " << v1_x
+      << ")";
+}
+
+TEST(NavV2Test, SwapFixMakesSwappedBattlesMeet) {
+  // CLI level: on earth-lebanon with --swap-sides, nav v1 reproduces
+  // the M10 stall (no contact, tick-limit draw) while nav v2 swaps the
+  // explicit objectives once — the armies cross and make contact.
+  const auto first_contact = [](const char* nav) {
+    const std::string report = "/tmp/m11a_swap_report.md";
+    fs::remove(report);
+    fs::remove("/tmp/m11a_swap_report.json");
+    EXPECT_EQ(0, run_cli(std::string("--scenario data/scenarios/earth-"
+                                     "lebanon.json --swap-sides --seed 1 "
+                                     "--ticks 1500 --nav ") +
+                         nav + " --report " + report));
+    const std::string json = read_text("/tmp/m11a_swap_report.json");
+    // The JSON twin carries outcome.first_contact_tick.
+    const std::string key = "\"first_contact_tick\": ";
+    const std::size_t at = json.find(key);
+    EXPECT_NE(at, std::string::npos);
+    return std::strtoull(json.c_str() + at + key.size(), nullptr, 10);
+  };
+  EXPECT_EQ(first_contact("v1"), 0u);   // the M10 stall, byte-for-byte
+  EXPECT_GT(first_contact("v2"), 0u);   // the fix: the armies meet
+}

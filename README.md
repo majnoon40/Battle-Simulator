@@ -12,7 +12,7 @@ runs fully headless.
 The project was developed milestone-by-milestone (M1–M10); each milestone
 has a design report under `docs/`.
 
-## Features (through milestone M10)
+## Features (through milestone M11a)
 
 - **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
   of randomness; the same seed reproduces the same battle byte-for-byte,
@@ -28,18 +28,27 @@ has a design report under `docs/`.
 - **Terrain from maps** — PNG maps with a per-terrain palette: movement
   costs, line of sight, defense modifiers, impassable water with fords,
   flow-field pathing, stuck detection and recovery (M8).
+- **Navigation v2** — `--nav v2` (default): the `--swap-sides`
+  explicit-objective swap actually happens, and formation members far
+  from their slot march along the flow field instead of beelining into
+  rivers and valley walls; `--nav v1` reproduces the M10 binary
+  byte-for-byte, and a replay records which generation ran (M11a, see
+  [docs/terrain.md](docs/terrain.md)).
 - **Earth scenarios** — maps generated from real geodata (NOAA ETOPO 2022
   elevation, Natural Earth rivers and lakes): Lebanon, Alps (Innsbruck),
   Nile Delta, with reproducible generation and checksums (M9, see
-  [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)).
+  [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)); `-v2` variants with
+  balanced spawn bands, march-axis ford checks, and march-cost /
+  both-orientation connectivity analysis in the meta (M11a).
 - **Tactical depth** — per-unit combat variance, tactical memory, squad
   intel, Search / Help / Flank actions, bounded pursuit of routed enemies,
   contact seeking, spawn patterns; `--variance off` reproduces every
   M1–M9 reference byte-for-byte (M10).
 - **Events, timelines, reports** — JSONL event logs (deaths with killer,
-  routs, recoveries, command changes, ...), CSV timelines, markdown + JSON
-  battle reports with turning points, and report charts rendered with the
-  built-in software rasterizer (M10.2a).
+  routs, recoveries, command changes, first contact, ...), CSV timelines,
+  markdown + JSON battle reports with turning points and the first-contact
+  tick, and report charts rendered with the built-in software rasterizer
+  (M10.2a, M11a).
 - **Replay** — record a battle to a file (setup, interventions, state
   hashes every 25 ticks) and verify a re-run against it; `--seek` re-runs
   to any tick (M10.2b).
@@ -59,7 +68,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 This builds the `sim` library, the `battle_cli` headless tool and the
-`battle_tests` suite (309 tests). No windowing or OpenGL libraries are
+`battle_tests` suite (322 tests). No windowing or OpenGL libraries are
 required. Floating-point determinism flags (`-fno-fast-math
 -ffp-contract=off`) are applied automatically for GCC/Clang; use the same
 Release configuration for any determinism comparison.
@@ -177,15 +186,18 @@ and download URLs listed in
   headers); the CI `game-build` job is the first place it gets compiled.
   Treat it as a prototype. Everything else — the engine, the CLI, the
   headless PNG/ASCII rendering, events, reports and replay — is exercised
-  by the 309-test suite.
+  by the test suite.
 - **This project was developed with AI coding agents**, milestone by
   milestone, and verified by its test suite (determinism, byte-identical
   baselines, per-feature behavior tests) rather than by traditional
   manual review. Bugs are expected; the determinism guarantees make them
   reproducible.
-- Known rough edges are documented in the milestone reports, e.g. the
-  swapped-orientation stall on earth maps
-  ([docs/milestone-10.md](docs/milestone-10.md)).
+- Known rough edges are documented in the milestone reports. The M10
+  swapped-orientation stall on the earth maps was root-caused and fixed
+  in M11a (a no-op objective swap plus formation members that never
+  navigated terrain; `--nav v1` still reproduces the old behavior
+  byte-for-byte — see [docs/terrain.md](docs/terrain.md) and
+  [docs/milestone-11.md](docs/milestone-11.md)).
 
 ## Documentation
 

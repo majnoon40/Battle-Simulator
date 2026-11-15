@@ -190,8 +190,50 @@ TEST(ReplayTest, FileRoundTrip) {
   EXPECT_EQ(parsed.hashes[1].second, data.hashes[1].second);
 }
 
-TEST(ReplayTest, MalformedFilesAreRejected) {
+// m11a: the nav flag records the navigation generation; files from
+// before m11a carry no flag and replay under v1 (the exact behavior
+// they were recorded with).
+TEST(ReplayTest, NavFlagRoundTripAndLegacyDefault) {
+  cli::ReplayData data;
+  data.version = sim::kSimVersion;
+  data.scenario = "default";
+  data.mod = "-";
+  data.seed = 42;
+  data.ticks = 3000;
+  data.nav = "v2";
+  data.hashes.emplace_back(25, "aabbccddeeff00112233445566778899");
+  ASSERT_TRUE(cli::write_replay("/tmp/m11a-nav.replay", data));
   cli::ReplayData parsed;
+  std::string error;
+  ASSERT_TRUE(cli::parse_replay("/tmp/m11a-nav.replay", parsed, error))
+      << error;
+  EXPECT_EQ(parsed.nav, "v2");
+
+  // A pre-m11a file (no nav flag) parses as v1.
+  const std::string legacy =
+      "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+      "\nscenario default\nmod -\nseed 42\nticks 100\n"
+      "flags variance=on contact_seek=on neighbor=grid squads=on "
+      "swap_sides=off\nhash 25 aabbccddeeff00112233445566778899\n";
+  { std::ofstream file("/tmp/m11a-legacy.replay"); file << legacy; }
+  cli::ReplayData legacy_parsed;  // fresh: parse must not inherit v2
+  ASSERT_TRUE(
+      cli::parse_replay("/tmp/m11a-legacy.replay", legacy_parsed, error))
+      << error;
+  EXPECT_EQ(legacy_parsed.nav, "v1");
+
+  // An unknown nav value is rejected.
+  const std::string bad =
+      "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+      "\nscenario default\nmod -\nseed 42\nticks 100\n"
+      "flags nav=v3\nhash 25 aabbccddeeff00112233445566778899\n";
+  { std::ofstream file("/tmp/m11a-bad.replay"); file << bad; }
+  cli::ReplayData bad_parsed;
+  EXPECT_FALSE(cli::parse_replay("/tmp/m11a-bad.replay", bad_parsed, error));
+  EXPECT_NE(error.find("nav"), std::string::npos);
+}
+
+TEST(ReplayTest, MalformedFilesAreRejected) {  cli::ReplayData parsed;
   std::string error;
   const auto check = [&](const std::string& content,
                          const std::string& needle) {
