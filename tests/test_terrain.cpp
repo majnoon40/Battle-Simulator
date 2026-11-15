@@ -780,11 +780,14 @@ TEST(MapLoadingTest, PngRoundTripAndErrors) {
               std::string::npos);
   }
 
-  // The shipped demo map loads and has impassable water.
+  // The shipped demo map loads and has impassable water. The table must
+  // outlive the grid: the grid stores a non-owning pointer to it (a
+  // temporary here would dangle and ASan catches it at demo.table below).
+  const sim::TerrainTypeTable demo_table = sim::parse_terrain_types(
+      read_text(fs::path(TEST_DATA_DIR) / "terrain.json"));
   const sim::TerrainGrid demo = cli::load_map(
       (fs::path(TEST_DATA_DIR) / "maps/demo-river.png").string(), 5.0,
-      sim::parse_terrain_types(
-          read_text(fs::path(TEST_DATA_DIR) / "terrain.json")));
+      demo_table);
   EXPECT_EQ(demo.width, 200u);
   EXPECT_EQ(demo.height, 200u);
   // The bridge row (y = 100) is passable road across the river.

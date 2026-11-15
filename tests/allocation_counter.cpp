@@ -28,11 +28,35 @@ void* operator new(std::size_t size) {
 
 void* operator new[](std::size_t size) { return operator new(size); }
 
+// Nothrow overloads: libstdc++'s get_temporary_buffer (used by
+// std::stable_sort inside GoogleTest) allocates via nothrow new and
+// releases via the sized plain delete above. Without these overloads
+// that allocation bypasses the counter (and under ASan the malloc/new
+// interposition turns the mismatch into a hard alloc-dealloc error).
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+  ++g_allocations;
+  if (size == 0) {
+    size = 1;
+  }
+  return std::malloc(size);
+}
+
+void* operator new[](std::size_t size,
+                     const std::nothrow_t&) noexcept {
+  return operator new(size, std::nothrow);
+}
+
 void operator delete(void* pointer) noexcept { std::free(pointer); }
 void operator delete[](void* pointer) noexcept { std::free(pointer); }
 void operator delete(void* pointer, std::size_t) noexcept {
   std::free(pointer);
 }
 void operator delete[](void* pointer, std::size_t) noexcept {
+  std::free(pointer);
+}
+void operator delete(void* pointer, const std::nothrow_t&) noexcept {
+  std::free(pointer);
+}
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept {
   std::free(pointer);
 }

@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and test (headless)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Release, BUILD_GAME=OFF)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Determinism check (same seed twice)
+        run: |
+          ./build/battle_cli --scenario default --seed 42 --export-json a.json
+          ./build/battle_cli --scenario default --seed 42 --export-json b.json
+          diff a.json b.json
+          echo "byte-identical exports for seed 42"
+
+      - name: Determinism check (grid == brute neighbor modes)
+        run: |
+          ./build/battle_cli --scenario default --seed 42 --neighbor-mode grid --export-json g.json
+          ./build/battle_cli --scenario default --seed 42 --neighbor-mode brute --export-json c.json
+          diff g.json c.json
+          echo "grid and brute neighbor modes agree"
+
+  game-build:
+    name: Game window build (compile only)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install raylib dev dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev \
+                                  libxinerama-dev libxi-dev libgl-dev \
+                                  libasound2-dev
+
+      - name: Configure (BUILD_GAME=ON)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GAME=ON
+
+      - name: Build battle_game (never run — no display on runners)
+        run: cmake --build build --target battle_game -j"$(nproc)"
+
+  mapgen:
+    name: Map generator tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check numpy pillow
+
+      - name: Run mapgen tests (offline)
+        working-directory: tools/mapgen
+        run: python3 -m unittest discover -v
+
+  sanitizers:
+    name: ASan + UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Debug, sanitizers)
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test under sanitizers
+        run: ctest --test-dir build --output-on-failure
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1

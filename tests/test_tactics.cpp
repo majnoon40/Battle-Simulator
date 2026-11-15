@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <random>
@@ -147,7 +148,10 @@ TEST(ParseTacticsTest, DefaultFileShapeParses) {
   EXPECT_EQ(config.flank.max_per_squad, 4u);
   EXPECT_DOUBLE_EQ(config.pursuit.routed_bonus, 0.25);
   // The shipped file equals the built-in defaults.
-  std::ifstream file("data/tactics.json");
+  // TEST_DATA_DIR, not a relative path: ctest --test-dir runs the test
+  // processes from the build directory, where data/ does not exist.
+  std::ifstream file(std::filesystem::path(TEST_DATA_DIR) /
+                      "tactics.json");
   ASSERT_TRUE(file.good());
   const sim::TacticsConfig parsed = sim::parse_tactics(file);
   EXPECT_EQ(parsed.memory.forget_ticks, config.memory.forget_ticks);
