@@ -1,0 +1,35 @@
+{
+  "orders": {
+    "retreat": {
+      "cohesion_below": 0.15,
+      "strength_below": 0.3,
+      "morale_below": 15.0
+    },
+    "regroup": {
+      "cohesion_below": 0.45
+    },
+    "hold": {
+      "strength_above": 0.65
+    }
+  },
+  "order_weights": {
+    "advance": 0.3,
+    "hold": 0.3,
+    "regroup": 0.3,
+    "retreat": 0.3
+  },
+  "order_min_duration_ticks": 40,
+  "order_delay_per_unit": 0.02,
+  "order_decay_ticks": 60,
+  "succession_delay_ticks": 20,
+  "commander_death_morale_loss": 18.0,
+  "obedience": {
+    "morale_factor": {
+      "confident": 1.1,
+      "steady": 1.0,
+      "worried": 0.85,
+      "shaken": 0.6
+    },
+    "cohesion_floor": 0.5
+  }
+}

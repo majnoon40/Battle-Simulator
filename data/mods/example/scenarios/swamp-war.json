@@ -1,0 +1,19 @@
+{
+  "battlefield": {
+    "width": 200.0,
+    "height": 200.0
+  },
+  "spawn_band_fraction": 0.2,
+  "map": {
+    "file": "swampy.json",
+    "cell_size": 5.0
+  },
+  "armies": {
+    "red": {
+      "infantry": 100
+    },
+    "blue": {
+      "infantry": 100
+    }
+  }
+}

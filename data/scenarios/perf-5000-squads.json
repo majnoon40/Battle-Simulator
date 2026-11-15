@@ -1,0 +1,27 @@
+{
+  "battlefield": {
+    "width": 1000.0,
+    "height": 1000.0
+  },
+  "spawn_band_fraction": 0.15,
+  "armies": {
+    "red": {
+      "commander": 96,
+      "infantry": 2400
+    },
+    "blue": {
+      "commander": 96,
+      "infantry": 2400
+    }
+  },
+  "squads": {
+    "red": {
+      "count": 96,
+      "size": 25
+    },
+    "blue": {
+      "count": 96,
+      "size": 25
+    }
+  }
+}

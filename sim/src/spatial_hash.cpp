@@ -1,0 +1,398 @@
+#include "sim/spatial_hash.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+#include "sim/factions.hpp"
+
+namespace sim {
+namespace {
+
+[[noreturn]] void fail(std::string message) {
+  throw std::invalid_argument(std::move(message));
+}
+
+// Sentinel stored in unit_cell_ for units the grid does not track.
+constexpr std::int32_t kUntracked = -1;
+
+// Maps a pre-divided coordinate to a cell index in [0, extent - 1].
+// Negative, NaN and overlarge values clamp to the border cells (see the
+// exactness note in the header: clamping keeps the ring-pruning bound valid).
+std::size_t clamp_to_index(double value, std::size_t extent) noexcept {
+  if (extent == 0) {
+    return 0;
+  }
+  const double index = std::floor(value);
+  if (!(index > 0.0)) {
+    return 0;  // negative, zero or NaN
+  }
+  const double capped = std::min(index, static_cast<double>(extent - 1));
+  return static_cast<std::size_t>(capped);
+}
+
+}  // namespace
+
+void SpatialHashGrid::configure(double width, double height, double cell_size,
+                                std::size_t reserve_per_cell) {
+  if (!(cell_size > 0.0) || !std::isfinite(cell_size)) {
+    fail("grid cell size must be a finite number > 0");
+  }
+  if (!(width > 0.0) || !(height > 0.0) || !std::isfinite(width) ||
+      !std::isfinite(height)) {
+    fail("grid extents must be finite numbers > 0");
+  }
+  const double cols_d = std::ceil(width / cell_size);
+  const double rows_d = std::ceil(height / cell_size);
+  if (!std::isfinite(cols_d) || !std::isfinite(rows_d) || cols_d < 1.0 ||
+      rows_d < 1.0 || cols_d * rows_d > static_cast<double>(kMaxGridCells)) {
+    fail("grid cell size " + std::to_string(cell_size) +
+         " needs too many cells for a " + std::to_string(width) + " x " +
+         std::to_string(height) + " battlefield (limit " +
+         std::to_string(kMaxGridCells) + " cells)");
+  }
+
+  width_ = width;
+  height_ = height;
+  cell_size_ = cell_size;
+  cols_ = static_cast<std::size_t>(cols_d);
+  rows_ = static_cast<std::size_t>(rows_d);
+  cells_.assign(cols_ * rows_, Cell{});
+  for (Cell& cell : cells_) {
+    for (std::vector<std::uint32_t>& bucket : cell.by_faction) {
+      bucket.reserve(reserve_per_cell);
+    }
+  }
+  // Occupancy bitmaps: row-major (one row of cols_ bits per row) and
+  // column-major (one column of rows_ bits per column), per faction.
+  row_words_ = (cols_ + 63) / 64;
+  col_words_ = (rows_ + 63) / 64;
+  for (auto& per_faction : occupancy_) {
+    per_faction[0].assign(row_words_ * rows_, 0);
+    per_faction[1].assign(col_words_ * cols_, 0);
+  }
+  unit_cell_.clear();
+  tracked_count_ = 0;
+}
+
+// Cell bucket index for a position: cell (col, row) -> col * rows + row.
+std::size_t SpatialHashGrid::cell_of(double x, double y) const noexcept {
+  return clamp_to_index(x / cell_size_, cols_) * rows_ +
+         clamp_to_index(y / cell_size_, rows_);
+}
+
+void SpatialHashGrid::set_cell_occupancy(std::size_t cell, Faction faction,
+                                         bool set) {
+  const std::size_t x = cell / rows_;
+  const std::size_t y = cell % rows_;
+  const std::size_t f = static_cast<std::size_t>(faction);
+  const std::uint64_t bit = 1ULL << (x % 64);
+  if (set) {
+    occupancy_[f][0][y * row_words_ + x / 64] |= bit;
+  } else {
+    occupancy_[f][0][y * row_words_ + x / 64] &= ~bit;
+  }
+  const std::uint64_t col_bit = 1ULL << (y % 64);
+  if (set) {
+    occupancy_[f][1][x * col_words_ + y / 64] |= col_bit;
+  } else {
+    occupancy_[f][1][x * col_words_ + y / 64] &= ~col_bit;
+  }
+}
+
+bool SpatialHashGrid::cell_has_units(Faction faction, std::int64_t x,
+                                     std::int64_t y) const noexcept {
+  if (x < 0 || y < 0 || x >= static_cast<std::int64_t>(cols_) ||
+      y >= static_cast<std::int64_t>(rows_)) {
+    return false;
+  }
+  const std::size_t f = static_cast<std::size_t>(faction);
+  const std::size_t ux = static_cast<std::size_t>(x);
+  const std::size_t uy = static_cast<std::size_t>(y);
+  return (occupancy_[f][0][uy * row_words_ + ux / 64] >> (ux % 64)) & 1ULL;
+}
+
+// True when any cell along a row (column = false: `fixed` is the row, the
+// range runs over columns) or column (column = true: `fixed` is the column,
+// the range runs over rows) in the inclusive range holds units of the
+// faction. Whole 64-cell words are tested at once, so long empty stretches
+// cost a couple of loads.
+bool SpatialHashGrid::segment_has_units(Faction faction, bool column,
+                                        std::int64_t along_from,
+                                        std::int64_t along_to,
+                                        std::int64_t fixed) const noexcept {
+  const std::int64_t fixed_extent =
+      static_cast<std::int64_t>(column ? cols_ : rows_);
+  const std::int64_t along_extent =
+      static_cast<std::int64_t>(column ? rows_ : cols_);
+  if (fixed < 0 || fixed >= fixed_extent) {
+    return false;
+  }
+  along_from = std::max<std::int64_t>(along_from, 0);
+  along_to = std::min<std::int64_t>(along_to, along_extent - 1);
+  if (along_from > along_to) {
+    return false;
+  }
+  const std::size_t words = column ? col_words_ : row_words_;
+  const std::size_t f = static_cast<std::size_t>(faction);
+  const std::uint64_t* bits = occupancy_[f][column ? 1 : 0].data() +
+                              static_cast<std::size_t>(fixed) * words;
+  for (std::int64_t word = along_from / 64; word <= along_to / 64; ++word) {
+    std::uint64_t value = bits[word];
+    const std::int64_t word_start = word * 64;
+    if (along_from > word_start) {
+      value &= ~((1ULL << (along_from - word_start)) - 1ULL);
+    }
+    const std::int64_t word_last = word_start + 63;
+    if (along_to < word_last) {
+      value &= (1ULL << (along_to - word_start + 1)) - 1ULL;
+    }
+    if (value != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void SpatialHashGrid::insert_into_cell(std::uint32_t index, std::size_t cell,
+                                       Faction faction) {
+  if (cells_.empty()) {
+    fail("spatial hash grid is not configured");
+  }
+  std::vector<std::uint32_t>& bucket =
+      cells_[cell].by_faction[static_cast<std::size_t>(faction)];
+  if (bucket.empty()) {
+    set_cell_occupancy(cell, faction, true);
+  }
+  bucket.push_back(index);
+  if (index >= unit_cell_.size()) {
+    unit_cell_.resize(static_cast<std::size_t>(index) + 1, kUntracked);
+  }
+  unit_cell_[index] = static_cast<std::int32_t>(cell);
+  ++tracked_count_;
+}
+
+void SpatialHashGrid::build(const std::vector<Unit>& units) {
+  if (cells_.empty()) {
+    fail("spatial hash grid is not configured");
+  }
+  for (Cell& cell : cells_) {
+    for (std::vector<std::uint32_t>& bucket : cell.by_faction) {
+      bucket.clear();  // keeps capacity
+    }
+  }
+  occupancy_[0][0].assign(row_words_ * rows_, 0);
+  occupancy_[0][1].assign(col_words_ * cols_, 0);
+  occupancy_[1][0].assign(row_words_ * rows_, 0);
+  occupancy_[1][1].assign(col_words_ * cols_, 0);
+  unit_cell_.assign(units.size(), kUntracked);
+  tracked_count_ = 0;
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    if (units[i].alive) {
+      insert_into_cell(static_cast<std::uint32_t>(i),
+                       cell_of(units[i].x, units[i].y), units[i].faction);
+    }
+  }
+}
+
+void SpatialHashGrid::insert(const std::vector<Unit>& units,
+                             std::uint32_t index) {
+  if (index >= units.size()) {
+    return;
+  }
+  if (index < unit_cell_.size() && unit_cell_[index] != kUntracked) {
+    return;  // already tracked
+  }
+  const Unit& unit = units[index];
+  insert_into_cell(index, cell_of(unit.x, unit.y), unit.faction);
+}
+
+void SpatialHashGrid::remove(const std::vector<Unit>& units,
+                             std::uint32_t index) {
+  if (index >= units.size() || index >= unit_cell_.size()) {
+    return;
+  }
+  const std::int32_t cell = unit_cell_[index];
+  if (cell == kUntracked) {
+    return;
+  }
+  std::vector<std::uint32_t>& bucket =
+      cells_[static_cast<std::size_t>(cell)].by_faction[static_cast<std::size_t>(
+          units[index].faction)];
+  const auto it = std::find(bucket.begin(), bucket.end(), index);
+  if (it != bucket.end()) {
+    // Swap-remove: O(1). Bucket order changes, but query results do not
+    // depend on it (see the class comment).
+    *it = bucket.back();
+    bucket.pop_back();
+    if (bucket.empty()) {
+      set_cell_occupancy(static_cast<std::size_t>(cell), units[index].faction,
+                         false);
+    }
+  }
+  unit_cell_[index] = kUntracked;
+  --tracked_count_;
+}
+
+void SpatialHashGrid::update(const std::vector<Unit>& units,
+                             std::uint32_t index) {
+  if (index >= units.size() || !units[index].alive) {
+    return;  // dead units are never tracked
+  }
+  if (index >= unit_cell_.size() || unit_cell_[index] == kUntracked) {
+    const Unit& unit = units[index];
+    insert_into_cell(index, cell_of(unit.x, unit.y), unit.faction);
+    return;
+  }
+  const std::size_t cell = cell_of(units[index].x, units[index].y);
+  if (static_cast<std::size_t>(unit_cell_[index]) == cell) {
+    return;  // same cell: nothing to do
+  }
+  remove(units, index);
+  insert_into_cell(index, cell, units[index].faction);
+}
+
+bool SpatialHashGrid::scan_cell(const std::vector<Unit>& units,
+                                std::size_t cell, Faction enemy, double qx,
+                                double qy, int& best, double& best_d2) const {
+  bool improved = false;
+  for (std::uint32_t candidate :
+       cells_[cell].by_faction[static_cast<std::size_t>(enemy)]) {
+    const Unit& other = units[candidate];
+    if (!other.alive) {
+      continue;  // defense in depth: see the class comment
+    }
+    const double dx = other.x - qx;
+    const double dy = other.y - qy;
+    const double d2 = dx * dx + dy * dy;
+    // Exactly the brute-force rule: strictly closer wins; exact ties go to
+    // the lower unit id, independent of scan order.
+    if (best < 0 || d2 < best_d2 ||
+        (d2 == best_d2 &&
+         other.id < units[static_cast<std::size_t>(best)].id)) {
+      best = static_cast<int>(candidate);
+      best_d2 = d2;
+      improved = true;
+    }
+  }
+  return improved;
+}
+
+int SpatialHashGrid::nearest_enemy(const std::vector<Unit>& units,
+                                   const Unit& unit) const {
+  if (cells_.empty() || tracked_count_ == 0) {
+    return -1;
+  }
+  const Faction enemy =
+      unit.faction == Faction::Red ? Faction::Blue : Faction::Red;
+  const std::size_t cx = clamp_to_index(unit.x / cell_size_, cols_);
+  const std::size_t cy = clamp_to_index(unit.y / cell_size_, rows_);
+
+  int best = -1;
+  double best_d2 = 0.0;
+
+  // Ring 0: the unit's own cell.
+  scan_cell(units, cx * rows_ + cy, enemy, unit.x, unit.y, best, best_d2);
+
+  // Rings 1, 2, ... — each ring is the border of the (2r+1)^2 block around
+  // the query cell: the top and bottom rows (corners included) plus the left
+  // and right columns (corners excluded), all clamped to the grid. A ring is
+  // skipped only when every point in it is strictly farther than the best
+  // candidate so far, so an equal-distance, lower-id candidate in a skipped
+  // ring cannot exist.
+  const std::size_t max_ring =
+      std::max({cx, cy, cols_ - 1 - cx, rows_ - 1 - cy});
+  for (std::size_t r = 1; r <= max_ring; ++r) {
+    const double min_gap = static_cast<double>(r - 1) * cell_size_;
+    if (best >= 0 && min_gap * min_gap > best_d2) {
+      break;  // every remaining candidate is strictly worse
+    }
+    const std::int64_t x_lo = static_cast<std::int64_t>(cx) - static_cast<std::int64_t>(r);
+    const std::int64_t x_hi = static_cast<std::int64_t>(cx) + static_cast<std::int64_t>(r);
+    const std::int64_t y_lo = static_cast<std::int64_t>(cy) - static_cast<std::int64_t>(r);
+    const std::int64_t y_hi = static_cast<std::int64_t>(cy) + static_cast<std::int64_t>(r);
+    // Top and bottom rows, corners included. The occupancy bitmap skips
+    // whole empty row segments with a few word loads.
+    for (std::int64_t y : {y_lo, y_hi}) {
+      if (!segment_has_units(enemy, /*column=*/false, x_lo, x_hi, y)) {
+        continue;
+      }
+      const std::int64_t x_from = std::max<std::int64_t>(x_lo, 0);
+      const std::int64_t x_to =
+          std::min<std::int64_t>(x_hi, static_cast<std::int64_t>(cols_) - 1);
+      for (std::int64_t x = x_from; x <= x_to; ++x) {
+        if (cell_has_units(enemy, x, y)) {
+          scan_cell(units, static_cast<std::size_t>(x) * rows_ +
+                               static_cast<std::size_t>(y),
+                    enemy, unit.x, unit.y, best, best_d2);
+        }
+      }
+    }
+    // Left and right columns, corners excluded (column-major words).
+    for (std::int64_t x : {x_lo, x_hi}) {
+      if (!segment_has_units(enemy, /*column=*/true, y_lo + 1, y_hi - 1, x)) {
+        continue;
+      }
+      const std::int64_t y_from = std::max<std::int64_t>(y_lo + 1, 0);
+      const std::int64_t y_to =
+          std::min<std::int64_t>(y_hi - 1, static_cast<std::int64_t>(rows_) - 1);
+      for (std::int64_t y = y_from; y <= y_to; ++y) {
+        if (cell_has_units(enemy, x, y)) {
+          scan_cell(units, static_cast<std::size_t>(x) * rows_ +
+                               static_cast<std::size_t>(y),
+                    enemy, unit.x, unit.y, best, best_d2);
+        }
+      }
+    }
+  }
+  return best;
+}
+
+void SpatialHashGrid::radius_query(const std::vector<Unit>& units, double x,
+                                   double y, double radius,
+                                   std::vector<std::uint32_t>& out) const {
+  out.clear();
+  if (cells_.empty() || !(radius >= 0.0)) {
+    return;
+  }
+  // Cells overlapping the circle's bounding box (clamped); every candidate
+  // is then checked against the exact inclusive radius.
+  const std::int64_t cx =
+      static_cast<std::int64_t>(clamp_to_index(x / cell_size_, cols_));
+  const std::int64_t cy =
+      static_cast<std::int64_t>(clamp_to_index(y / cell_size_, rows_));
+  const std::int64_t span =
+      static_cast<std::int64_t>(std::ceil(radius / cell_size_));
+  const std::int64_t x_from = std::max<std::int64_t>(cx - span, 0);
+  const std::int64_t x_to =
+      std::min<std::int64_t>(cx + span, static_cast<std::int64_t>(cols_) - 1);
+  const std::int64_t y_from = std::max<std::int64_t>(cy - span, 0);
+  const std::int64_t y_to =
+      std::min<std::int64_t>(cy + span, static_cast<std::int64_t>(rows_) - 1);
+  const double radius_sq = radius * radius;
+  for (std::int64_t cell_x = x_from; cell_x <= x_to; ++cell_x) {
+    for (std::int64_t cell_y = y_from; cell_y <= y_to; ++cell_y) {
+      const Cell& cell =
+          cells_[static_cast<std::size_t>(cell_x) * rows_ +
+                static_cast<std::size_t>(cell_y)];
+      for (const std::vector<std::uint32_t>& bucket : cell.by_faction) {
+        for (std::uint32_t candidate : bucket) {
+          const Unit& other = units[candidate];
+          if (!other.alive) {
+            continue;  // defense in depth: see the class comment
+          }
+          const double dx = other.x - x;
+          const double dy = other.y - y;
+          if (dx * dx + dy * dy <= radius_sq) {
+            out.push_back(candidate);
+          }
+        }
+      }
+    }
+  }
+}
+
+}  // namespace sim

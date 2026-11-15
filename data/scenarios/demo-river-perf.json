@@ -1,0 +1,35 @@
+{
+  "battlefield": {
+    "width": 1000.0,
+    "height": 1000.0
+  },
+  "spawn_band_fraction": 0.15,
+  "map": {
+    "file": "demo-river.png",
+    "cell_size": 5.0
+  },
+  "armies": {
+    "red": {
+      "commander": 100,
+      "infantry": 1600,
+      "archer": 400,
+      "cavalry": 400
+    },
+    "blue": {
+      "commander": 100,
+      "infantry": 1600,
+      "archer": 400,
+      "cavalry": 400
+    }
+  },
+  "squads": {
+    "red": {
+      "count": 100,
+      "size": 24
+    },
+    "blue": {
+      "count": 100,
+      "size": 24
+    }
+  }
+}

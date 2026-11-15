@@ -1,0 +1,68 @@
+{
+  "types": [
+    {
+      "id": "grassland",
+      "color": "#6FA35C",
+      "move_cost": 1.0,
+      "passable": true,
+      "sight_modifier": 1.0,
+      "defense_modifier": 1.0
+    },
+    {
+      "id": "forest",
+      "color": "#3E6B3A",
+      "move_cost": 0.6,
+      "passable": true,
+      "sight_modifier": 0.65,
+      "defense_modifier": 0.85
+    },
+    {
+      "id": "hills",
+      "color": "#A08A5A",
+      "move_cost": 0.5,
+      "passable": true,
+      "sight_modifier": 1.15,
+      "defense_modifier": 0.75
+    },
+    {
+      "id": "water",
+      "color": "#3D6E9E",
+      "move_cost": 0.0,
+      "passable": false,
+      "sight_modifier": 1.0,
+      "defense_modifier": 1.0
+    },
+    {
+      "id": "road",
+      "color": "#B8A77E",
+      "move_cost": 1.3,
+      "passable": true,
+      "sight_modifier": 1.0,
+      "defense_modifier": 1.05
+    },
+    {
+      "id": "mountain",
+      "color": "#7A7A82",
+      "move_cost": 0.15,
+      "passable": true,
+      "sight_modifier": 1.25,
+      "defense_modifier": 0.7
+    },
+    {
+      "id": "obstacle",
+      "color": "#44464E",
+      "move_cost": 0.0,
+      "passable": false,
+      "sight_modifier": 1.0,
+      "defense_modifier": 1.0
+    },
+    {
+      "id": "ford",
+      "color": "#5E8FB8",
+      "move_cost": 0.35,
+      "passable": true,
+      "sight_modifier": 1.0,
+      "defense_modifier": 1.1
+    }
+  ]
+}

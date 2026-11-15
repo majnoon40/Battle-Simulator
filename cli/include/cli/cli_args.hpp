@@ -1,0 +1,103 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <ostream>
+#include <string>
+
+namespace cli {
+
+struct Arguments {
+  bool help = false;
+  std::uint64_t seed = 42;
+  std::uint32_t units = 500;  // total across both factions; Red gets the odd extra unit
+  bool units_explicit = false;  // --units was passed: infantry-only split (M1 mode)
+  std::uint64_t ticks = 3000;
+  std::string config_path;    // unit type table; empty -> data/units.json
+  std::string scenario_path;  // battle scenario; empty -> data/scenarios/default.json
+  bool grid_mode = true;      // --neighbor-mode grid (default) vs brute
+  bool neighbor_mode_explicit = false;
+  double grid_cell_size = 16.0;  // --grid-cell; positive
+  bool grid_cell_explicit = false;
+  bool utility_ai = true;     // --ai-mode utility (default) vs legacy
+  bool ai_mode_explicit = false;
+  std::string personalities_path;  // empty -> data/personalities.json
+  bool morale_on = true;      // --morale on (default) vs off; utility mode only
+  bool morale_explicit = false;
+  std::string morale_config_path;   // empty -> data/morale.json
+  bool squads_on = true;       // --squads on (default) vs off; utility mode only
+  bool squads_explicit = false;
+  std::string formations_path;  // empty -> data/formations.json
+  std::string commanders_path;  // empty -> data/commanders.json
+  // M10 tactical depth: --variance on (default) enables combat variance,
+  // decision intervals, memory and Search/Help/Flank; off reproduces
+  // M1-M9 byte-for-byte. --swap-sides swaps spawn bands, objectives and
+  // compositions. --tactics overrides the tactics config path.
+  bool variance_on = true;
+  bool variance_explicit = false;
+  bool contact_seek_on = true;  // --contact-seek on (default) vs off
+  bool swap_sides = false;
+  std::string tactics_path;  // empty -> data/tactics.json
+  // M10: --tactic-scan <action> runs the battle tick by tick and arms the
+  // AI debug capture on the first unit that chooses that action (search,
+  // help or flank), then prints its decision block.
+  std::string tactic_scan;  // empty = off
+  std::uint32_t ai_debug_unit = 0;  // --ai-debug <unit id>; 0 = off
+  std::uint64_t ai_debug_tick = 0;  // --ai-debug-tick <n>; 0 = first enemy seen
+  bool ai_debug_tick_explicit = false;
+  std::int64_t squad_debug_id = -1;  // --squad-debug <squad id>; -1 = off
+  // Mod overlay (M8): --mod <dir> replaces whole data files of the same
+  // name (units/terrain/personalities/morale/formations/commanders, plus
+  // scenarios/ and maps/ subdirectories). No partial merging; an invalid
+  // mod is rejected wholesale with readable errors.
+  std::string mod_dir;  // empty = no mod
+  // Headless rendering (M7): --render-frame <tick> --out <file.png> writes
+  // one PNG (camera fit to the world, 1280x720, the same DrawList code the
+  // window uses); --render-frames a,b,c --out-prefix <dir/name> writes one
+  // <prefix>-<tick:6>.png per tick; --ascii <tick> prints a compact
+  // terminal map. In render/ascii modes the simulation stops right after
+  // the last target tick.
+  std::uint64_t render_frame = 0;  // 0 = off
+  std::string render_frames;       // empty = off; comma-separated ticks
+  std::string render_out;          // --out (single frame)
+  std::string render_out_prefix;   // --out-prefix (frame list)
+  std::uint64_t ascii_tick = 0;    // 0 = off
+  bool export_json = false;
+  std::string export_path;
+  // M10 Part 2a: --events out.jsonl (battle event log), --export-csv
+  // out.csv (timeline every csv_interval ticks, default 10), --report
+  // out.md (markdown + .json twin), --report-png out.png (casualty and
+  // morale curves via the software rasterizer).
+  bool events_on = false;
+  std::string events_path;
+  bool export_csv = false;
+  std::string csv_path;
+  std::uint32_t csv_interval = 10;
+  bool report_on = false;
+  std::string report_path;
+  bool report_png_on = false;
+  std::string report_png_path;
+  // M10 Part 2b: replay recording and verification.
+  bool record_on = false;
+  std::string record_path;
+  bool replay_on = false;
+  std::string replay_path;
+  bool replay_verify = false;  // --replay PATH --verify
+  std::uint64_t replay_seek = 0;  // --seek T: re-run to tick T (0 = off)
+  std::vector<std::string> interventions;  // --intervene kill:UNIT:TICK
+};
+
+struct ParseOutcome {
+  bool ok = false;
+  std::string error;  // human-readable message when ok is false
+  Arguments args;
+};
+
+// Parses argv. On failure, `error` holds a descriptive message. `--help`
+// short-circuits and succeeds with args.help = true.
+[[nodiscard]] ParseOutcome parse_args(int argc, char** argv);
+
+void print_usage(std::ostream& out);
+
+}  // namespace cli
