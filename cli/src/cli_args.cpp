@@ -525,6 +525,33 @@ ParseOutcome parse_args(int argc, char** argv) {
       }
       continue;
     }
+    if (flag == "--orders") {
+      const char* value = require_value("--orders");
+      if (value == nullptr) {
+        return outcome;
+      }
+      const std::string mode = value;
+      if (mode != "on" && mode != "off") {
+        outcome.ok = false;
+        outcome.error = "--orders expects 'on' or 'off', got '" + mode + "'";
+        return outcome;
+      }
+      args.orders_on = mode == "on";
+      continue;
+    }
+    if (flag == "--script") {
+      const char* value = require_value("--script");
+      if (value == nullptr) {
+        return outcome;
+      }
+      if (std::string(value).empty()) {
+        outcome.ok = false;
+        outcome.error = "--script requires a non-empty file path";
+        return outcome;
+      }
+      args.script_path = value;
+      continue;
+    }
     if (flag == "--swap-sides") {
       args.swap_sides = true;
       continue;
@@ -893,6 +920,16 @@ void print_usage(std::ostream& out) {
       << "                         their slot and fixes the --swap-sides\n"
       << "                         explicit-objective swap; v1 is the\n"
       << "                         exact M10 navigation (byte-identical)\n"
+      << "  --orders <on|off>       Player orders (m11b): on (default)\n"
+      << "                         enables issue_order; off makes every\n"
+      << "                         order inert (and rejects --script)\n"
+      << "  --script <file>         Timed player orders from a JSON\n"
+      << "                         array (m11b): {tick, faction,\n"
+      << "                         squads|[\"all\"], order: moveto|\n"
+      << "                         attackmove|hold|retreat|regroup|\n"
+      << "                         formation, x, y, formation}; recorded\n"
+      << "                         into --record replays, re-applied by\n"
+      << "                         --replay\n"
       << "\n"
       << "Without --units or --scenario, the default scenario runs (with the\n"
       << "shipped data files: 250 infantry per faction). The battle ends when\n"

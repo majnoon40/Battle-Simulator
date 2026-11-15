@@ -12,7 +12,7 @@ runs fully headless.
 The project was developed milestone-by-milestone (M1–M10); each milestone
 has a design report under `docs/`.
 
-## Features (through milestone M11a)
+## Features (through milestone M11b)
 
 - **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
   of randomness; the same seed reproduces the same battle byte-for-byte,
@@ -49,9 +49,16 @@ has a design report under `docs/`.
   markdown + JSON battle reports with turning points and the first-contact
   tick, and report charts rendered with the built-in software rasterizer
   (M10.2a, M11a).
-- **Replay** — record a battle to a file (setup, interventions, state
-  hashes every 25 ticks) and verify a re-run against it; `--seek` re-runs
-  to any tick (M10.2b).
+- **Player orders** — `--script orders.json` issues timed army-level
+  commands (MoveTo / AttackMove / Hold / Retreat / Regroup /
+  ChangeFormation) through the commander system: courier delay from the
+  faction HQ, succession and leaderless surcharges, obedience from
+  morale, discipline and cohesion, bounded score terms — never
+  overrides; recorded into replays and re-applied by `--replay
+  --verify` (M11b, see [docs/squads.md](docs/squads.md)).
+- **Replay** — record a battle to a file (setup, interventions, orders,
+  state hashes every 25 ticks) and verify a re-run against it; `--seek`
+  re-runs to any tick (M10.2b, M11b).
 - **Headless rendering** — the same drawing pipeline feeds a PNG renderer
   and an ASCII map; the optional raylib window (`BUILD_GAME=ON`) reuses it
   (M7).
@@ -68,7 +75,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 This builds the `sim` library, the `battle_cli` headless tool and the
-`battle_tests` suite (322 tests). No windowing or OpenGL libraries are
+`battle_tests` suite (336 tests). No windowing or OpenGL libraries are
 required. Floating-point determinism flags (`-fno-fast-math
 -ffp-contract=off`) are applied automatically for GCC/Clang; use the same
 Release configuration for any determinism comparison.

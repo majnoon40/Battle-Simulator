@@ -185,6 +185,48 @@ class Simulation {
   // Returns false when the id is unknown or already dead.
   [[nodiscard]] bool intervene_kill(std::uint32_t unit_id);
 
+  // Player orders (m11b). Issues one order to each listed squad of
+  // `faction` (a wrong-faction or unknown squad id rejects the whole
+  // call; nothing is half-applied). The order travels through the
+  // commander system: delivery lands at
+  //   issue_tick + ceil(order_delay_per_unit *
+  //                     distance(faction HQ, acting commander or
+  //                              squad centroid when leaderless))
+  // plus succession_delay_ticks when command has been lost (the order
+  // goes through the successor) or player_orders.leaderless_delay_ticks
+  // when no member is eligible to lead (then delivered at reduced
+  // obedience). The HQ is the faction's spawn band center, fixed at
+  // battle start. Obedience is the M6 weight (discipline, distance to
+  // the commander inside the leadership radius, morale state, squad
+  // cohesion) computed at delivery; routed units never obey (their
+  // action is the forced Flee). Orders are bounded score terms — they
+  // nudge action scores, never override availability. Per faction per
+  // tick at most commanders.player_orders.max_per_tick calls succeed;
+  // excess calls are rejected and counted. Inert when config
+  // orders_enabled is false (all calls rejected). With no order ever
+  // issued, battles are byte-identical with the machinery on or off.
+  // MoveTo/AttackMove/Retreat snap the point to the nearest passable
+  // cell at issue time (a point that cannot be snapped rejects the
+  // call); ChangeFormation takes a formation id from formations.json.
+  [[nodiscard]] bool issue_order(
+      Faction faction, const std::vector<std::uint32_t>& squad_ids,
+      PlayerOrderType type, double x = 0.0, double y = 0.0,
+      const std::string& formation = "");
+
+  // Per-faction player-order counters for the report/export (m11b).
+  struct PlayerOrderReport {
+    std::uint64_t issued = 0;
+    std::uint64_t delivered = 0;    // applied to a living squad
+    std::uint64_t rejected = 0;     // invalid / rate-limited / disabled
+    std::uint64_t dropped = 0;      // squad collapsed before delivery
+    std::uint64_t delay_ticks_sum = 0;   // over delivered orders
+    double obedience_sum = 0.0;          // over delivered orders
+  };
+  [[nodiscard]] const PlayerOrderReport& player_order_report(
+      Faction faction) const noexcept {
+    return player_order_reports_[static_cast<std::size_t>(faction)];
+  }
+
   // Canonical, byte-stable state hash (M10 Part 2b): 32 hex chars of
   // FNV-1a 128 over every piece of state that can influence the battle's
   // future. A recorded run and a re-run diverge iff the hashes diverge.
@@ -471,6 +513,32 @@ class Simulation {
   std::array<double, kFactionCount> lateral_y_{};
   std::vector<std::uint32_t> separation_buffer_{};  // reused steering query
   std::vector<std::uint32_t> squad_perceive_buffer_{};  // commander order query
+  // Player orders (m11b): the in-flight orders (ascending deliver_tick,
+  // then issue order), the per-squad flow fields of point orders
+  // (MoveTo / AttackMove / Retreat to a point; computed once at
+  // delivery, cached until the order ends), the per-faction HQ (spawn
+  // band center) the courier distance is measured from, this tick's
+  // issue count for the rate limit, and the report counters.
+  std::vector<PlayerOrder> pending_orders_{};
+  std::vector<FlowField> squad_flow_{};
+  std::vector<std::uint64_t> squad_flow_target_{};  // packed cell, max = none
+  std::array<double, kFactionCount> hq_x_{};
+  std::array<double, kFactionCount> hq_y_{};
+  std::array<std::uint32_t, kFactionCount> orders_issued_this_tick_{};
+  std::array<PlayerOrderReport, kFactionCount> player_order_reports_{};
+  // m11b: deliver due orders (called from update_squads after succession,
+  // before the commander AI re-evaluates), and the delivery itself.
+  void process_pending_orders(std::uint64_t tick_number);
+  void apply_player_order(Squad& squad, const PlayerOrder& order,
+                          std::uint64_t tick_number);
+  // Ends a squad's player order (command loss, collapse, replacement);
+  // clears the point state and the squad flow field.
+  void clear_player_order(Squad& squad);
+  // The flow-field step for one unit: the squad's own field while a
+  // point order is active on its squad, else the faction field.
+  [[nodiscard]] bool order_flow_step(std::size_t unit_index,
+                                     std::size_t faction, double x, double y,
+                                     double& dx, double& dy) const noexcept;
   // Tactical depth (M10).
   bool tactics_active_ = false;
   const TacticsConfig* effective_tactics_ = nullptr;

@@ -4,6 +4,7 @@
 // two independent FNV-1a 64 seeds (a 128-bit digest in practice).
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 
 #include "sim/simulation.hpp"
@@ -233,6 +234,40 @@ std::string Simulation::state_hash() const {
       boolean(bytes, member.in_formation);
     }
     u8(bytes, at_or(squad_engaged_, index));
+    // m11b player-order state.
+    boolean(bytes, squad.player_order_active);
+    u8(bytes, static_cast<std::uint8_t>(squad.player_order_type));
+    boolean(bytes, squad.player_order_point);
+    f64(bytes, squad.player_order_x);
+    f64(bytes, squad.player_order_y);
+    u64(bytes, at_or(squad_flow_target_, index,
+                     std::numeric_limits<std::uint64_t>::max()));
+  }
+
+  // m11b: in-flight player orders (order matters — delivery order is
+  // queue order) and the report counters.
+  u32(bytes, static_cast<std::uint32_t>(pending_orders_.size()));
+  for (const PlayerOrder& order : pending_orders_) {
+    u64(bytes, order.issue_tick);
+    u64(bytes, order.deliver_tick);
+    u8(bytes, static_cast<std::uint8_t>(order.faction));
+    u32(bytes, order.squad_id);
+    u8(bytes, static_cast<std::uint8_t>(order.type));
+    f64(bytes, order.x);
+    f64(bytes, order.y);
+    boolean(bytes, order.has_point);
+    boolean(bytes, order.formation_set);
+    u8(bytes, static_cast<std::uint8_t>(order.formation));
+    f64(bytes, order.formation_spacing);
+  }
+  for (std::size_t f = 0; f < 2; ++f) {
+    const Simulation::PlayerOrderReport& report = player_order_reports_[f];
+    u64(bytes, report.issued);
+    u64(bytes, report.delivered);
+    u64(bytes, report.rejected);
+    u64(bytes, report.dropped);
+    u64(bytes, report.delay_ticks_sum);
+    f64(bytes, report.obedience_sum);
   }
 
   // FNV-1a 128: two independent 64-bit lanes over the same bytes.

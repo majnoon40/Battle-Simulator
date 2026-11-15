@@ -406,6 +406,37 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
         << ".\n";
   }
 
+  // Player orders (m11b): printed only when at least one was issued.
+  {
+    const sim::Simulation::PlayerOrderReport& red =
+        simulation.player_order_report(sim::Faction::Red);
+    const sim::Simulation::PlayerOrderReport& blue =
+        simulation.player_order_report(sim::Faction::Blue);
+    if (red.issued > 0 || blue.issued > 0) {
+      out << "\n## Player orders\n\n";
+      for (const auto& [faction, report] :
+           std::array<std::pair<const char*,
+                                const sim::Simulation::PlayerOrderReport*>,
+                      2>{{{"Red", &red}, {"Blue", &blue}}}) {
+        if (report->issued == 0) {
+          continue;
+        }
+        out << "- " << faction << ": " << report->issued << " issued, "
+            << report->delivered << " delivered, " << report->rejected
+            << " rejected, " << report->dropped << " dropped";
+        if (report->delivered > 0) {
+          out << "; mean delivery delay "
+              << static_cast<double>(report->delay_ticks_sum) /
+                     static_cast<double>(report->delivered)
+              << " ticks, mean obedience "
+              << report->obedience_sum /
+                     static_cast<double>(report->delivered);
+        }
+        out << ".\n";
+      }
+    }
+  }
+
   // Turning points.
   out << "\n## Turning points\n\n";
   if (m.has_kill_ratio) {
@@ -491,6 +522,25 @@ std::string generate_report_json(const sim::Simulation& simulation,
       out << ", \"morale_first\": " << num(m.morale_first[f])
           << ", \"morale_min\": " << num(m.morale_min[f])
           << ", \"morale_last\": " << num(m.morale_last[f]);
+    }
+    // m11b: player-order statistics, only when that faction issued.
+    const sim::Simulation::PlayerOrderReport& player =
+        simulation.player_order_report(static_cast<sim::Faction>(f));
+    if (player.issued > 0) {
+      out << ", \"player_orders\": {\"issued\": " << player.issued
+          << ", \"delivered\": " << player.delivered
+          << ", \"rejected\": " << player.rejected
+          << ", \"dropped\": " << player.dropped
+          << ", \"mean_delivery_delay_ticks\": "
+          << num(player.delivered > 0
+                     ? static_cast<double>(player.delay_ticks_sum) /
+                           static_cast<double>(player.delivered)
+                     : 0.0)
+          << ", \"mean_obedience\": "
+          << num(player.delivered > 0
+                     ? player.obedience_sum / static_cast<double>(player.delivered)
+                     : 0.0)
+          << "}";
     }
     out << "}" << (f == 0 ? ",\n" : "\n");
   }
