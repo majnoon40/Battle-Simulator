@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -179,7 +180,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (outcome.args.help) {
-    cli::print_usage(stdout);
+    cli::print_usage(std::cout);
     return 0;
   }
   const cli::Arguments& args = outcome.args;
