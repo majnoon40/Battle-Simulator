@@ -5,6 +5,24 @@ replay). `--variance off` (and every M10 flag default-off) reproduces
 every M1-M9 reference byte-for-byte — the pinned baselines in
 `tests/baselines/m8` still match, bit for bit.
 
+> **Correction (m11a, supersedes the swapped-orientation findings in
+> this document).** The "swapped-orientation stall" reported below was
+> not a terrain or orientation effect and its cause analysis was wrong.
+> M11a measured that the CLI's `--swap-sides` block swapped the explicit
+> objectives (and spawn patterns) twice — a no-op — so a swapped battle
+> parked each army on the objective inside its own spawn band; the
+> "valley jam" and "jammed against the river" probe positions were those
+> parking spots, not route jams. The M10 swapped-orientation numbers
+> (Lebanon 0/0/40, Alps 0/0/20, Nile 0/0/20 and everything derived from
+> them: side-averaged win shares over both orientations, "the
+> swapped-orientation total stall is universal", "which side wins normal
+> orientation depends on the map") are **invalid as orientation
+> measurements** — they measured that setup bug. The normal-orientation
+> numbers and everything else in this document stand. See
+> [docs/milestone-11.md](milestone-11.md) for the diagnosis, the fix
+> (`--nav v2`, default on) and valid orientation numbers; `--nav v1`
+> still reproduces this document's swapped behavior byte-for-byte.
+
 # Part 1 — Tactical depth and variety
 
 ## What was built
@@ -147,7 +165,9 @@ with the final code on idle CPU: 2,080 units 252 t/s, 5,000 units
 binary) Red 18.8% side-averaged, 5% of normal-orientation battles end
 pre-limit; after (contact seek) Red 21.2% side-averaged (not worse),
 80% pre-limit, mean end tick 2931 -> 1264. The swapped orientation
-stalls in both runs (a pre-M10 Lebanon deployment asymmetry). The Alps
+stalls in both runs (a pre-M10 Lebanon deployment asymmetry). [Invalid —
+see the correction at the top of this document: the swap was a no-op,
+not a deployment asymmetry; m11a.] The Alps
 and Nile before/after runs were cut off; re-run with
 `BATTLE_CLI=./build/battle_cli.p1 ./build/balance --scenario earth-<r>
 --seeds 40` and without the override for the final binary.
@@ -189,7 +209,10 @@ pattern/range validation, squad intel delay boundary). Full suite:
   each, zero approach/attack/search; probe seed 1: Red packed into the
   x 816-831 valley, Blue jammed against the x 250-290 river; BFS
   reachability is True from both spawn clusters) — a stuck-handling
-  bottleneck jam, not unreachable objectives. Alps shows the same
+  bottleneck jam, not unreachable objectives. [Invalid — see the
+  correction at the top of this document: the probe positions were the
+  armies parked on their own objectives (the no-op objective swap), not
+  bottleneck jams; m11a.] Alps shows the same
   swapped pattern (0/0/20 at tick 1500). M11 candidates: per-orientation
   band deployability validation, fords on every river segment crossing
   a march axis, no-progress detection.
@@ -202,7 +225,13 @@ pattern/range validation, squad intel delay boundary). Full suite:
   orientation total stall is thus universal across all three earth maps
   (Lebanon 0/0/40, Alps 0/0/20, Nile 0/0/20); which side wins normal
   orientation depends on the map (Lebanon/Alps favor the east band,
-  Nile the west).
+  Nile the west). [Invalid as orientation findings — see the correction
+  at the top of this document: every "swapped" number above measured the
+  no-op objective-swap bug (armies parked on their own objectives), so
+  the "universal stall" claim and the side-averaged shares built on it
+  say nothing about orientation; the per-map normal-orientation splits
+  stand as measurements of the M10 build. Valid orientation numbers:
+  docs/milestone-11.md, Part D. m11a.]
 - Events overhead re-measured on an idle machine (perf-5000, 300 ticks,
   alternating off/on): 12.47 vs 12.42 t/s = ~0.3% (within noise);
   517 KB of JSONL per 300 ticks.

@@ -92,12 +92,23 @@ def aggregate(rows: list[dict], ticks: int) -> dict:
                 if r["first_contact_tick"] > 0) /
             max(1, len([r for r in rows if r["first_contact_tick"] > 0])),
             1),
+        # fight duration after first contact: end tick minus the first
+        # sighting, per battle (median = the typical fight)
+        "fight_after_contact_median": None,
+        "fight_after_contact_mean": None,
         "units_stuck_over_100": stuck_units,
         "stuck_share_of_units": round(stuck_units / total_units, 5)
         if total_units else None,
         "longest_stuck_stretch": max(
             (r["longest_stuck_stretch"] for r in rows), default=0),
     }
+    fights = sorted(r["ticks"] - r["first_contact_tick"] for r in rows
+                    if r["first_contact_tick"] > 0)
+    if fights:
+        out["fight_after_contact_median"] = fights[len(fights) // 2]
+        out["fight_after_contact_mean"] = round(
+            sum(fights) / len(fights), 1)
+    return out
 
 
 def main() -> int:
@@ -107,6 +118,9 @@ def main() -> int:
     ap.add_argument("--ticks", type=int, default=1500)
     ap.add_argument("--jobs", type=int, default=3)
     ap.add_argument("--battle-cli", default="build/battle_cli")
+    ap.add_argument("--orientation", choices=("both", "normal", "swapped"),
+                    default="both",
+                    help="which orientations to run (default both)")
     ap.add_argument("--json")
     args = ap.parse_args()
     battle_cli = str(REPO / args.battle_cli)
@@ -115,6 +129,10 @@ def main() -> int:
     jobs = []
     for scenario in args.scenario:
         for swap in (False, True):
+            if args.orientation == "normal" and swap:
+                continue
+            if args.orientation == "swapped" and not swap:
+                continue
             for seed in range(1, args.seeds + 1):
                 jobs.append((scenario, swap, seed))
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -135,7 +153,9 @@ def main() -> int:
               f"draw {s['draws']:2} | pre-limit {s['pre_limit_share']:5.1%} "
               f"(target >= 60%) | contact<=1200 "
               f"{s['contact_by_target_share']:5.1%} (target >= 90%) | "
-              f"mean end {s['mean_end_tick']:6.1f} | stuck "
+              f"mean end {s['mean_end_tick']:6.1f} | fight after contact "
+              f"median {s['fight_after_contact_median']} "
+              f"mean {s['fight_after_contact_mean']} | stuck "
               f"{s['stuck_share_of_units']:6.2%} (target <= 1%) | "
               f"longest stuck {s['longest_stuck_stretch']}")
 

@@ -10,6 +10,22 @@ metadata, `-v2` map variants), and adds the acceptance harness.
 
 ## Part A — the diagnosis (measured, not guessed)
 
+**Correction of the M10 explanation.** M10 attributed the swapped-
+orientation stall to terrain — "a stuck-handling bottleneck jam" in a
+valley / against a river, with the fords "off both direct march axes".
+That explanation was wrong. The armies never tried to cross anything:
+the `--swap-sides` objective swap was a no-op, so each army walked to
+the objective inside its **own** spawn band and parked — the M10 probe's
+"Red packed into the x 816-831 valley, Blue jammed against the
+x 250-290 river" were the parking positions around each faction's own
+objective, not route jams — and the formation members that did press
+against terrain were beelining to projected slots, not following the
+flow field (which was valid and the bands fully reachable all along).
+The swapped-orientation and orientation-effect numbers in
+[docs/milestone-10.md](milestone-10.md) are marked invalid accordingly:
+they measured a setup bug, not an orientation effect. The valid M11a
+orientation numbers are in Part D below.
+
 Static analysis (tools/analysis/nav_diagnose.py, committed): every spawn
 band is fully reachable — zero unreached cells on all three maps in both
 orientations — so the M10 "BFS says reachable" observation was correct;
