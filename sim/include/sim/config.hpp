@@ -179,6 +179,11 @@ struct SimulationConfig {
   // (or --swap-sides on a scenario with explicit objectives); no-map
   // references are identical either way.
   bool nav_v2 = true;
+
+  // Player orders (m11b, --orders on|off; default on). issue_order is
+  // inert when false. With no orders issued the battle is byte-identical
+  // either way (the delivery machinery only runs when an order exists).
+  bool orders_enabled = true;
 };
 
 // Per-faction unit counts for a total: Red receives the extra unit when the

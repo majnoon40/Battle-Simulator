@@ -123,3 +123,68 @@ Assignment, metrics, order selection and propagation iterate fixed member
 order; the only random stream is the spawn RNG (unchanged by M6).
 Squads-on double runs are byte-identical (tested), and grid == brute
 stays a legacy-mode property (squads never touch targeting).
+
+## Player orders (m11b)
+
+`Simulation::issue_order(faction, squad_ids, type, x, y, formation)`
+lets a player command whole squads; the CLI applies timed orders from
+`--script orders.json` (a JSON array of `{tick, faction,
+squads | "all", order: moveto | attackmove | hold | retreat | regroup |
+formation, x, y, formation}` entries) and `--orders off` (default on)
+makes every order inert. With no order ever issued battles are
+byte-identical to the pre-m11b binary (tested), and the export gains
+its `player_orders` statistics (format 8) only when orders were issued.
+
+**Delivery through the commander system.** An order is queued at the
+faction HQ (the center of the faction's spawn band) and travels to the
+squad with the same courier speed member orders use:
+`delay = ceil(distance(HQ, acting commander) * order_delay_per_unit)`.
+The delay is fixed at issue time. When command has been lost the order
+goes through the successor (`+ succession_delay_ticks`); when no member
+is eligible to lead it is delivered after
+`player_orders.leaderless_delay_ticks` at reduced strength. On delivery
+the order takes the squad's order slot (the commander executes it — the
+commander AI does not re-evaluate while it is active) and propagates to
+members with the standard distance delay; a leaderless squad's members
+receive it directly. A delivered player order survives commander death
+(the successor inherits the faction's order); it ends on replacement or
+squad collapse. Per faction per tick at most
+`player_orders.max_per_tick` calls succeed (a call addresses many
+squads; `squads: "all"` is one call).
+
+**Order semantics.** MoveTo and AttackMove set a squad objective: the
+squad's members and commander march along a squad-specific flow field
+(the same Dijkstra as the faction field, computed once at delivery)
+instead of the faction field. MoveTo keeps marching past enemies (a
+small obedience-scaled Hold bias while enemies are visible);
+AttackMove leaves engagement scoring untouched. Hold and Regroup are
+the same-named commander orders. Retreat falls back toward the own
+side, or — with a point — fights a withdrawal to that point along the
+squad field. ChangeFormation swaps the formation shape at delivery.
+
+**Obedience.** The spec's factors are morale, discipline and cohesion;
+the distance is spent on the courier delay, so the member term is
+`discipline * morale_factor[state] * cohesion_term` (leaderless squads
+are scaled by `player_orders.leaderless_obedience`), NOT the M6
+distance-to-commander factor (measured with the distance factor in:
+mean obedience 0.16 — a delivered hold order moved 12% of the army).
+The score bonus is `order_weight * player_orders.weight_scale *
+(0.5 + 0.5 * obedience)`, clamped to [0, 1] per action: a bounded
+score term that never touches availability. At commander-order scale
+(1.0) an order cannot stop a healthy aggressive march (Advance ~0.9 vs
+Hold ~0.3 + 0.3 — measured, cosmetic); at the default 4.0 a delivered
+Hold measurably slows the march (in the measured fixture 29% of an
+aggressive army holds, cautious squads hold solidly, mean march speed
+drops) while the most aggressive, healthy units can still refuse.
+Routed units never obey: their action is the forced Flee, which the
+order terms cannot reach.
+
+**Determinism and replay.** Orders are interventions: `--record`
+writes them as `order <tick> <faction> <squads|all> <type> [args]`
+lines (replays gain `orders=on|off` in the flags; pre-m11b files parse
+as orders=on), `--replay --verify` re-applies them at their ticks.
+The state hash covers the pending queue, the per-squad player-order
+state and the squad flow-field targets. `order_issued` and
+`order_delivered` events land in `--events`; the report and the export
+carry issued/delivered/rejected/dropped counts with mean delivery
+delay and obedience.

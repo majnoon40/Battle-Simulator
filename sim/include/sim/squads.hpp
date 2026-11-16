@@ -28,6 +28,28 @@ enum class Order : std::uint8_t {
 
 [[nodiscard]] const char* to_string(Order order) noexcept;
 
+// Player order types (m11b), issued through Simulation::issue_order.
+// Each maps onto the commander-order system (Order + extras): MoveTo and
+// AttackMove are Advance plus a squad objective point (marched to via a
+// squad-specific flow field; MoveTo keeps marching past enemies,
+// AttackMove engages normally), Hold and Regroup are the same-named
+// commander orders, Retreat optionally carries a point to fall back to,
+// and ChangeFormation swaps the squad's formation shape.
+enum class PlayerOrderType : std::uint8_t {
+  MoveTo = 0,
+  AttackMove = 1,
+  Hold = 2,
+  Retreat = 3,
+  Regroup = 4,
+  ChangeFormation = 5,
+};
+
+inline constexpr std::size_t kPlayerOrderTypeCount = 6;
+
+[[nodiscard]] const char* to_string(PlayerOrderType type) noexcept;
+[[nodiscard]] bool parse_player_order_type(std::string_view text,
+                                           PlayerOrderType& out) noexcept;
+
 // The three formation shapes (M6). Slot offsets are generated in code from
 // the member count and the formation's spacing (data/formations.json); the
 // file picks which shapes exist, their spacing and the default shape.
@@ -35,6 +57,23 @@ enum class FormationKind : std::uint8_t {
   Line = 0,   // one rank, lateral, filled center-out (commander at the center)
   Column = 1, // single file, front to back (commander at the front)
   Loose = 2,  // square-ish block, rows front to back, center-out per row
+};
+
+// One player order in flight to one squad (m11b). Delivery lands at
+// deliver_tick; the obedience weight is computed at delivery.
+struct PlayerOrder {
+  std::uint64_t issue_tick = 0;   // 1-based tick the order was issued
+  std::uint64_t deliver_tick = 0; // issue_tick + courier delay
+  Faction faction = Faction::Red;
+  std::uint32_t squad_id = 0;     // global squad id
+  PlayerOrderType type = PlayerOrderType::Hold;
+  double x = 0.0;                 // target point (point orders)
+  double y = 0.0;
+  bool has_point = false;         // MoveTo / AttackMove / Retreat(point)
+  bool formation_set = false;     // ChangeFormation target below
+  FormationKind formation = FormationKind::Line;
+  double formation_spacing = 3.0;
+  double obedience = 0.0;         // recorded at delivery
 };
 
 // data/formations.json (M6): the defined formations, the default one squads
@@ -139,6 +178,35 @@ struct CommanderConfig {
     double morale_factor_shaken = 0.6;
     double cohesion_floor = 0.5;
   } obedience;
+
+  // Player orders (m11b). A player order is issued through
+  // Simulation::issue_order and travels through the commander system: the
+  // delivery delay from the faction HQ to the squad's acting commander is
+  // ceil(distance * order_delay_per_unit) — the same courier speed member
+  // orders propagate with — plus succession_delay_ticks when command has
+  // been lost (the order goes through the successor) or
+  // player_orders.leaderless_delay_ticks when the squad has no eligible
+  // leader at issue time (delivered at reduced obedience).
+  struct PlayerOrders {
+    std::uint32_t max_per_tick = 1;           // per faction per tick
+    std::uint64_t leaderless_delay_ticks = 40;
+    double leaderless_obedience = 0.5;  // multiplier when leaderless
+    // MoveTo (as opposed to AttackMove) keeps marching while enemies are
+    // visible: this obedience-scaled bias is added to Hold so a moving
+    // squad does not stop to fight everything it sees.
+    double moveto_hold_bias = 0.10;
+    // A player order is a deliberate command, not a contextual nudge.
+    // Its score bonus is (commander-order weight) * weight_scale *
+    // delivery_strength, where delivery_strength floors at 0.5 (the
+    // faction's authority) and reaches 1.0 at full obedience; the bonus
+    // is still clamped to [0, 1] per action — a bounded score term,
+    // never an availability override. At commander-order scale (1.0) a
+    // Hold order cannot stop a healthy aggressive march (Advance ~0.9
+    // vs Hold ~0.3 + 0.3; measured), which would make orders cosmetic;
+    // 4.0 lets a delivered order decide for most units while the most
+    // aggressive, healthy ones can still refuse.
+    double weight_scale = 4.0;
+  } player_orders;
 };
 
 // Parses a formation configuration from JSON text (see
@@ -259,6 +327,19 @@ struct Squad {
   std::uint64_t command_lost_tick = 0;  // 1-based; 0 = never lost
   Order order = Order::None;    // the commander's current order
   std::uint64_t order_issue_tick = 0;  // 1-based tick the order was issued
+  // m11b player order state. A delivered player order takes over the
+  // squad's order (the commander executes it; the commander AI does not
+  // re-evaluate while it is active) and persists until replaced by a
+  // later player order, command loss or squad collapse. `has_point`
+  // marks point orders (MoveTo / AttackMove / Retreat to a point): the
+  // squad's members and commander march along a squad-specific flow
+  // field toward (player_order_x, player_order_y) instead of the
+  // faction field.
+  bool player_order_active = false;
+  PlayerOrderType player_order_type = PlayerOrderType::Hold;
+  bool player_order_point = false;
+  double player_order_x = 0.0;
+  double player_order_y = 0.0;
   double cohesion = 0.0;        // last computed, [0, 1]
   double centroid_x = 0.0;      // last computed, alive members
   double centroid_y = 0.0;

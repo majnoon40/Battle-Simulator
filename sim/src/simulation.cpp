@@ -124,6 +124,23 @@ Simulation::Simulation(SimulationConfig config,
   // and battles stay bit-identical to their M5 runs.
   assign_squads();
 
+  // Player orders (m11b): the HQ each faction issues from is its spawn
+  // band center (the band it actually deploys in — with swap_sides Red
+  // deploys in the east, so its HQ is the eastern band center); the
+  // per-squad flow fields stay empty until a point order is delivered.
+  for (Faction faction : kAllFactions) {
+    const std::size_t index = faction_index(faction);
+    const bool west = (faction == Faction::Red) != config_.swap_sides;
+    const double band = world_.width * config_.spawn_band_fraction;
+    hq_x_[index] = west ? band / 2.0 : world_.width - band / 2.0;
+    hq_y_[index] = world_.height / 2.0;
+  }
+  squad_flow_.assign(squads_.size(), FlowField{});
+  squad_flow_target_.assign(squads_.size(),
+                            std::numeric_limits<std::uint64_t>::max());
+  orders_issued_this_tick_ = {};
+  player_order_reports_ = {};
+
   // Tactical depth (M10): utility mode only. With tactics off there is no
   // battle-time randomness, the M4-M9 action set is scored and the commit
   // time is the M4 constant, so every M1-M9 reference reproduces
@@ -632,6 +649,298 @@ bool Simulation::intervene_kill(std::uint32_t unit_id) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Player orders (m11b). The order travels through the commander system:
+// courier delay from the faction HQ to the squad, succession/leaderless
+// surcharges, delivery into the squad's order slot, and bounded score
+// terms (never overrides). With no order ever issued none of this runs
+// and battles are byte-identical to the pre-m11b binary.
+// ---------------------------------------------------------------------------
+
+bool Simulation::issue_order(
+    Faction faction, const std::vector<std::uint32_t>& squad_ids,
+    PlayerOrderType type, double x, double y, const std::string& formation) {
+  const std::size_t faction_index_value = faction_index(faction);
+  PlayerOrderReport& report = player_order_reports_[faction_index_value];
+  const int type_value = static_cast<int>(type);
+  if (!config_.orders_enabled || !squads_active_ || squad_ids.empty() ||
+      type_value < 0 ||
+      type_value > static_cast<int>(PlayerOrderType::ChangeFormation)) {
+    report.rejected += squad_ids.size();
+    return false;
+  }
+  // Validate everything before touching state: a wrong-faction or
+  // unknown squad id, an unformattable formation or an unsnappable
+  // point rejects the whole call.
+  for (std::uint32_t squad_id : squad_ids) {
+    if (squad_id >= squads_.size() ||
+        squads_[squad_id].faction != faction) {
+      report.rejected += squad_ids.size();
+      return false;
+    }
+  }
+  FormationKind formation_kind = FormationKind::Line;
+  double formation_spacing = 3.0;
+  if (type == PlayerOrderType::ChangeFormation) {
+    bool found = false;
+    for (const FormationConfig::Definition& definition :
+         formations_->formations) {
+      if (definition.id == formation) {
+        formation_kind = definition.kind;
+        formation_spacing = definition.spacing;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      report.rejected += squad_ids.size();
+      return false;
+    }
+  }
+  // A Retreat carries a point exactly when one was given: the (0, 0)
+  // default means "fall back toward the own side" (the M6 semantics);
+  // a point retreat is a fighting withdrawal to that point.
+  const bool point_order = type == PlayerOrderType::MoveTo ||
+                           type == PlayerOrderType::AttackMove ||
+                           (type == PlayerOrderType::Retreat &&
+                            (x != 0.0 || y != 0.0));
+  double point_x = x;
+  double point_y = y;
+  if (point_order && terrain_ != nullptr) {
+    if (!terrain_->in_bounds(point_x, point_y) ||
+        !snap_to_passable(point_x, point_y)) {
+      report.rejected += squad_ids.size();
+      return false;
+    }
+  }
+  // Rate limit: at most max_per_tick successful calls per faction per
+  // tick (issue_order runs between ticks; the counter resets in
+  // update_termination at the end of every tick).
+  if (orders_issued_this_tick_[faction_index_value] >=
+      commanders_->player_orders.max_per_tick) {
+    report.rejected += squad_ids.size();
+    return false;
+  }
+
+  const std::uint64_t issue_tick = world_.tick_count + 1;
+  const std::uint64_t order_type_value = static_cast<std::uint64_t>(
+      static_cast<int>(type));
+  for (std::uint32_t squad_id : squad_ids) {
+    const Squad& squad = squads_[squad_id];
+    // Courier distance: HQ -> acting commander, or the squad centroid
+    // when command is lost.
+    double to_x = squad.centroid_x;
+    double to_y = squad.centroid_y;
+    if (squad.command_active) {
+      to_x = world_.units[squad.commander_index].x;
+      to_y = world_.units[squad.commander_index].y;
+    }
+    const double dx = to_x - hq_x_[faction_index_value];
+    const double dy = to_y - hq_y_[faction_index_value];
+    std::uint64_t delay = static_cast<std::uint64_t>(std::ceil(
+        std::sqrt(dx * dx + dy * dy) * commanders_->order_delay_per_unit));
+    // A lost command means the order goes through the successor (the
+    // succession surcharge); with no eligible member at issue time the
+    // order crawls to whoever is left, later and weaker.
+    if (!squad.command_active) {
+      bool eligible = false;
+      for (const SquadMemberState& member : squad.members) {
+        const Unit& candidate = world_.units[member.unit_index];
+        if (candidate.alive && !candidate.routed) {
+          eligible = true;
+          break;
+        }
+      }
+      delay += eligible ? commanders_->succession_delay_ticks
+                        : commanders_->player_orders.leaderless_delay_ticks;
+    }
+    pending_orders_.push_back(PlayerOrder{
+        issue_tick, issue_tick + delay, faction, squad_id, type,
+        point_x, point_y, point_order,
+        type == PlayerOrderType::ChangeFormation,
+        formation_kind, formation_spacing, 0.0});
+    report.issued += 1;
+    if (events_ != nullptr) {
+      events_->record(issue_tick, EventType::OrderIssued, squad_id,
+                      static_cast<std::uint32_t>(order_type_value));
+    }
+  }
+  orders_issued_this_tick_[faction_index_value] += 1;
+  // Keep the queue deliverable order stable: ascending deliver tick,
+  // then issue order (push_back order).
+  std::stable_sort(pending_orders_.begin(), pending_orders_.end(),
+                   [](const PlayerOrder& a, const PlayerOrder& b) {
+                     return a.deliver_tick < b.deliver_tick;
+                   });
+  return true;
+}
+
+void Simulation::clear_player_order(Squad& squad) {
+  squad.player_order_active = false;
+  squad.player_order_point = false;
+  squad.player_order_x = 0.0;
+  squad.player_order_y = 0.0;
+  if (squad.id < squad_flow_.size()) {
+    squad_flow_[squad.id] = FlowField{};
+    squad_flow_target_[squad.id] =
+        std::numeric_limits<std::uint64_t>::max();
+  }
+}
+
+void Simulation::apply_player_order(Squad& squad, const PlayerOrder& order,
+                                    std::uint64_t tick_number) {
+  // Map the player order onto the commander-order slot; the member
+  // propagation (commander -> member, distance delay) is the standard
+  // M6 machinery, except for leaderless squads where there is no
+  // commander to propagate: the order reaches every member directly at
+  // reduced obedience (the reduced-strength rule).
+  Order mapped = Order::Advance;
+  switch (order.type) {
+    case PlayerOrderType::MoveTo:
+    case PlayerOrderType::AttackMove:
+      mapped = Order::Advance;
+      break;
+    case PlayerOrderType::Hold:
+      mapped = Order::Hold;
+      break;
+    case PlayerOrderType::Retreat:
+      mapped = Order::Retreat;
+      break;
+    case PlayerOrderType::Regroup:
+      mapped = Order::Regroup;
+      break;
+    case PlayerOrderType::ChangeFormation:
+      mapped = squad.order;  // a formation change keeps the current order
+      break;
+  }
+  squad.order = mapped;
+  squad.order_issue_tick = tick_number;
+  squad.player_order_active = true;
+  squad.player_order_type = order.type;
+  squad.player_order_point = order.has_point;
+  squad.player_order_x = order.x;
+  squad.player_order_y = order.y;
+  if (!squad.command_active) {
+    for (SquadMemberState& member : squad.members) {
+      member.order = mapped;
+      member.out_of_range_ticks = 0;
+    }
+  }
+  if (order.formation_set) {
+    squad.formation = order.formation;
+    squad.spacing = order.formation_spacing;
+  }
+  // A point order retargets the squad's march: compute the squad's own
+  // flow field once (the same Dijkstra the faction field uses).
+  if (order.has_point && terrain_ != nullptr) {
+    const std::uint32_t cx = static_cast<std::uint32_t>(
+        order.x / terrain_->cell_size);
+    const std::uint32_t cy = static_cast<std::uint32_t>(
+        order.y / terrain_->cell_size);
+    squad_flow_[squad.id] = compute_flow_field(*terrain_, cx, cy);
+    squad_flow_target_[squad.id] =
+        static_cast<std::uint64_t>(cy) * terrain_->width + cx;
+  } else {
+    squad_flow_[squad.id] = FlowField{};
+    squad_flow_target_[squad.id] =
+        std::numeric_limits<std::uint64_t>::max();
+  }
+  // Obedience at delivery, recorded for the report: morale, discipline
+  // and cohesion (the spec's factors — the distance is spent on the
+  // courier delay, not the obedience); leaderless squads are scaled by
+  // the leaderless factor. Mirrors the member-level term in
+  // decide_unit_action.
+  double obedience = 0.0;
+  if (squad.command_active) {
+    const Unit& commander = world_.units[squad.commander_index];
+    const double morale_factor = [&] {
+      switch (static_cast<MoraleState>(commander.morale_state)) {
+        case MoraleState::Confident:
+          return commanders_->obedience.morale_factor_confident;
+        case MoraleState::Steady:
+          return commanders_->obedience.morale_factor_steady;
+        case MoraleState::Worried:
+          return commanders_->obedience.morale_factor_worried;
+        default:
+          return commanders_->obedience.morale_factor_shaken;
+      }
+    }();
+    const double cohesion_term =
+        commanders_->obedience.cohesion_floor +
+        (1.0 - commanders_->obedience.cohesion_floor) * squad.cohesion;
+    obedience = std::clamp(commander.personality.discipline * morale_factor *
+                               cohesion_term,
+                           0.0, 1.0);
+  } else {
+    const double cohesion_term =
+        commanders_->obedience.cohesion_floor +
+        (1.0 - commanders_->obedience.cohesion_floor) * squad.cohesion;
+    obedience = std::clamp(commanders_->player_orders.leaderless_obedience *
+                               cohesion_term,
+                           0.0, 1.0);
+  }
+  PlayerOrderReport& report =
+      player_order_reports_[faction_index(squad.faction)];
+  report.delivered += 1;
+  report.delay_ticks_sum += order.deliver_tick - order.issue_tick;
+  report.obedience_sum += obedience;
+  if (events_ != nullptr) {
+    events_->record(tick_number, EventType::OrderDelivered, squad.id,
+                    static_cast<std::uint32_t>(static_cast<int>(order.type)));
+  }
+}
+
+void Simulation::process_pending_orders(std::uint64_t tick_number) {
+  std::size_t next = 0;
+  while (next < pending_orders_.size() &&
+         pending_orders_[next].deliver_tick <= tick_number) {
+    const PlayerOrder order = pending_orders_[next];
+    ++next;
+    if (order.squad_id >= squads_.size()) {
+      continue;  // defensive: ids are validated at issue time
+    }
+    Squad& squad = squads_[order.squad_id];
+    bool any_alive = false;
+    for (const SquadMemberState& member : squad.members) {
+      if (world_.units[member.unit_index].alive) {
+        any_alive = true;
+        break;
+      }
+    }
+    if (!any_alive) {
+      player_order_reports_[faction_index(order.faction)].dropped += 1;
+      continue;
+    }
+    apply_player_order(squad, order, tick_number);
+  }
+  pending_orders_.erase(pending_orders_.begin(),
+                        pending_orders_.begin() +
+                            static_cast<std::ptrdiff_t>(next));
+}
+
+bool Simulation::order_flow_step(std::size_t unit_index, std::size_t faction,
+                                 double x, double y, double& dx,
+                                 double& dy) const noexcept {
+  if (squads_active_ && unit_index < unit_squad_.size() &&
+      unit_squad_[unit_index] >= 0) {
+    const Squad& squad = squads_[static_cast<std::size_t>(
+        unit_squad_[unit_index])];
+    if (squad.player_order_point &&
+        static_cast<std::size_t>(squad.id) < squad_flow_.size() &&
+        squad_flow_[squad.id].target_valid) {
+      const std::uint32_t cx =
+          static_cast<std::uint32_t>(x / terrain_->cell_size);
+      const std::uint32_t cy =
+          static_cast<std::uint32_t>(y / terrain_->cell_size);
+      if (flow_direction(squad_flow_[squad.id], cx, cy, dx, dy)) {
+        return true;
+      }
+      return false;  // on or past the squad objective: no faction fallback
+    }
+  }
+  return flow_step(faction, x, y, dx, dy);
+}
+
 // M10 Part 2a: one timeline row for the current tick. Read-only.
 void Simulation::sample_timeline() {
   TimelineRow row;
@@ -1135,26 +1444,94 @@ Action Simulation::decide_unit_action(std::size_t index,
     // order weight on the actions the order favors, only where the action
     // is available, then clamped to [0, 1]. Never an override — it nudges
     // scores, availability rules stay untouched.
+    // m11b: a delivered player order applies the same term to a
+    // leaderless squad (no commander to propagate — delivered directly
+    // at reduced obedience), and MoveTo adds a small keep-marching bias
+    // on Hold while enemies are visible.
     if (squads_active_ && unit_squad_[index] >= 0) {
       const Squad& squad = squads_[unit_squad_[index]];
       const SquadMemberState& member =
           squad.members[unit_member_[index]];
-      if (member.order != Order::None && squad.command_active) {
-        const Unit& commander = world_.units[squad.commander_index];
-        const double dx = unit.x - commander.x;
-        const double dy = unit.y - commander.y;
-        obedience = obedience_weight(
-            unit.personality.discipline, std::sqrt(dx * dx + dy * dy),
-            squad.leadership_radius,
-            static_cast<MoraleState>(unit.morale_state), squad.cohesion,
-            *commanders_);
-        order_bonus = order_score_bonus(member.order, obedience,
+      if (member.order != Order::None &&
+          (squad.command_active || squad.player_order_active)) {
+        if (squad.command_active && !squad.player_order_active) {
+          // M6 AI order: obedience falls with the member's distance to
+          // the commander inside the leadership radius.
+          const Unit& commander = world_.units[squad.commander_index];
+          const double dx = unit.x - commander.x;
+          const double dy = unit.y - commander.y;
+          obedience = obedience_weight(
+              unit.personality.discipline, std::sqrt(dx * dx + dy * dy),
+              squad.leadership_radius,
+              static_cast<MoraleState>(unit.morale_state), squad.cohesion,
+              *commanders_);
+        } else if (squad.player_order_active) {
+          // m11b player order: the spec's obedience factors are morale,
+          // discipline and cohesion — the distance is spent on the
+          // delivery delay (HQ -> commander), so it does not gate the
+          // member term again. (Measured with the distance factor in:
+          // mean obedience 0.16, a delivered hold order moved 12% of
+          // the army — cosmetic.)
+          const double morale_factor = [&] {
+            switch (static_cast<MoraleState>(unit.morale_state)) {
+              case MoraleState::Confident:
+                return commanders_->obedience.morale_factor_confident;
+              case MoraleState::Steady:
+                return commanders_->obedience.morale_factor_steady;
+              case MoraleState::Worried:
+                return commanders_->obedience.morale_factor_worried;
+              default:
+                return commanders_->obedience.morale_factor_shaken;
+            }
+          }();
+          const double cohesion_term =
+              commanders_->obedience.cohesion_floor +
+              (1.0 - commanders_->obedience.cohesion_floor) *
+                  squad.cohesion;
+          const double scale = squad.command_active
+                                   ? 1.0
+                                   : commanders_->player_orders
+                                         .leaderless_obedience;
+          obedience = std::clamp(
+              unit.personality.discipline * morale_factor *
+                  cohesion_term * scale,
+              0.0, 1.0);
+        } else {
+          // Leaderless AI order path (kept for symmetry): cohesion
+          // only.
+          obedience = 0.0;
+        }
+        // m11b strength model: a delivered player order carries the
+        // faction's authority, so its delivery strength floors at half
+        // the commander-order weight at zero obedience and reaches the
+        // full (scaled) weight at full obedience. The bonus is still a
+        // bounded score term: clamped to [0, 1] per action, never
+        // touching availability, and routed units (forced Flee) never
+        // see it.
+        double delivery_strength = obedience;
+        if (squad.player_order_active) {
+          delivery_strength = 0.5 + 0.5 * obedience;
+        }
+        order_bonus = order_score_bonus(member.order, delivery_strength,
                                         commanders_->order_weights);
+        if (squad.player_order_active) {
+          for (double& bonus : order_bonus) {
+            bonus *= commanders_->player_orders.weight_scale;
+          }
+        }
         for (std::size_t action = 0; action < kActionCount; ++action) {
           if (scores[action] >= 0.0) {
             scores[action] =
                 std::clamp(scores[action] + order_bonus[action], 0.0, 1.0);
           }
+        }
+        if (squad.player_order_active &&
+            squad.player_order_type == PlayerOrderType::MoveTo &&
+            scores[static_cast<std::size_t>(Action::Hold)] >= 0.0) {
+          scores[static_cast<std::size_t>(Action::Hold)] = std::clamp(
+              scores[static_cast<std::size_t>(Action::Hold)] +
+                  obedience * commanders_->player_orders.moveto_hold_bias,
+              0.0, 1.0);
         }
       }
     }
@@ -1312,10 +1689,11 @@ void Simulation::resolve_movement() {
       // Stuck recovery (M8): a goal-seeking unit that made less than
       // kStuckEpsilon progress for kStuckTickThreshold consecutive ticks
       // follows its faction's flow field for kFlowFollowTicks ticks.
+      // m11b: a squad with an active point order follows its own field.
       if (terrain_ != nullptr &&
           world_.tick_count < flow_follow_until_[i] &&
-          flow_step(faction_index(unit.faction), unit.x, unit.y, advance_dx,
-                    advance_dy)) {
+          order_flow_step(i, faction_index(unit.faction), unit.x, unit.y,
+                          advance_dx, advance_dy)) {
         PendingMove move;
         move.moves = true;
         move.goal_seeking = true;
@@ -1359,8 +1737,8 @@ void Simulation::resolve_movement() {
             const double sy = slot_y - unit.y;
             if (sx * sx + sy * sy >
                     kSlotMarchDist * kSlotMarchDist &&
-                flow_step(faction_index(unit.faction), unit.x, unit.y,
-                          advance_dx, advance_dy)) {
+                order_flow_step(i, faction_index(unit.faction), unit.x,
+                                unit.y, advance_dx, advance_dy)) {
               PendingMove move;
               move.moves = true;
               move.goal_seeking = true;
@@ -1419,10 +1797,11 @@ void Simulation::resolve_movement() {
         move.y = unit.y + dy / dist * step;
         pending_moves_[i] = move;
       } else if (action == Action::Advance && terrain_ != nullptr &&
-                 flow_step(faction_index(unit.faction), unit.x, unit.y,
-                           advance_dx, advance_dy)) {
+                 order_flow_step(i, faction_index(unit.faction), unit.x,
+                                 unit.y, advance_dx, advance_dy)) {
         // M8: Advance follows the faction's cached flow field around
-        // impassable terrain instead of the straight line.
+        // impassable terrain instead of the straight line (m11b: a
+        // squad with an active point order follows its own field).
         PendingMove move;
         move.moves = true;
         move.goal_seeking = true;
@@ -1446,6 +1825,25 @@ void Simulation::resolve_movement() {
         move.y = unit.y + dy / dist * step;
         pending_moves_[i] = move;
       } else if (action == Action::Retreat) {
+        // m11b: a squad with an active point order withdraws to that
+        // point (fighting withdrawal at half speed along the squad's
+        // field) instead of straight away from the enemy.
+        if (terrain_ != nullptr && squads_active_ && unit_squad_[i] >= 0) {
+          const Squad& squad = squads_[static_cast<std::size_t>(
+              unit_squad_[i])];
+          if (squad.player_order_point &&
+              order_flow_step(i, faction_index(unit.faction), unit.x,
+                              unit.y, advance_dx, advance_dy)) {
+            const double step = 0.5 * speed;
+            PendingMove move;
+            move.moves = true;
+            move.goal_seeking = true;
+            move.x = unit.x + advance_dx * step;
+            move.y = unit.y + advance_dy * step;
+            pending_moves_[i] = move;
+            continue;
+          }
+        }
         const Perception& perception = last_perception_[i];
         if (perception.visible_enemies == 0) {
           continue;  // defensive: Retreat implies visible enemies
@@ -1934,13 +2332,19 @@ void Simulation::apply_deaths() {
           }
           squad.command_active = false;
           squad.command_lost_tick = world_.tick_count + 1;  // 1-based
-          squad.order = Order::None;
-          const double radius_sq = squad.leadership_radius * squad.leadership_radius;
-          for (SquadMemberState& member : squad.members) {
-            member.order = Order::None;  // drift with no order term
-            if (!morale_enabled_) {
-              continue;
+          // m11b: a delivered player order is the faction's order, not
+          // the commander's — the successor inherits it (in-flight
+          // orders deliver per their issue-time delay whatever the
+          // command state). Only AI orders clear on command loss.
+          if (!squad.player_order_active) {
+            squad.order = Order::None;
+            for (SquadMemberState& member : squad.members) {
+              member.order = Order::None;  // drift with no order term
             }
+          }
+          const double radius_sq =
+              squad.leadership_radius * squad.leadership_radius;
+          for (SquadMemberState& member : squad.members) {
             Unit& member_unit = world_.units[member.unit_index];
             if (!member_unit.alive) {
               continue;
@@ -2121,6 +2525,11 @@ void Simulation::update_squads() {
   }
   const std::uint64_t tick_number = world_.tick_count + 1;  // 1-based
 
+  // m11b: deliver due player orders before the per-squad maintenance
+  // (the delay was fixed at issue time; delivery sees the command state
+  // as of this tick).
+  process_pending_orders(tick_number);
+
   for (Squad& squad : squads_) {
     update_squad_metrics(squad);
 
@@ -2132,9 +2541,13 @@ void Simulation::update_squads() {
       if (!commander.alive || commander.routed) {
         squad.command_active = false;
         squad.command_lost_tick = tick_number;
-        squad.order = Order::None;
-        for (SquadMemberState& member : squad.members) {
-          member.order = Order::None;
+        // m11b: a delivered player order survives command loss (the
+        // successor inherits it); only AI orders clear.
+        if (!squad.player_order_active) {
+          squad.order = Order::None;
+          for (SquadMemberState& member : squad.members) {
+            member.order = Order::None;
+          }
         }
       }
     }
@@ -2162,8 +2575,12 @@ void Simulation::update_squads() {
         squad.commander_index = static_cast<std::uint32_t>(successor);
         squad.command_active = true;
         squad.command_lost_tick = 0;
-        squad.order = Order::None;       // the successor picks fresh below
-        squad.order_issue_tick = 0;
+        // m11b: a successor inherits a delivered player order; only AI
+        // orders reset for a fresh pick.
+        if (!squad.player_order_active) {
+          squad.order = Order::None;     // the successor picks fresh below
+          squad.order_issue_tick = 0;
+        }
         squad_stats_[faction_index(squad.faction)].successions += 1;
         if (events_ != nullptr) {
           events_->record(tick_number, EventType::Succession,
@@ -2174,7 +2591,9 @@ void Simulation::update_squads() {
 
     // Order selection: the commander re-evaluates at most once per
     // order_min_duration_ticks, and immediately whenever it has no order.
-    if (squad.command_active) {
+    // m11b: while a delivered player order is active the commander
+    // executes it — the AI does not re-evaluate.
+    if (squad.command_active && !squad.player_order_active) {
       const Unit& commander = world_.units[squad.commander_index];
       const bool may_reorder =
           squad.order == Order::None ||
@@ -2278,6 +2697,9 @@ void Simulation::update_squads() {
 // more survivors wins; an even split is a draw).
 void Simulation::update_termination() {
   world_.tick_count += 1;
+  // m11b: the per-tick issue budget resets at the end of every tick
+  // (issue_order calls between ticks count against the upcoming tick).
+  orders_issued_this_tick_ = {};
 
   const std::uint32_t red = world_.alive_count(Faction::Red);
   const std::uint32_t blue = world_.alive_count(Faction::Blue);

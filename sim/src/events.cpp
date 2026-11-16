@@ -32,6 +32,10 @@ const char* event_type_name(EventType type) noexcept {
       return "squad_collapse";
     case EventType::FirstContact:
       return "first_contact";
+    case EventType::OrderIssued:
+      return "order_issued";
+    case EventType::OrderDelivered:
+      return "order_delivered";
   }
   return "unknown";
 }
@@ -89,6 +93,13 @@ void write_event_jsonl(std::ostream& out, const Event& event) {
       break;
     case EventType::FirstContact:
       out << ",\"unit\":" << event.a;
+      break;
+    case EventType::OrderIssued:
+    case EventType::OrderDelivered:
+      out << ",\"squad\":" << event.a << ",\"order\":\""
+          << to_string(static_cast<PlayerOrderType>(
+                static_cast<int>(event.b)))
+          << "\"";
       break;
   }
   out << "}\n";

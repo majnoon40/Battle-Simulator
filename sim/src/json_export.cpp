@@ -161,9 +161,20 @@ std::string export_state_json(const Simulation& simulation) {
   const sim::TerrainGrid* const terrain = simulation.terrain();
   nlohmann::json root;
   // Format 7 (M10, tactics on): action_counts gains search/help/flank.
+  // Format 8 (m11b, player orders issued): per-faction player_orders
+  // statistics (issued/delivered/rejected/dropped, mean delivery delay
+  // and obedience). Battles without orders serialize in the exact
+  // format-3..7 shape of their milestone runs, byte-for-byte.
+  const bool player_orders =
+      simulation.player_order_report(sim::Faction::Red).issued > 0 ||
+      simulation.player_order_report(sim::Faction::Blue).issued > 0;
   root["format_version"] =
-      tactics ? 7
-              : (terrain != nullptr ? 6 : (squads ? 5 : (morale ? 4 : 3)));
+      player_orders
+          ? 8
+          : (tactics
+                 ? 7
+                 : (terrain != nullptr ? 6
+                                       : (squads ? 5 : (morale ? 4 : 3))));
   root["seed"] = config.seed;
   root["ticks_elapsed"] = result.ticks_elapsed;
 
@@ -274,6 +285,28 @@ std::string export_state_json(const Simulation& simulation) {
       squad["squads"] = report.squad.squads;
       squad["successions"] = report.squad.successions;
       faction_json["squads"] = std::move(squad);
+    }
+    // m11b: player-order statistics, written only when that faction
+    // issued at least one order (battles without orders stay in the
+    // exact pre-m11b shape; ordered battles carry format_version 8).
+    const Simulation::PlayerOrderReport& player =
+        simulation.player_order_report(faction);
+    if (player.issued > 0) {
+      nlohmann::json orders;
+      orders["issued"] = player.issued;
+      orders["delivered"] = player.delivered;
+      orders["rejected"] = player.rejected;
+      orders["dropped"] = player.dropped;
+      orders["mean_delivery_delay_ticks"] =
+          player.delivered > 0
+              ? static_cast<double>(player.delay_ticks_sum) /
+                    static_cast<double>(player.delivered)
+              : 0.0;
+      orders["mean_obedience"] =
+          player.delivered > 0
+              ? player.obedience_sum / static_cast<double>(player.delivered)
+              : 0.0;
+      faction_json["player_orders"] = std::move(orders);
     }
     if (!report.by_type.empty()) {
       nlohmann::json by_type = nlohmann::json::array();

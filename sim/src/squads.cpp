@@ -107,6 +107,44 @@ const char* to_string(Order order) noexcept {
   return "none";
 }
 
+const char* to_string(PlayerOrderType type) noexcept {
+  switch (type) {
+    case PlayerOrderType::MoveTo:
+      return "moveto";
+    case PlayerOrderType::AttackMove:
+      return "attackmove";
+    case PlayerOrderType::Hold:
+      return "hold";
+    case PlayerOrderType::Retreat:
+      return "retreat";
+    case PlayerOrderType::Regroup:
+      return "regroup";
+    case PlayerOrderType::ChangeFormation:
+      return "formation";
+  }
+  return "hold";
+}
+
+bool parse_player_order_type(std::string_view text,
+                             PlayerOrderType& out) noexcept {
+  if (text == "moveto") {
+    out = PlayerOrderType::MoveTo;
+  } else if (text == "attackmove") {
+    out = PlayerOrderType::AttackMove;
+  } else if (text == "hold") {
+    out = PlayerOrderType::Hold;
+  } else if (text == "retreat") {
+    out = PlayerOrderType::Retreat;
+  } else if (text == "regroup") {
+    out = PlayerOrderType::Regroup;
+  } else if (text == "formation") {
+    out = PlayerOrderType::ChangeFormation;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 FormationConfig parse_formations(std::string_view json_text) {
   nlohmann::json root;
   try {
@@ -265,12 +303,13 @@ CommanderConfig parse_commanders(std::string_view json_text) {
         it.key() != "order_min_duration_ticks" &&
         it.key() != "order_delay_per_unit" && it.key() != "order_decay_ticks" &&
         it.key() != "succession_delay_ticks" &&
-        it.key() != "commander_death_morale_loss" && it.key() != "obedience") {
+        it.key() != "commander_death_morale_loss" && it.key() != "obedience" &&
+        it.key() != "player_orders") {
       fail("unknown field '" + it.key() +
            "' in commander config (expected orders, order_weights, "
            "order_min_duration_ticks, order_delay_per_unit, "
            "order_decay_ticks, succession_delay_ticks, "
-           "commander_death_morale_loss, obedience)");
+           "commander_death_morale_loss, obedience, player_orders)");
     }
   }
 
@@ -448,6 +487,70 @@ CommanderConfig parse_commanders(std::string_view json_text) {
   if (!(config.obedience.cohesion_floor >= 0.0) ||
       !(config.obedience.cohesion_floor <= 1.0)) {
     fail("commander config obedience: cohesion_floor must be in [0, 1]");
+  }
+
+  // m11b player orders: an optional block (absent -> the defaults in the
+  // struct; mods from before m11b keep parsing).
+  if (root.contains("player_orders")) {
+    const nlohmann::json& player =
+        required_field(root, "commander config", "player_orders");
+    if (!player.is_object()) {
+      fail("commander config: 'player_orders' must be an object");
+    }
+    for (auto it = player.begin(); it != player.end(); ++it) {
+      if (it.key() != "max_per_tick" && it.key() != "leaderless_delay_ticks" &&
+          it.key() != "leaderless_obedience" &&
+          it.key() != "moveto_hold_bias" && it.key() != "weight_scale") {
+        fail("commander config player_orders: unknown field '" + it.key() +
+             "' (expected max_per_tick, leaderless_delay_ticks, "
+             "leaderless_obedience, moveto_hold_bias, weight_scale)");
+      }
+    }
+    if (player.contains("weight_scale")) {
+      config.player_orders.weight_scale = finite_number(
+          player.at("weight_scale"), "commander config player_orders",
+          "weight_scale");
+      if (!(config.player_orders.weight_scale >= 0.0) ||
+          !(config.player_orders.weight_scale <= 10.0)) {
+        fail("commander config player_orders: weight_scale must be in "
+             "[0, 10]");
+      }
+    }
+    if (player.contains("max_per_tick")) {
+      const std::uint64_t value = static_cast<std::uint64_t>(
+          finite_number(player.at("max_per_tick"),
+                        "commander config player_orders", "max_per_tick"));
+      if (value < 1 || value > 1000) {
+        fail("commander config player_orders: max_per_tick must be in "
+             "[1, 1000]");
+      }
+      config.player_orders.max_per_tick = static_cast<std::uint32_t>(value);
+    }
+    if (player.contains("leaderless_delay_ticks")) {
+      config.player_orders.leaderless_delay_ticks = tick_count(
+          player.at("leaderless_delay_ticks"),
+          "commander config player_orders", "leaderless_delay_ticks", 1);
+    }
+    if (player.contains("leaderless_obedience")) {
+      config.player_orders.leaderless_obedience = finite_number(
+          player.at("leaderless_obedience"),
+          "commander config player_orders", "leaderless_obedience");
+      if (!(config.player_orders.leaderless_obedience >= 0.0) ||
+          !(config.player_orders.leaderless_obedience <= 1.0)) {
+        fail("commander config player_orders: leaderless_obedience must be "
+             "in [0, 1]");
+      }
+    }
+    if (player.contains("moveto_hold_bias")) {
+      config.player_orders.moveto_hold_bias = finite_number(
+          player.at("moveto_hold_bias"), "commander config player_orders",
+          "moveto_hold_bias");
+      if (!(config.player_orders.moveto_hold_bias >= 0.0) ||
+          !(config.player_orders.moveto_hold_bias <= 1.0)) {
+        fail("commander config player_orders: moveto_hold_bias must be in "
+             "[0, 1]");
+      }
+    }
   }
   return config;
 }

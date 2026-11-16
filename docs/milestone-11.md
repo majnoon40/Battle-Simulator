@@ -190,3 +190,100 @@ nav flag (round trip, pre-m11a default v1, bad value rejected). mapgen:
 4 new test classes (axis fords stamp/skip/sea, Dijkstra cost monotone
 and sealed-wall infinity, v2 pipeline meta, v2 determinism + v1 meta
 byte-compat), 26 Python tests total.
+
+# Milestone 11b — Player orders
+
+Army-level player commands through the commander system, per the
+design: broad orders, delayed delivery, imperfect obedience, bounded
+score terms, full determinism and replay.
+
+## API and semantics
+
+`issue_order(faction, squad_ids, type, x, y, formation)` with MoveTo,
+AttackMove, Hold, Retreat (optionally to a point), Regroup and
+ChangeFormation (docs/squads.md documents every rule). The CLI applies
+timed orders from `--script orders.json` headlessly; `--orders off`
+(default on) makes orders inert; with no order issued every battle is
+byte-identical to the m11a binary (verified by export comparison, and
+asserted by a test).
+
+- **Delivery**: courier delay ceil(distance(HQ, acting commander) x
+  order_delay_per_unit) from the faction's spawn-band HQ, fixed at
+  issue time; + succession_delay_ticks through a successor;
+  + leaderless_delay_ticks at leaderless_obedience strength when
+  nobody can lead. Delivered into the squad's order slot (the
+  commander AI stands down while it is active), propagated to members
+  with the standard distance delay, inherited by successors, ended by
+  replacement or collapse. Rate limit: max_per_tick calls per faction
+  (a call may address many squads; "all" is one call).
+- **Point orders** (MoveTo / AttackMove / Retreat-to-point): a
+  squad-specific flow field (the same Dijkstra as the faction field,
+  computed once at delivery) redirects the m11a member field-march,
+  the commander's Advance and the stuck-recovery path; MoveTo adds a
+  small keep-marching Hold bias while enemies are visible.
+- **Obedience**: morale x discipline x cohesion (the spec's factors —
+  the distance is spent on the courier delay; with the M6
+  distance-to-commander factor in, measured mean obedience was 0.16
+  and a hold order moved 12% of the army). The score bonus is
+  weight x weight_scale (4.0) x (0.5 + 0.5 x obedience), clamped to
+  [0, 1] per action — never an availability override. Routed units
+  keep the forced Flee and never see the terms. Measured calibration
+  on the corridor fixture: a delivered Hold flips 29% of an aggressive
+  army to Hold (0% in the control), slows the march measurably;
+  cautious squads hold solidly; the most aggressive, healthy units
+  still refuse.
+- **Replay**: `--record` writes `order` lines (replays gain
+  `orders=on|off`; pre-m11b files parse as on), `--replay --verify`
+  re-applies them; the state hash covers the queue, the squad
+  player-order state and the squad field targets. kSimVersion 11.1.
+  `order_issued` / `order_delivered` events; report and export
+  (format 8, only when orders were issued) carry the counters.
+
+## Tests
+
+14 new tests in tests/test_orders.cpp (336 total, all green): wrong
+faction / unknown squad / bad formation rejected with nothing
+half-applied; the per-tick rate limit (per call, per faction); orders
+off makes issue inert; the exact courier-delay formula per squad and
+non-decreasing delivery with distance; commander death routing through
+the successor (exact expected tick); Hold measurably slows the march;
+MoveTo crosses a wall through the gap to the point; ChangeFormation
+changes the shape; routed units ignore orders; double runs
+byte-identical and grid == brute with orders; no-orders battles
+byte-identical with the machinery on or off; the script parser
+(valid + five malformed cases); the replay file round trip (orders +
+legacy default); and the CLI end-to-end (script changes the battle,
+the replay records `order 20 red all moveto 100 900`, --replay
+--verify passes).
+
+## Acceptance — flank order vs control
+
+Scripted scenario (tools/analysis/order_acceptance.py): Red's outer
+ten squads MoveTo to the north flank at tick 60, then AttackMove into
+Blue's rear at tick 450; the control is the identical battle with no
+orders. earth-lebanon-v2, 1500-tick limit, 100 seeds per arm:
+
+| arm | red / blue / draw | mean end tick | mean Red deaths | mean Blue deaths | mean first contact |
+| --- | --- | --- | --- | --- | --- |
+| control (no orders) | 100 / 0 / 0 | 860.9 | 6.8 | 27.5 | 60.9 |
+| flank order | 98 / 2 / 0 | 837.6 | 7.3 | 27.4 | 60.9 |
+
+The order measurably changes the battle: 98 of the 100 flank battles
+end 23.3 ticks faster on average (the flank arriving in Blue's rear
+accelerates the collapse), at the cost of 2 battles flipping to Blue —
+detaching a quarter of the army from the main line occasionally lets
+the weakened center lose — and +0.5 mean Red deaths. On this baseline
+Red already wins 100% of the control battles, so there is no headroom
+for the maneuver to add wins; the numbers are reported as measured.
+(The tool prints per-arm aggregates and the deltas:
+tools/analysis/order_acceptance.py.)
+
+## Determinism and performance
+
+- Full suite 336/336 (Release); ASan+UBSan 336/336.
+- With no orders issued the m11b binary reproduces the m11a binary's
+  export byte-for-byte (asserted + verified against the m11a build).
+- A delivered point order costs one Dijkstra (~160k cells) per squad
+  per order, at most max_per_tick per faction per tick; orders change
+  no per-tick steady-state cost (the member march replaces a separation
+  radius query with a field lookup).

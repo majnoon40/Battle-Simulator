@@ -73,7 +73,7 @@ def aggregate(rows: list[dict], ticks: int) -> dict:
     no_contact = [r for r in rows if r["first_contact_tick"] == 0]
     stuck_units = sum(r["units_stuck_over_100"] for r in rows)
     total_units = sum(r["total_units"] for r in rows)
-    return {
+    out = {
         "battles": n,
         "red_wins": red_wins,
         "blue_wins": blue_wins,

@@ -45,6 +45,15 @@ struct Arguments {
   // exact M10 navigation — byte-identical to the M10 binary, including
   // the swapped-orientation stall it had).
   bool nav_v2 = true;
+  // m11b player orders: --orders on (default) or off (issue_order is
+  // inert; a --script is rejected). With no order issued battles are
+  // byte-identical either way.
+  bool orders_on = true;
+  // m11b: --script orders.json — timed player orders for headless runs
+  // (JSON array; see cli/replay.hpp parse_order_script for the shape).
+  // Empty = none. Orders are recorded into --record replays and
+  // re-applied by --replay.
+  std::string script_path;
   std::string tactics_path;  // empty -> data/tactics.json
   // M10: --tactic-scan <action> runs the battle tick by tick and arms the
   // AI debug capture on the first unit that chooses that action (search,

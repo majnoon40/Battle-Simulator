@@ -325,6 +325,48 @@ int run_with_replay(const cli::Arguments& args,
   }
   config.swap_sides = args.swap_sides;
   config.nav_v2 = args.nav_v2;
+  config.orders_enabled = args.orders_on;
+
+  // m11b: load and validate the order script (unless replaying — the
+  // orders then come from the replay file). Scripts need orders on and
+  // one of the loop-driven run paths.
+  std::vector<cli::OrderIntervention> script_orders;
+  if (!args.script_path.empty() && !args.replay_on) {
+    if (!args.orders_on) {
+      std::cerr << "error: --script needs --orders on\n";
+      return 1;
+    }
+    if (render_mode || !args.tactic_scan.empty()) {
+      std::cerr << "error: --script is not supported together with "
+                   "--render-frame/--render-frames/--ascii or "
+                   "--tactic-scan\n";
+      return 1;
+    }
+    std::string script_error;
+    if (!cli::parse_order_script(args.script_path, script_orders,
+                                 script_error)) {
+      std::cerr << "error: " << script_error << "\n";
+      return 1;
+    }
+    for (const cli::OrderIntervention& order : script_orders) {
+      if (order.type != sim::PlayerOrderType::ChangeFormation) {
+        continue;
+      }
+      bool known = false;
+      for (const sim::FormationConfig::Definition& definition :
+           formations.formations) {
+        if (definition.id == order.formation) {
+          known = true;
+          break;
+        }
+      }
+      if (!known) {
+        std::cerr << "error: order script: unknown formation '"
+                  << order.formation << "' at tick " << order.tick << "\n";
+        return 1;
+      }
+    }
+  }
   for (sim::Faction faction : sim::kAllFactions) {
     config.spawn_patterns[static_cast<std::size_t>(faction)] =
         scenario.spawn_patterns[static_cast<std::size_t>(faction)];
@@ -424,6 +466,30 @@ int run_with_replay(const cli::Arguments& args,
   }
 
   sim::Simulation simulation(config);
+  // m11b: applies one scripted order (also used by the record/replay
+  // loops). "all" addresses every squad of the faction at issue time.
+  const auto apply_script_order =
+      [&simulation](const cli::OrderIntervention& order) {
+        const sim::Faction faction =
+            order.red ? sim::Faction::Red : sim::Faction::Blue;
+        std::vector<std::uint32_t> squads;
+        if (order.squads_all) {
+          for (const sim::Squad& squad : simulation.squads()) {
+            if (squad.faction == faction) {
+              squads.push_back(squad.id);
+            }
+          }
+        } else {
+          squads = order.squads;
+        }
+        if (!simulation.issue_order(faction, squads, order.type, order.x,
+                                    order.y, order.formation)) {
+          std::cerr << "warning: order at tick " << order.tick << " ("
+                    << sim::to_string(order.type)
+                    << ") was rejected (invalid squad, rate limit or "
+                       "disabled orders)\n";
+        }
+      };
   if (args.ai_debug_unit != 0 || !args.tactic_scan.empty()) {
     sim::AiDebugCapture debug;
     debug.unit_id = args.ai_debug_unit;
@@ -606,6 +672,11 @@ int run_with_replay(const cli::Arguments& args,
                 });
     }
     std::size_t next_intervention = 0;
+    std::size_t next_order = 0;
+    // m11b: replaying applies the recorded orders; recording applies the
+    // --script orders (both ascending by tick).
+    const std::vector<cli::OrderIntervention>& order_script =
+        args.replay_on ? replay_data.order_interventions : script_orders;
     std::size_t next_checkpoint = 0;
     bool mismatch = false;
     while (!simulation.finished()) {
@@ -619,6 +690,11 @@ int run_with_replay(const cli::Arguments& args,
                     << " has no effect (unknown or already dead id)\n";
         }
         ++next_intervention;
+      }
+      while (next_order < order_script.size() &&
+             order_script[next_order].tick <= upcoming) {
+        apply_script_order(order_script[next_order]);
+        ++next_order;
       }
       simulation.tick();
       const std::uint64_t tick = simulation.world().tick_count;
@@ -662,6 +738,8 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.squads = args.squads_on ? "on" : "off";
       replay_data.swap_sides = args.swap_sides ? "on" : "off";
       replay_data.nav = args.nav_v2 ? "v2" : "v1";
+      replay_data.orders = args.orders_on ? "on" : "off";
+      replay_data.order_interventions = script_orders;
       for (const std::string& spec : args.interventions) {
         const std::size_t first = spec.find(':', 5);
         cli::Intervention intervention;
@@ -693,20 +771,33 @@ int run_with_replay(const cli::Arguments& args,
                 << " ticks\n";
     }
     result = simulation.result();
-  } else if (args.trace_on) {
-    // m11a: --trace drives the loop here so a line can be written every
-    // --trace-interval ticks (and once at the end). The tick sequence is
-    // exactly simulation.run()'s, so a traced battle is bit-identical.
-    std::ofstream trace_file(args.trace_path);
-    if (!trace_file) {
-      std::cerr << "error: cannot open trace file '" << args.trace_path
-                << "'\n";
-      return 1;
+  } else if (args.trace_on || !script_orders.empty()) {
+    // m11a/m11b: --trace drives the loop here so a line can be written
+    // every --trace-interval ticks (and once at the end); --script
+    // (without record/replay) drives it to apply timed orders between
+    // ticks. The tick sequence is exactly simulation.run()'s, so a
+    // traced battle is bit-identical.
+    std::ofstream trace_file;
+    if (args.trace_on) {
+      trace_file.open(args.trace_path);
+      if (!trace_file) {
+        std::cerr << "error: cannot open trace file '" << args.trace_path
+                  << "'\n";
+        return 1;
+      }
     }
+    std::size_t next_order = 0;
     while (!simulation.finished()) {
+      const std::uint64_t upcoming = simulation.world().tick_count + 1;
+      while (next_order < script_orders.size() &&
+             script_orders[next_order].tick <= upcoming) {
+        apply_script_order(script_orders[next_order]);
+        ++next_order;
+      }
       simulation.tick();
-      if (simulation.world().tick_count % args.trace_interval == 0 ||
-          simulation.finished()) {
+      if (args.trace_on &&
+          (simulation.world().tick_count % args.trace_interval == 0 ||
+           simulation.finished())) {
         trace_file << cli::trace_line(simulation);
       }
     }
@@ -1152,6 +1243,7 @@ int main(int argc, char** argv) {
     effective.neighbor_mode_explicit = true;
     effective.swap_sides = replay_data.swap_sides == "on";
     effective.nav_v2 = replay_data.nav == "v2";
+    effective.orders_on = replay_data.orders == "on";
   }
   return run_with_replay(effective, std::move(replay_data));
 }

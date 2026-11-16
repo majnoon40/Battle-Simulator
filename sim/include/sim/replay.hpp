@@ -19,15 +19,19 @@ namespace sim {
 // line-based text format:
 //
 //   BATTLESIM REPLAY 1
-//   version 11.0
+//   version 11.1
 //   scenario <name>            (as passed to --scenario)
 //   mod <dir or ->             (as passed to --mod, "-" = none)
 //   seed <n>
 //   ticks <n>                  (the tick limit used)
 //   flags variance=on|off contact_seek=on|off neighbor=grid|brute
-//         squads=on|off swap_sides=on|off nav=v1|v2
-//         (nav is m11a; files without it parse as v1)
+//         squads=on|off swap_sides=on|off nav=v1|v2 orders=on|off
+//         (nav is m11a, orders is m11b; files without them parse as
+//         v1 / on)
 //   intervene kill <unit> <tick>     (0+ lines, ascending tick)
+//   order <tick> <red|blue> <squads|all> <type> [args]  (m11b, ascending)
+//         moveto/attackmove: x y  |  retreat: [x y]  |  formation: <id>
+//         hold/regroup: no args
 //   hash <tick> <32-hex>            (checkpoints, ascending tick)
 //
 // --replay refuses a file whose version differs from sim::kSimVersion.
