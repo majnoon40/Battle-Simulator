@@ -27,8 +27,12 @@
 #include "sim/terrain.hpp"
 #include "game/camera.hpp"
 #include "game/view.hpp"
+#include <nlohmann/json.hpp>
+
 #include "render/battle_view.hpp"
 #include "render/png_writer.hpp"
+#include "render/ui/demo.hpp"
+#include "render/ui/ui.hpp"
 #include "render/raster.hpp"
 #include "sim/config.hpp"
 #include "sim/factions.hpp"
@@ -504,7 +508,186 @@ int run_with_replay(const cli::Arguments& args,
   // the state at the last target).
   const auto start = std::chrono::steady_clock::now();
   sim::BattleResult result;
-  if (render_mode) {
+  if (!args.ui_script.empty()) {
+    // m11c: the headless UI harness — drive the demo control panel
+    // with a scripted event sequence and write one PNG per frame plus a
+    // per-frame state line (tests pin both).
+    std::ifstream script_file(args.ui_script);
+    if (!script_file) {
+      std::cerr << "error: cannot open UI script '" << args.ui_script
+                << "'\n";
+      return 1;
+    }
+    nlohmann::json script;
+    try {
+      script_file >> script;
+    } catch (const nlohmann::json::parse_error& error) {
+      std::cerr << "error: UI script is not valid JSON: " << error.what()
+                << "\n";
+      return 1;
+    }
+    const auto script_uint = [&](const char* key,
+                                 std::uint64_t fallback) {
+      return script.contains(key) && script[key].is_number_unsigned()
+                 ? script[key].get<std::uint64_t>()
+                 : fallback;
+    };
+    if (!script.contains("width") || !script.contains("height") ||
+        !script.contains("out") || !script.contains("events")) {
+      std::cerr << "error: UI script needs width, height, out and "
+                   "events\n";
+      return 1;
+    }
+    const int ui_width = script["width"].get<int>();
+    const int ui_height = script["height"].get<int>();
+    if (ui_width < 200 || ui_height < 150 || ui_width > 4096 ||
+        ui_height > 4096) {
+      std::cerr << "error: UI script size must be in [200x150, "
+                   "4096x4096]\n";
+      return 1;
+    }
+    const std::uint64_t ui_tick = script_uint("tick", 0);
+    const std::string out_pattern = script["out"].get<std::string>();
+
+    // The scripted events, grouped by frame.
+    struct ScriptedEvent {
+      render::ui::Event event;
+      int frame = 0;
+    };
+    const auto parse_key = [](const std::string& name,
+                              render::ui::Key& out) {
+      if (name == "tab") out = render::ui::Key::Tab;
+      else if (name == "enter") out = render::ui::Key::Enter;
+      else if (name == "escape") out = render::ui::Key::Escape;
+      else if (name == "up") out = render::ui::Key::Up;
+      else if (name == "down") out = render::ui::Key::Down;
+      else if (name == "left") out = render::ui::Key::Left;
+      else if (name == "right") out = render::ui::Key::Right;
+      else if (name == "home") out = render::ui::Key::Home;
+      else if (name == "end") out = render::ui::Key::End;
+      else return false;
+      return true;
+    };
+    std::vector<ScriptedEvent> scripted;
+    int frame_count = 1;
+    for (const nlohmann::json& entry : script["events"]) {
+      if (!entry.is_object() || !entry.contains("frame") ||
+          !entry.contains("type")) {
+        std::cerr << "error: every UI script event needs frame and "
+                     "type\n";
+        return 1;
+      }
+      ScriptedEvent item;
+      item.frame = entry["frame"].get<int>();
+      frame_count = std::max(frame_count, item.frame + 1);
+      const std::string type = entry["type"].get<std::string>();
+      const auto number = [&](const char* key, int fallback) {
+        return entry.contains(key) && entry[key].is_number()
+                   ? entry[key].get<int>()
+                   : fallback;
+      };
+      if (type == "key") {
+        if (!entry.contains("key") ||
+            !parse_key(entry["key"].get<std::string>(), item.event.key)) {
+          std::cerr << "error: UI script key event needs a key (tab, "
+                       "enter, escape, up, down, left, right, home, "
+                       "end)\n";
+          return 1;
+        }
+        item.event.type = render::ui::Event::Type::Key;
+      } else if (type == "move" || type == "down" || type == "up") {
+        item.event.type =
+            type == "move" ? render::ui::Event::Type::MouseMove
+            : type == "down" ? render::ui::Event::Type::MouseDown
+                             : render::ui::Event::Type::MouseUp;
+        item.event.pos = render::ui::Point{number("x", 0),
+                                           number("y", 0)};
+        item.event.button = number("button", 0);
+      } else if (type == "wheel") {
+        item.event.type = render::ui::Event::Type::Wheel;
+        item.event.delta = number("delta", 0);
+        item.event.pos = render::ui::Point{number("x", 0),
+                                           number("y", 0)};
+      } else {
+        std::cerr << "error: unknown UI script event type '" << type
+                  << "'\n";
+        return 1;
+      }
+      scripted.push_back(item);
+    }
+
+    // The battle backdrop: the simulation advanced to `tick`, rendered
+    // once (the battle is frozen while the UI is driven).
+    while (simulation.tick_index() < ui_tick && !simulation.finished()) {
+      simulation.tick();
+    }
+    const game::Camera camera = game::Camera::fit(
+        simulation.world().width, simulation.world().height, ui_width,
+        ui_height);
+    game::ViewOptions options;
+    const render::ui::Theme ui_theme = render::ui::default_theme();
+    render::ui::State state = render::ui::demo_state(ui_width, ui_height);
+    for (int frame = 0; frame < frame_count; ++frame) {
+      for (const ScriptedEvent& item : scripted) {
+        if (item.frame != frame) {
+          continue;
+        }
+        state = render::ui::reduce(state, item.event, ui_theme);
+      }
+      render::DrawList list = render::build_battle_draw_list(
+          simulation, camera, options);
+      list.width = ui_width;
+      list.height = ui_height;
+      render::ui::draw_ui(state, ui_theme, list);
+      const render::Image image = render::rasterize(list);
+      std::string path = out_pattern;
+      const std::string marker = "%d";
+      const std::size_t at = path.find(marker);
+      if (at != std::string::npos) {
+        path.replace(at, marker.size(), std::to_string(frame));
+      }
+      const std::filesystem::path file_path(path);
+      if (file_path.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(file_path.parent_path(), ec);
+      }
+      if (!render::write_png(image, path)) {
+        std::cerr << "error: cannot write PNG '" << path << "'\n";
+        return 1;
+      }
+      // The state line: focus, hover, the last click, and the demo
+      // values (tests pin these).
+      const auto widget_by_id = [&](const std::string& id) {
+        for (std::size_t i = 0; i < state.tree.size(); ++i) {
+          if (state.tree.at(i).id == id) {
+            return static_cast<std::int32_t>(i);
+          }
+        }
+        return -1;
+      };
+      const auto find_widget = state.tree.at(static_cast<std::size_t>(
+          std::max<std::int32_t>(0, widget_by_id("zoom"))));
+      const auto filter = state.tree.at(static_cast<std::size_t>(
+          std::max<std::int32_t>(0, widget_by_id("filter"))));
+      std::cout << "ui frame " << frame << " focus "
+                << (state.focus >= 0
+                        ? state.tree.at(static_cast<std::size_t>(
+                              state.focus))
+                              .id
+                        : "-")
+                << " hover "
+                << (state.hover >= 0
+                        ? state.tree.at(static_cast<std::size_t>(
+                              state.hover))
+                              .id
+                        : "-")
+                << " clicked " << state.clicked << " zoom "
+                << find_widget.value << " filter " << filter.selected
+                << " -> " << path << "\n";
+      state.clicked.clear();
+    }
+    result = simulation.result();
+  } else if (render_mode) {
     std::vector<std::uint64_t> render_targets;
     if (args.render_frame > 0) {
       render_targets.push_back(args.render_frame);

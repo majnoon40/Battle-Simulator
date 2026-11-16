@@ -287,3 +287,86 @@ tools/analysis/order_acceptance.py.)
   per order, at most max_per_tick per faction per tick; orders change
   no per-tick steady-state cost (the member march replaces a separation
   radius query with a field lookup).
+
+# Milestone 11c — UI framework
+
+A retained-mode UI module in pure data (render/ui/), built for the
+m11d screens and headless-testable end to end.
+
+## Layers
+
+- **Theme** (`Theme`, `default_theme()`): colors and metrics in one
+  struct (panel/hover/active fills, border, text, accent, track/thumb,
+  font size, padding, gap, row height).
+- **Shared text metrics**: the exact metrics of the rasterizer's
+  built-in 5x7 font (scale = (px+3)/7, advance 6*scale, height
+  7*scale), so layout and drawing agree on every string.
+- **Widgets and tree**: Label, Button, Checkbox, Slider, Select,
+  Separator and Panel in a flat parent-before-child vector (`Tree`).
+- **Layout**: two passes — size bottom-up (hug / fixed / min), position
+  top-down. Panels lay children out as a column or row, inset content
+  by the padding, separate by the gap, stretch children on the cross
+  axis (unless fixed) and distribute leftover main-axis space to
+  growing children (`grow`, flexbox-style); integer remainders go to
+  the earliest growing children. Fixed iteration order, integer pixels
+  — the same tree always lays out identically.
+- **State and the pure reducer**: `reduce(State, Event, Theme)` — no
+  I/O, no clocks; the same event sequence always yields the same
+  state (tested). Keys: Tab wraps focus through interactive widgets,
+  Up/Down move it (and walk an open select's items), Enter activates,
+  Escape closes, Left/Right and the wheel adjust sliders by 1/32,
+  Home/End clamp. Mouse: hover follows the topmost interactive widget,
+  clicks activate buttons (on release over the widget — a drag away
+  cancels), toggle checkboxes, drag sliders (value from the pointer),
+  open selects and pick items. The state relayouts after every event.
+- **Drawing**: `draw_ui` appends screen-space commands to the battle
+  DrawList — panels with titles, hover/active fills, a 1px accent
+  focus ring, slider track + thumb, select dropdowns with the selected
+  row accented. Deterministic command order.
+
+## The demo screen and the harness
+
+`demo_state(width, height)` builds the battle control panel (play /
+pause / speed buttons, four view-option checkboxes, a zoom slider, a
+unit-type filter select, a bottom status bar) — the seed of the m11d
+screens. `battle_cli --ui-script script.json` runs it headlessly over
+a rendered battle frame: the script pins {width, height, tick, out,
+events: [{frame, type: key|move|down|up|wheel, ...}]}, every event is
+reduced, one PNG is written per frame (`%d` = frame) and a per-frame
+state line (focus / hover / clicked / zoom / filter) is printed for
+tests to pin.
+
+## Tests
+
+9 new tests in tests/test_ui.cpp (345 total, Release and ASan+UBSan
+green): text metrics match the rasterizer font; the demo layout is
+valid at 800x600, 1280x720 and 1920x1080 (every rect in bounds,
+positive sizes, the status bar pinned to the bottom, no sibling
+overlaps under any panel); Tab cycles every interactive widget in
+tree order and Up steps backward; keyboard interaction (Enter clicks
+the focused button, toggles the focused checkbox, Left/Right adjust
+the slider and clamp at 0); mouse interaction (click fires on release
+over the widget, a drag away cancels, checkbox clicks toggle); a
+select opens (growing to one row per item), picks and closes with the
+layout still valid; the reducer is pure and deterministic (identical
+event sequences reach identical states, rects included); the draw
+list is deterministic and moves with focus; and the --ui-script
+harness end to end at all three resolutions — PNG files with the PNG
+magic, pinned state lines, and byte-identical PNGs across two runs.
+
+Layout bugs found on the way (fixed, and now pinned by tests): the
+column/row main-axis mix-up that pushed the status bar off-screen
+(the spacer absorbed 920px of width-scaled leftover), and the missing
+cross-axis stretch that left the status bar hugging its label.
+
+## Analysis tools (this branch)
+
+- `tools/analysis/standoff_probe.cpp` (m11 task 1): runs a scenario
+  under the exact battle_cli setup (including the side swap) and
+  samples every N ticks — kills per window, action histograms,
+  visible-but-stationary shares, nearest-pair distances with BFS
+  terrain separation and visible-but-unreachable counts. The Nile
+  swapped finding (mutual rout cascade + termination gap, not a
+  terrain standoff) is in download/m11-analysis/task1-nile-standoff.md
+  with the raw samples; the orders study (m11 task 2) is in
+  task2-orders-study.md.

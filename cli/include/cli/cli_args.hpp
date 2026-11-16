@@ -79,6 +79,15 @@ struct Arguments {
   std::string render_out;          // --out (single frame)
   std::string render_out_prefix;   // --out-prefix (frame list)
   std::uint64_t ascii_tick = 0;    // 0 = off
+  // m11c: --ui-script script.json — headless UI harness. The script is
+  // a JSON object {width, height, tick?, out, events: [{frame, type:
+  // key|move|down|up|wheel, key?, x?, y?, button?, delta?}]}; the demo
+  // control panel is built at the given size over a battle frame at
+  // `tick`, every event is reduced through the pure reducer, one PNG
+  // per frame is written (out pattern, %d = frame) and a per-frame
+  // state line is printed to stdout. Mutually exclusive with the
+  // render/ascii modes.
+  std::string ui_script;
   bool export_json = false;
   std::string export_path;
   // M10 Part 2a: --events out.jsonl (battle event log), --export-csv
