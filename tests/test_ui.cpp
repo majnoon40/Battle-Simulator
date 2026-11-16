@@ -137,7 +137,7 @@ TEST(UiReducerTest, KeyboardInteracts) {
       render::ui::Event{render::ui::Event::Type::Key,
                         render::ui::Key::Enter}, theme);
   EXPECT_EQ(state.clicked, "pause");
-  // Tab onto the first checkbox (health-bars — past the speed
+  // Tab onto the first checkbox (hud — past the speed
   // buttons): Enter toggles it.
   for (int step = 0; step < 12; ++step) {
     state = render::ui::reduce(
@@ -145,18 +145,20 @@ TEST(UiReducerTest, KeyboardInteracts) {
         render::ui::Event{render::ui::Event::Type::Key,
                           render::ui::Key::Tab}, theme);
     if (state.tree.at(static_cast<std::size_t>(state.focus)).id ==
-        "health-bars") {
+        "hud") {
       break;
     }
   }
   const std::string focused_id =
       state.tree.at(static_cast<std::size_t>(state.focus)).id;
-  EXPECT_EQ(focused_id, "health-bars");
+  EXPECT_EQ(focused_id, "hud");
   state = render::ui::reduce(
       std::move(state),
       render::ui::Event{render::ui::Event::Type::Key,
                         render::ui::Key::Enter}, theme);
-  EXPECT_TRUE(state.tree.at(static_cast<std::size_t>(state.focus)).on);
+  // The demo checkboxes start on (the viewer defaults); Enter toggles
+  // this one off.
+  EXPECT_FALSE(state.tree.at(static_cast<std::size_t>(state.focus)).on);
   // Left/Right adjust the focused slider by 1/32 (clamped at 0).
   render::ui::State slider = render::ui::demo_state(1280, 720);
   // Tab until the zoom slider has focus.
@@ -246,7 +248,8 @@ TEST(UiReducerTest, MouseInteracts) {
                         box_center, 0}, theme);
   for (std::size_t i = 0; i < toggle.tree.size(); ++i) {
     if (toggle.tree.at(i).id == "terrain") {
-      EXPECT_TRUE(toggle.tree.at(i).on);
+      // Starts on; the click toggles it off.
+      EXPECT_FALSE(toggle.tree.at(i).on);
     }
   }
 }
@@ -378,13 +381,15 @@ TEST(UiHarnessTest, ScriptedRunWritesPngsAndStateLines) {
     ASSERT_EQ(std::system(cli.c_str()), 0) << cli;
     const std::string out = read_text(dir + "/out.txt");
     // Two tabs: pause -> play -> speed1; Enter clicks speed1.
-    EXPECT_NE(out.find("ui frame 0 focus play"), std::string::npos);
-    EXPECT_NE(out.find("ui frame 2 focus speed1 hover - clicked speed1"),
+    EXPECT_NE(out.find("ui frame 0 screen battle focus play"),
+              std::string::npos);
+    EXPECT_NE(out.find("ui frame 2 screen battle focus speed1 hover - "
+                  "quit 0 zoom 0.5 filter 0"),
               std::string::npos)
         << out;
     // Down/up at (60, 150) toggled the terrain checkbox: it holds the
     // focus from the click on.
-    EXPECT_NE(out.find("ui frame 4 focus terrain hover terrain clicked "),
+    EXPECT_NE(out.find("ui frame 4 screen battle focus terrain hover terrain"),
               std::string::npos)
         << out;
     for (int frame = 0; frame < 6; ++frame) {

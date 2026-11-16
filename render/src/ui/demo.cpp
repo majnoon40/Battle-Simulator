@@ -82,7 +82,7 @@ State demo_state(int width, int height) {
   // View options.
   for (const auto& [id, label] :
        std::initializer_list<std::pair<const char*, const char*>>{
-           {kIdHealthBars, "Health bars"},
+           {kIdHud, "HUD text"},
            {kIdTerrain, "Terrain layer"},
            {kIdSquadLinks, "Squad links"},
            {kIdGrid, "Grid"}}) {
@@ -91,6 +91,7 @@ State demo_state(int width, int height) {
       w.id = id;
       w.kind = Kind::Checkbox;
       w.text = label;
+      w.on = true;  // the viewer defaults (options_from mirrors these)
       return w;
     }());
   }

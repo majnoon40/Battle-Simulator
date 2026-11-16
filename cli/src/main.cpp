@@ -32,6 +32,7 @@
 #include "render/battle_view.hpp"
 #include "render/png_writer.hpp"
 #include "render/ui/demo.hpp"
+#include "render/ui/screens.hpp"
 #include "render/ui/ui.hpp"
 #include "render/raster.hpp"
 #include "sim/config.hpp"
@@ -624,21 +625,65 @@ int run_with_replay(const cli::Arguments& args,
     const game::Camera camera = game::Camera::fit(
         simulation.world().width, simulation.world().height, ui_width,
         ui_height);
-    game::ViewOptions options;
     const render::ui::Theme ui_theme = render::ui::default_theme();
-    render::ui::State state = render::ui::demo_state(ui_width, ui_height);
+    // m11d: the script picks the starting screen (menu / scenario /
+    // battle, default battle); the scenario list comes from the script
+    // or the shipped data/scenarios directory (sorted, deterministic).
+    std::vector<std::string> scenario_names;
+    if (script.contains("scenarios") && script["scenarios"].is_array()) {
+      for (const nlohmann::json& name : script["scenarios"]) {
+        if (name.is_string()) {
+          scenario_names.push_back(name.get<std::string>());
+        }
+      }
+    } else {
+      for (const auto& entry :
+           std::filesystem::directory_iterator("data/scenarios")) {
+        if (entry.path().extension() == ".json") {
+          scenario_names.push_back(entry.path().stem().string());
+        }
+      }
+      std::sort(scenario_names.begin(), scenario_names.end());
+    }
+    const std::string start_screen =
+        script.contains("screen") && script["screen"].is_string()
+            ? script["screen"].get<std::string>()
+            : "battle";
+    if (start_screen != "menu" && start_screen != "scenario" &&
+        start_screen != "battle") {
+      std::cerr << "error: UI script screen must be menu, scenario or "
+                   "battle\n";
+      return 1;
+    }
+    render::ui::App app =
+        render::ui::sandbox_app(ui_width, ui_height, scenario_names);
+    if (start_screen == "menu") {
+      app.screen = render::ui::Screen::Menu;
+    } else if (start_screen == "scenario") {
+      app.screen = render::ui::Screen::Scenario;
+    } else {
+      app.screen = render::ui::Screen::Battle;
+    }
     for (int frame = 0; frame < frame_count; ++frame) {
       for (const ScriptedEvent& item : scripted) {
         if (item.frame != frame) {
           continue;
         }
-        state = render::ui::reduce(state, item.event, ui_theme);
+        app = render::ui::reduce_app(std::move(app), item.event,
+                                     scenario_names);
       }
       render::DrawList list = render::build_battle_draw_list(
-          simulation, camera, options);
+          simulation, camera,
+          render::ui::options_from(app.battle));
       list.width = ui_width;
       list.height = ui_height;
-      render::ui::draw_ui(state, ui_theme, list);
+      const render::ui::State& screen_state = app.active();
+      if (app.screen != render::ui::Screen::Battle) {
+        // The menu and scenario screens draw over a plain background.
+        list.background = game::background_color();
+        list.cmds.clear();
+      }
+      render::ui::draw_ui(screen_state, ui_theme, list);
       const render::Image image = render::rasterize(list);
       std::string path = out_pattern;
       const std::string marker = "%d";
@@ -655,36 +700,51 @@ int run_with_replay(const cli::Arguments& args,
         std::cerr << "error: cannot write PNG '" << path << "'\n";
         return 1;
       }
-      // The state line: focus, hover, the last click, and the demo
-      // values (tests pin these).
-      const auto widget_by_id = [&](const std::string& id) {
-        for (std::size_t i = 0; i < state.tree.size(); ++i) {
-          if (state.tree.at(i).id == id) {
-            return static_cast<std::int32_t>(i);
-          }
+      // The state line: screen, focus, hover, the last click, plus the
+      // battle values (tests pin these).
+      const auto screen_name = [&] {
+        switch (app.screen) {
+          case render::ui::Screen::Menu:
+            return "menu";
+          case render::ui::Screen::Scenario:
+            return "scenario";
+          case render::ui::Screen::Battle:
+            break;
         }
-        return -1;
-      };
-      const auto find_widget = state.tree.at(static_cast<std::size_t>(
-          std::max<std::int32_t>(0, widget_by_id("zoom"))));
-      const auto filter = state.tree.at(static_cast<std::size_t>(
-          std::max<std::int32_t>(0, widget_by_id("filter"))));
-      std::cout << "ui frame " << frame << " focus "
-                << (state.focus >= 0
-                        ? state.tree.at(static_cast<std::size_t>(
-                              state.focus))
+        return "battle";
+      }();
+      std::cout << "ui frame " << frame << " screen " << screen_name
+                << " focus "
+                << (screen_state.focus >= 0
+                        ? screen_state.tree.at(static_cast<std::size_t>(
+                              screen_state.focus))
                               .id
                         : "-")
                 << " hover "
-                << (state.hover >= 0
-                        ? state.tree.at(static_cast<std::size_t>(
-                              state.hover))
+                << (screen_state.hover >= 0
+                        ? screen_state.tree.at(static_cast<std::size_t>(
+                              screen_state.hover))
                               .id
                         : "-")
-                << " clicked " << state.clicked << " zoom "
-                << find_widget.value << " filter " << filter.selected
-                << " -> " << path << "\n";
-      state.clicked.clear();
+                << " quit " << (app.quit ? 1 : 0);
+      if (app.screen == render::ui::Screen::Battle) {
+        const auto widget_by_id = [&](const std::string& id) {
+          for (std::size_t i = 0; i < app.battle.tree.size(); ++i) {
+            if (app.battle.tree.at(i).id == id) {
+              return static_cast<std::int32_t>(i);
+            }
+          }
+          return -1;
+        };
+        const auto& zoom = app.battle.tree.at(static_cast<std::size_t>(
+            std::max<std::int32_t>(0, widget_by_id("zoom"))));
+        const auto& filter = app.battle.tree.at(
+            static_cast<std::size_t>(
+                std::max<std::int32_t>(0, widget_by_id("filter"))));
+        std::cout << " zoom " << zoom.value << " filter "
+                  << filter.selected;
+      }
+      std::cout << " -> " << path << "\n";
     }
     result = simulation.result();
   } else if (render_mode) {

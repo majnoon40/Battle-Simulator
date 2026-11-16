@@ -370,3 +370,36 @@ cross-axis stretch that left the status bar hugging its label.
   terrain standoff) is in download/m11-analysis/task1-nile-standoff.md
   with the raw samples; the orders study (m11 task 2) is in
   task2-orders-study.md.
+
+# Milestone 11d — Sandbox screens
+
+The m11c framework becomes screens: a main menu (New battle /
+Scenarios / Quit), a scenario picker (a select over the scenario
+names + Start / Back) and the battle controls (the m11c demo screen,
+its checkboxes now mirroring the viewer defaults), plus the
+screen-level `App` reducer — `reduce_app` routes every event to the
+active screen through the pure ui::reduce and consumes exactly the
+navigation clicks (menu -> picker -> battle, Quit); other clicks
+(pause, play, speed) stay for the app layer. `options_from` maps the
+battle screen onto the viewer's ViewOptions (hud / terrain /
+squad-links / grid; zoom separately). Centered layouts use grow-only
+spacer boxes (no engine alignment feature).
+
+The `--ui-script` harness gains `screen` (menu | scenario | battle)
+and `scenarios` (the picker list; default: the shipped
+data/scenarios directory, sorted) — the state lines now carry the
+screen, focus, hover, quit and the battle values.
+
+Tests: 4 new in tests/test_screens.cpp (349 total): all three
+screens valid at 800x600 / 1280x720 / 1920x1080 with the menu box
+strictly centered; navigation clicks walk menu -> picker (item pick)
+-> battle with the chosen scenario, and Quit sets its flag;
+options_from maps the defaults and follows checkbox clicks; the
+harness renders the menu and scenario screens with pinned state
+lines and PNG magic.
+
+Not in this PR: the raylib window wiring of the screens (mouse ->
+events, screen switching, scenario reload). It is written but
+unverified locally (the BUILD_GAME build fetches raylib and did not
+complete in this environment); the patch is preserved at
+download/m11-analysis/m11d-window-wiring.patch for the next session.
