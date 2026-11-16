@@ -649,6 +649,19 @@ ParseOutcome parse_args(int argc, char** argv) {
       args.render_frame = parsed.value;
       continue;
     }
+    if (flag == "--ui-script") {
+      const char* value = require_value("--ui-script");
+      if (value == nullptr) {
+        return outcome;
+      }
+      if (std::string(value).empty()) {
+        outcome.ok = false;
+        outcome.error = "--ui-script requires a non-empty file path";
+        return outcome;
+      }
+      args.ui_script = value;
+      continue;
+    }
     if (flag == "--render-frames") {
       const char* value = require_value("--render-frames");
       if (value == nullptr) {
@@ -896,6 +909,11 @@ void print_usage(std::ostream& out) {
       << "  --render-frames a,b,c   Render several ticks, one PNG each; needs\n"
       << "                         --out-prefix <dir/name> (files are\n"
       << "                         <prefix>-<tick:6>.png)\n"
+      << "  --ui-script <file>      Headless UI harness (m11c): drive the\n"
+      << "                         demo control panel with scripted key /\n"
+      << "                         mouse events ({width, height, tick, out,\n"
+      << "                         events: [{frame, type, ...}]}); one PNG\n"
+      << "                         per frame plus per-frame state lines\n"
       << "  --ascii <tick>          Print a compact terminal map at <tick>\n"
       << "  --mod <dir>             Load a mod directory (M8): replaces\n"
       << "                         same-named data files wholesale; may add\n"

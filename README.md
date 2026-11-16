@@ -12,7 +12,7 @@ runs fully headless.
 The project was developed milestone-by-milestone (M1–M10); each milestone
 has a design report under `docs/`.
 
-## Features (through milestone M11b)
+## Features (through milestone M11c)
 
 - **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
   of randomness; the same seed reproduces the same battle byte-for-byte,
@@ -56,6 +56,12 @@ has a design report under `docs/`.
   morale, discipline and cohesion, bounded score terms — never
   overrides; recorded into replays and re-applied by `--replay
   --verify` (M11b, see [docs/squads.md](docs/squads.md)).
+- **UI framework** — a retained-mode widget set in pure data (buttons,
+  checkboxes, sliders, selects, panels), a deterministic layout engine
+  (hug/fixed/grow, cross-axis stretch), a theme, focus + keyboard
+  navigation, a pure reducer over UI events and a screen-space draw
+  layer over the battle view; `--ui-script` drives it headlessly and
+  writes PNG snapshots (M11c, see [docs/milestone-11.md](docs/milestone-11.md)).
 - **Replay** — record a battle to a file (setup, interventions, orders,
   state hashes every 25 ticks) and verify a re-run against it; `--seek`
   re-runs to any tick (M10.2b, M11b).
@@ -75,7 +81,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 This builds the `sim` library, the `battle_cli` headless tool and the
-`battle_tests` suite (336 tests). No windowing or OpenGL libraries are
+`battle_tests` suite (345 tests). No windowing or OpenGL libraries are
 required. Floating-point determinism flags (`-fno-fast-math
 -ffp-contract=off`) are applied automatically for GCC/Clang; use the same
 Release configuration for any determinism comparison.

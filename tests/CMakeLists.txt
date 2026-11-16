@@ -29,7 +29,8 @@ add_executable(battle_tests
   test_tactics.cpp
   test_events.cpp
   test_replay.cpp
-  test_orders.cpp)
+  test_orders.cpp
+  test_ui.cpp)
 target_compile_features(battle_tests PRIVATE cxx_std_20)
 target_link_libraries(battle_tests PRIVATE sim render game_core cli_args cli_report gtest_main)
 # The committed data files are validated by the loader tests.
