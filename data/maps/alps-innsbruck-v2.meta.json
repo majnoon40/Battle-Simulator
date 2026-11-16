@@ -1,0 +1,118 @@
+{
+  "axis_ford_cells": 0,
+  "axis_river_crossings": 0,
+  "balanced_band_pick": {
+    "fraction": 0.15,
+    "mean_move_cost": {
+      "east": 0.17,
+      "west": 0.172
+    },
+    "passable_share": {
+      "east": 1.0,
+      "west": 1.0
+    }
+  },
+  "bbox": {
+    "lat_max": 47.4,
+    "lat_min": 46.5,
+    "lon_max": 12.6,
+    "lon_min": 10.6
+  },
+  "cell_size": 2.5,
+  "ford_rounds": [
+    {
+      "connected": true,
+      "ford_cells": 19,
+      "ford_spacing_cells": 60
+    }
+  ],
+  "fords": 19,
+  "grid": {
+    "height": 400,
+    "width": 400
+  },
+  "isolated_land_cells_flooded": 312,
+  "map": "alps-innsbruck-v2.png",
+  "march": {
+    "connectivity": {
+      "normal_orientation": true,
+      "swapped_orientation": true
+    },
+    "east_band_to_west_objective_median": 1791.4888877551648,
+    "ratio_east_over_west": 0.9982861498024065,
+    "west_band_to_east_objective_median": 1794.5645024823384
+  },
+  "objectives": {
+    "blue": [
+      76.25,
+      501.25
+    ],
+    "red": [
+      923.75,
+      501.25
+    ]
+  },
+  "region": "alps-innsbruck",
+  "scale": {
+    "cell_meters_east_west": 380.0,
+    "cell_meters_north_south": 248.7,
+    "note": "world units are abstract game units, not meters",
+    "projection": "equirectangular (degrees, longitude NOT shrunk)"
+  },
+  "scenario": "earth-alps-innsbruck-v2.json",
+  "sources": {
+    "etopo": {
+      "product": "NOAA NCEI ETOPO 2022, 15 arc-second surface elevation (GeoTIFF tiles)",
+      "tiles": {
+        "ETOPO_2022_v1_15s_N60E000_surface.tif": {
+          "sha256": "d69dbf93dcf2f11fb008a57223da41092921ea2f81ef6eeb1807d50609586557",
+          "url": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif/ETOPO_2022_v1_15s_N60E000_surface.tif"
+        }
+      },
+      "url_dir": "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/15s_surface_elev_gtif",
+      "version": "v1 (2022)"
+    },
+    "natural_earth": {
+      "files": {
+        "ne_10m_lakes.zip": {
+          "sha256": "0803a06f9c3cb4671d89b68c48b142aad9366ba40f665245e12a913fbc61722a",
+          "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip"
+        },
+        "ne_10m_rivers_lake_centerlines.zip": {
+          "sha256": "ded71b01870855ccfe19b51f2ec14c9bb48fae23c0e9f3c11974d426433b5c38",
+          "url": "https://naciscdn.org/naturalearth/10m/physical/ne_10m_rivers_lake_centerlines.zip"
+        }
+      },
+      "license": "public domain",
+      "product": "Natural Earth 10m physical"
+    }
+  },
+  "spawn_band_fraction": 0.15,
+  "spawn_band_passable_share": {
+    "east": 0.993,
+    "west": 0.961
+  },
+  "synthetic_forest": false,
+  "terrain_counts": {
+    "ford": 89,
+    "grassland": 489,
+    "hills": 11655,
+    "mountain": 145704,
+    "water": 2063
+  },
+  "thresholds": {
+    "ford_spacing_cells": 60,
+    "forest_max_elev_m": 500.0,
+    "forest_max_slope_deg": 6.0,
+    "high_elev_m": 1200.0,
+    "hills_elev_m": 400.0,
+    "sea_level_m": 0.0,
+    "steep_slope_deg": 14.0
+  },
+  "tool_version": "1.1.0",
+  "variant": "v2",
+  "world": {
+    "height": 1000.0,
+    "width": 1000.0
+  }
+}

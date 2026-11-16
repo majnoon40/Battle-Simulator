@@ -77,6 +77,9 @@ struct BattleResult {
   std::uint32_t longest_stuck_stretch = 0;
   std::uint32_t units_stuck_over_100 = 0;
   std::vector<std::uint64_t> terrain_kills{};
+  // m11a: tick of the first enemy sighting by any unit (0 = no contact
+  // happened; set in every mode — the acceptance sweeps read it).
+  std::uint64_t first_contact_tick = 0;
 };
 
 }  // namespace sim

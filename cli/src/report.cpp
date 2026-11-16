@@ -251,6 +251,11 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
       << (r.has_winner ? faction_name(static_cast<std::size_t>(r.winner))
                        : "none (draw)")
       << ".\n";
+  out << "- First contact: tick "
+      << (r.first_contact_tick > 0
+              ? std::to_string(r.first_contact_tick)
+              : "never (no unit saw an enemy)")
+      << ".\n";
   for (std::size_t f = 0; f < 2; ++f) {
     const sim::FactionReport& side = r.factions[f];
     out << "- " << faction_name(f) << ": " << side.initial
@@ -460,6 +465,9 @@ std::string generate_report_json(const sim::Simulation& simulation,
       << (r.has_winner
               ? q(faction_name(static_cast<std::size_t>(r.winner)))
               : q("draw"))
+      << ",\n    \"first_contact_tick\": " << r.first_contact_tick
+      << ",\n    \"units_stuck_over_100\": " << r.units_stuck_over_100
+      << ",\n    \"longest_stuck_stretch\": " << r.longest_stuck_stretch
       << "\n  },\n";
   out << "  \"factions\": [\n";
   for (std::size_t f = 0; f < 2; ++f) {

@@ -361,6 +361,16 @@ class Simulation {
   std::vector<std::uint64_t> flow_follow_until_;  // tick until which to follow
   std::vector<std::uint64_t> terrain_kills_;      // by terrain type index
   std::uint32_t units_stuck_over_100_ = 0;
+  // m11a: navigation v2 — a formation member whose projected slot is
+  // farther than kSlotMarchDist world units away marches along the flow
+  // field instead of beelining to the slot (corridors: the whole squad
+  // columns through gates; open ground: boids steering re-forms the
+  // shape once the slot is near). kSlotMarchDist = 2.4 cells at the
+  // earth-map cell size, comfortably above the slot spacing (3.0) so a
+  // member ON its slot still steers by the shape rules.
+  static constexpr double kSlotMarchDist = 6.0;
+  // m11a: first tick any unit saw an enemy (0 = none yet).
+  std::uint64_t first_contact_tick_ = 0;
   void assign_personalities(
       const std::vector<Personality>& explicit_personalities);
   // Morale initialization (M5). Spawned units start at

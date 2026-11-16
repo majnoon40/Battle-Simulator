@@ -25,6 +25,10 @@ struct ReplayData {
   std::string neighbor = "grid";
   std::string squads = "on";
   std::string swap_sides = "off";
+  // m11a: navigation generation ("v1" | "v2"). Files recorded before
+  // m11a carry no nav flag; parse_replay defaults them to v1 so an old
+  // file replays under the exact behavior it was recorded with.
+  std::string nav = "v1";
   std::vector<Intervention> interventions;
   std::vector<std::pair<std::uint64_t, std::string>> hashes;
 };

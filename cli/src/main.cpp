@@ -17,6 +17,7 @@
 #include "cli/cli_args.hpp"
 #include "cli/replay.hpp"
 #include "cli/report.hpp"
+#include "cli/trace.hpp"
 #include "sim/replay.hpp"
 #include "sim/version.hpp"
 #include "sim/events.hpp"
@@ -323,6 +324,7 @@ int run_with_replay(const cli::Arguments& args,
     config.timeline_interval = args.csv_interval;
   }
   config.swap_sides = args.swap_sides;
+  config.nav_v2 = args.nav_v2;
   for (sim::Faction faction : sim::kAllFactions) {
     config.spawn_patterns[static_cast<std::size_t>(faction)] =
         scenario.spawn_patterns[static_cast<std::size_t>(faction)];
@@ -402,22 +404,22 @@ int run_with_replay(const cli::Arguments& args,
   // objectives, squad plans and spawn patterns swap with the bands
   // (config.swap_sides flips which band each faction holds). Unit
   // factions themselves are untouched: Red simply deploys in the east.
+  // m11a: the once-only objective swap (and its regression story) lives
+  // in cli::apply_side_swap, unit-tested in test_cli_args.cpp; gated on
+  // nav v2 so --nav v1 reproduces the exact M10 setup byte-for-byte.
   if (args.swap_sides) {
-    config.composition[static_cast<std::size_t>(sim::Faction::Red)]
-        .swap(config.composition[static_cast<std::size_t>(sim::Faction::Blue)]);
-    config.squad_plans[static_cast<std::size_t>(sim::Faction::Red)]
-        .swap(config.squad_plans[static_cast<std::size_t>(sim::Faction::Blue)]);
-    for (sim::Faction faction : sim::kAllFactions) {
-      const std::size_t index = static_cast<std::size_t>(faction);
-      const std::size_t other = 1 - index;
-      if (config.objectives[index].explicit_set ||
-          config.objectives[other].explicit_set) {
-        const sim::ObjectivePoint mine = config.objectives[index];
-        const sim::ObjectivePoint theirs = config.objectives[other];
-        config.objectives[index] = theirs;
-        config.objectives[other] = mine;
+    if (args.nav_v2) {
+      cli::apply_side_swap(config);
+    } else {
+      config.composition[static_cast<std::size_t>(sim::Faction::Red)]
+          .swap(config.composition[static_cast<std::size_t>(sim::Faction::Blue)]);
+      config.squad_plans[static_cast<std::size_t>(sim::Faction::Red)]
+          .swap(config.squad_plans[static_cast<std::size_t>(sim::Faction::Blue)]);
+      for (sim::Faction faction : sim::kAllFactions) {
+        const std::size_t index = static_cast<std::size_t>(faction);
+        const std::size_t other = 1 - index;
+        std::swap(config.spawn_patterns[index], config.spawn_patterns[other]);
       }
-      std::swap(config.spawn_patterns[index], config.spawn_patterns[other]);
     }
   }
 
@@ -659,6 +661,7 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.neighbor = args.grid_mode ? "grid" : "brute";
       replay_data.squads = args.squads_on ? "on" : "off";
       replay_data.swap_sides = args.swap_sides ? "on" : "off";
+      replay_data.nav = args.nav_v2 ? "v2" : "v1";
       for (const std::string& spec : args.interventions) {
         const std::size_t first = spec.find(':', 5);
         cli::Intervention intervention;
@@ -688,6 +691,24 @@ int run_with_replay(const cli::Arguments& args,
       std::cout << "replay verified: " << replay_data.hashes.size()
                 << " checkpoints match over " << simulation.world().tick_count
                 << " ticks\n";
+    }
+    result = simulation.result();
+  } else if (args.trace_on) {
+    // m11a: --trace drives the loop here so a line can be written every
+    // --trace-interval ticks (and once at the end). The tick sequence is
+    // exactly simulation.run()'s, so a traced battle is bit-identical.
+    std::ofstream trace_file(args.trace_path);
+    if (!trace_file) {
+      std::cerr << "error: cannot open trace file '" << args.trace_path
+                << "'\n";
+      return 1;
+    }
+    while (!simulation.finished()) {
+      simulation.tick();
+      if (simulation.world().tick_count % args.trace_interval == 0 ||
+          simulation.finished()) {
+        trace_file << cli::trace_line(simulation);
+      }
     }
     result = simulation.result();
   } else {
@@ -1130,6 +1151,7 @@ int main(int argc, char** argv) {
     effective.grid_mode = replay_data.neighbor == "grid";
     effective.neighbor_mode_explicit = true;
     effective.swap_sides = replay_data.swap_sides == "on";
+    effective.nav_v2 = replay_data.nav == "v2";
   }
   return run_with_replay(effective, std::move(replay_data));
 }

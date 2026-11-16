@@ -50,7 +50,8 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent))
 from shapefile import read_shapefile  # noqa: E402
 
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.0.0"      # the M9 generation behavior (variant v1)
+TOOL_VERSION_V2 = "1.1.0"   # m11a: axis fords, balanced bands, march meta
 REPO = Path(__file__).resolve().parents[2]
 CACHE = Path(__file__).resolve().parent / "cache"
 DEFAULT_GRID = 400
@@ -411,6 +412,12 @@ def band_passable_share(types, index_of, width, height, fraction):
 # passable cell within 16 cells, so very sparse bands fail to spawn).
 BAND_FRACTIONS = (0.15, 0.20, 0.25, 0.30, 0.35, 0.40)
 MIN_BAND_PASSABLE_SHARE = 0.25
+# m11a --v2: a fraction is "balanced" when the two bands' passable shares
+# and mean move_costs each agree within BALANCE_TOLERANCE.
+BALANCE_TOLERANCE = 0.10
+# m11a --v2: a river cell on a march axis with no ford within this
+# chebyshev radius (cells) gets a ford patch.
+AXIS_FORD_RADIUS = 12
 
 
 def bands_connectable(passable, width, height,
@@ -451,15 +458,189 @@ def snap_to_passable(cx, cy, allowed, max_radius=None):
 
 
 # ---------------------------------------------------------------------------
+# m11a: march analysis (axis fords, balanced bands, march cost)
+# ---------------------------------------------------------------------------
+
+# Mean move_cost of the passable cells in one spawn band (the sim's speed
+# multiplier; comparable bands march at comparable speed).
+def band_mean_move_cost(types, move_cost, width, fraction):
+    band = max(1, int(math.ceil(fraction * width)))
+    cost = move_cost[types]  # per-cell move cost grid
+    passable = cost > 0.0
+    west = passable[:, :band]
+    east = passable[:, width - band:]
+    west_cost = cost[:, :band][west].mean() if west.any() else 0.0
+    east_cost = cost[:, width - band:][east].mean() if east.any() else 0.0
+    return float(west_cost), float(east_cost)
+
+
+def line_cells(x0, y0, x1, y1):
+    """Cells along the segment, half-cell steps, deterministic order."""
+    steps = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 1
+    seen = []
+    for s in range(steps + 1):
+        t = s / steps
+        cell = (int(y0 + (y1 - y0) * t), int(x0 + (x1 - x0) * t))
+        if not seen or seen[-1] != cell:
+            seen.append(cell)
+    return seen
+
+
+def stamp_axis_fords(types, river, index_of, axes, radius=AXIS_FORD_RADIUS):
+    """m11a: a ford patch on every river segment that lies on a march
+    axis. Walks each axis at half-cell steps; a water sample on the river
+    with no ford within `radius` cells gets a plus-shaped ford patch
+    (the same patch apply_water_and_fords uses), so both orientations'
+    direct marches cross the river near the axis instead of detouring to
+    wherever the ford_spacing counter happened to stamp one (measured on
+    Lebanon: the coastal river had no ford at all, the Litani fords sat
+    300+ world units off the axis). Deterministic: fixed axis order,
+    fixed sample order, sorted patch cells. Returns (crossings,
+    stamped): how many axis river crossings the axes contain and how
+    many needed a new ford patch."""
+    height, width = types.shape
+    crossings = 0
+    stamped = 0
+    for (ax, ay), (bx, by) in axes:
+        on_river = False
+        for cy, cx in line_cells(ax, ay, bx, by):
+            if not (0 <= cy < height and 0 <= cx < width):
+                continue
+            if not river[cy, cx]:
+                on_river = False  # sea/lake on the axis is not a crossing
+                continue
+            if types[cy, cx] == index_of["ford"]:
+                # A ford ON the axis: the crossing is served; still count
+                # it (the river is here), never stamp over an existing
+                # ford.
+                if not on_river:
+                    crossings += 1
+                    on_river = True
+                continue
+            if types[cy, cx] not in (index_of["water"],
+                                     index_of["obstacle"]):
+                on_river = False
+                continue
+            if not on_river:
+                crossings += 1
+                on_river = True
+            # an existing ford within radius already serves this crossing
+            near = False
+            for oy in range(-radius, radius + 1):
+                if near:
+                    break
+                for ox in range(-radius, radius + 1):
+                    ny, nx = cy + oy, cx + ox
+                    if (0 <= ny < height and 0 <= nx < width and
+                            types[ny, nx] == index_of["ford"]):
+                        near = True
+                        break
+            if near:
+                continue
+            for ny, nx in ((cy, cx), (cy - 1, cx), (cy + 1, cx),
+                           (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < height and 0 <= nx < width:
+                    if types[ny, nx] == index_of["water"]:
+                        types[ny, nx] = index_of["ford"]
+                        stamped += 1
+    return crossings, stamped
+
+
+def dijkstra_cost(types, move_cost, target_cx, target_cy):
+    """Cost from every cell TO the target with the sim's exact weights
+    (entering a cell costs 1/move_cost, diagonals x sqrt(2), no corner
+    cutting) — the same field compute_flow_field builds in C++."""
+    import heapq
+    height, width = types.shape
+    cost_grid = move_cost[types]  # per-cell move cost (0 = impassable)
+    unreached = float("inf")
+    cost = np.full((height, width), unreached)
+    passable = cost_grid > 0.0
+    if not (0 <= target_cy < height and 0 <= target_cx < width) or \
+            not passable[target_cy, target_cx]:
+        return cost
+    cost[target_cy, target_cx] = 0.0
+    heap = [(0.0, target_cy, target_cx)]
+    neighbors = ((1, 0), (1, -1), (0, -1), (-1, -1),
+                 (-1, 0), (-1, 1), (0, 1), (1, 1))
+    while heap:
+        c, y, x = heapq.heappop(heap)
+        if c > cost[y, x]:
+            continue
+        for dx, dy in neighbors:
+            nx, ny = x + dx, y + dy
+            if not (0 <= ny < height and 0 <= nx < width):
+                continue
+            if not passable[ny, nx]:
+                continue
+            if dx != 0 and dy != 0 and \
+                    not passable[y + dy, x] and not passable[y, x + dx]:
+                continue  # no corner cutting
+            nxt = c + (1.0 / cost_grid[ny, nx]) * (math.sqrt(2.0)
+                                                   if dx and dy else 1.0)
+            if nxt < cost[ny, nx]:
+                cost[ny, nx] = nxt
+                heapq.heappush(heap, (nxt, ny, nx))
+    return cost
+
+
+def march_analysis(types, move_cost, width, band, west_obj, east_obj):
+    """Median flow-field cost from each spawn band to the objective it
+    marches on (normal orientation: west band -> east objective, east
+    band -> west objective), the ratio between the two marches, and
+    whether every passable band cell reaches both objectives (the
+    connectivity guarantee in BOTH orientations)."""
+    height = types.shape[0]
+    cost_from_east = dijkstra_cost(types, move_cost, east_obj[0], east_obj[1])
+    cost_from_west = dijkstra_cost(types, move_cost, west_obj[0], west_obj[1])
+    passable = move_cost[types] > 0.0
+    west_passable = passable[:, :band]
+    east_passable = passable[:, width - band:]
+    west_to_east = cost_from_east[:, :band][west_passable]
+    east_to_west = cost_from_west[:, width - band:][east_passable]
+    west_reaches_east = bool((west_to_east < np.inf).all()) if \
+        west_to_east.size else False
+    east_reaches_west = bool((east_to_west < np.inf).all()) if \
+        east_to_west.size else False
+    west_to_west = cost_from_west[:, :band][west_passable]
+    east_to_east = cost_from_east[:, width - band:][east_passable]
+    return {
+        "west_band_to_east_objective_median":
+            float(np.median(west_to_east)) if west_to_east.size else None,
+        "east_band_to_west_objective_median":
+            float(np.median(east_to_west)) if east_to_west.size else None,
+        "ratio_east_over_west":
+            float(np.median(east_to_west) / np.median(west_to_east))
+            if west_to_east.size and east_to_west.size and
+            np.median(west_to_east) > 0 else None,
+        "connectivity": {
+            "normal_orientation":
+                west_reaches_east and east_reaches_west,
+            "swapped_orientation":
+                bool((west_to_west < np.inf).all()) and
+                bool((east_to_east < np.inf).all()) if
+                west_to_west.size and east_to_east.size else False,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Generation pipeline
 # ---------------------------------------------------------------------------
 
 def generate_map(region, bbox, width, height, sample_elev, river_polylines,
-                 lake_polygons, cfg, palette, synthetic_forest=False):
+                 lake_polygons, cfg, palette, synthetic_forest=False,
+                 variant="v1"):
     """Pure generation: everything except file writing, so tests can call
     it with synthetic fixtures. Returns (types, meta) where meta carries
-    every statistic the writers need."""
+    every statistic the writers need.
+
+    variant="v2" (m11a): balanced band pick (passable share AND mean
+    move_cost within 10%), ford patches on river segments crossed by the
+    march axes, and a march-cost/connectivity analysis in the meta.
+    variant="v1" is the M9 behavior, byte-identical."""
     table, index_of, colors = palette
+    move_cost = np.array([t["move_cost"] for t in table["types"]])
     lon_min, lat_min, lon_max, lat_max = bbox
     lons, lats = grid_axes(bbox, width, height)
     lon_grid, lat_grid = np.meshgrid(lons, lats)
@@ -470,19 +651,45 @@ def generate_map(region, bbox, width, height, sample_elev, river_polylines,
 
     # Choose the spawn band fraction first: the smallest fraction whose
     # bands are both at least MIN_BAND_PASSABLE_SHARE passable (the
-    # default 0.15 stays when the terrain allows it).
-    chosen_fraction = None
+    # default 0.15 stays when the terrain allows it). v2 additionally
+    # prefers the smallest BALANCED fraction (both bands' passable shares
+    # and mean move_costs within BALANCE_TOLERANCE) and records which
+    # kind of pick happened.
+    candidates = []
     for fraction in BAND_FRACTIONS:
         west, east = band_passable_share(types, index_of, width, height,
                                          fraction)
         if west >= MIN_BAND_PASSABLE_SHARE and east >= MIN_BAND_PASSABLE_SHARE:
-            chosen_fraction = fraction
-            break
-    if chosen_fraction is None:
+            candidates.append(fraction)
+    if not candidates:
         raise RuntimeError(
             f"region '{region}': no spawn band fraction up to "
             f"{BAND_FRACTIONS[-1]} puts both bands on enough passable land "
             f"({MIN_BAND_PASSABLE_SHARE:.0%}); adjust the bbox")
+    balanced = None
+    balance_info = None
+    if variant == "v2":
+        for fraction in candidates:
+            west_share, east_share = band_passable_share(
+                types, index_of, width, height, fraction)
+            west_cost, east_cost = band_mean_move_cost(
+                types, move_cost, width, fraction)
+            share_delta = abs(west_share - east_share) / max(west_share,
+                                                             east_share)
+            cost_delta = abs(west_cost - east_cost) / max(west_cost,
+                                                          east_cost)
+            if share_delta <= BALANCE_TOLERANCE and \
+                    cost_delta <= BALANCE_TOLERANCE:
+                balanced = fraction
+                balance_info = {
+                    "fraction": fraction,
+                    "passable_share": {"west": round(west_share, 3),
+                                       "east": round(east_share, 3)},
+                    "mean_move_cost": {"west": round(west_cost, 3),
+                                       "east": round(east_cost, 3)},
+                }
+                break
+    chosen_fraction = balanced if balanced is not None else candidates[0]
 
     # Rivers + fords; halve the spacing until both bands connect.
     spacing = int(cfg["ford_spacing_cells"])
@@ -514,30 +721,69 @@ def generate_map(region, bbox, width, height, sample_elev, river_polylines,
     # main component to water and record how many cells that cost.
     labels, _ = connected_components(passable)
     band = max(1, int(math.ceil(chosen_fraction * width)))
-    west = [(y, x) for y in range(height) for x in range(band)
-            if passable[y, x]]
-    main = labels[west[0][0], west[0][1]]
-    isolated = passable & (labels != main)
-    if isolated.any():
-        types[isolated] = index_of["water"]
-        passable = (types != index_of["water"]) & \
-                   (types != index_of["obstacle"])
-    flooded = int(isolated.sum())
+
+    def flood_isolated():
+        """(flooded_cell_count, labels) — passable cells outside the main
+        component become water; idempotent."""
+        nonlocal types
+        labels_now, _ = connected_components(
+            (types != index_of["water"]) & (types != index_of["obstacle"]))
+        west_cells = [(y, x) for y in range(height) for x in range(band)
+                      if labels_now[y, x] != 0]
+        main_label = labels_now[west_cells[0][0], west_cells[0][1]]
+        isolated_now = (labels_now != 0) & (labels_now != main_label)
+        if isolated_now.any():
+            types[isolated_now] = index_of["water"]
+        return int(isolated_now.sum()), labels_now
+
+    flooded, labels = flood_isolated()
 
     # Objectives: each band's center snapped to the main component.
+    passable = (types != index_of["water"]) & (types != index_of["obstacle"])
     west = [(y, x) for y in range(height) for x in range(band)
             if passable[y, x]]
     main = labels[west[0][0], west[0][1]]
     in_main = passable & (labels == main)
-    def snap_world(cx, cy):
+    def snap_objective(cx, cy):
         found = snap_to_passable(cx, cy, in_main)
         if found is None:
             raise RuntimeError(f"region '{region}': no passable cell for a "
                                "spawn-band objective")
         fx, fy = found
-        return ((fx + 0.5) * CELL_SIZE, (fy + 0.5) * CELL_SIZE)
-    red_obj = snap_world(width - band // 2 - 1, height // 2)   # east band
-    blue_obj = snap_world(band // 2, height // 2)              # west band
+        return (fx, fy), ((fx + 0.5) * CELL_SIZE, (fy + 0.5) * CELL_SIZE)
+    red_cell, red_obj = snap_objective(width - band // 2 - 1,
+                                       height // 2)          # east band
+    blue_cell, blue_obj = snap_objective(band // 2, height // 2)  # west band
+
+    # m11a --v2: ford patches on the march axes, then re-flood and
+    # re-verify (fords only add passable cells, but a patch can bridge an
+    # islet into the main landmass, and every generated guarantee must
+    # hold on the FINAL grid). The axes are the two default marches —
+    # west band center -> east objective and the mirror — which are the
+    # same two segments in both orientations (--swap-sides only reverses
+    # who marches them).
+    axis_ford_cells = 0
+    axis_crossings = None
+    march = None
+    if variant == "v2":
+        river_mask = np.zeros((height, width), dtype=bool)
+        for cy, cx in river_cells:
+            river_mask[cy, cx] = True
+        river_mask = dilate(river_mask)
+        west_center = (band // 2, height // 2)
+        east_center = (width - band // 2 - 1, height // 2)
+        axes = [(west_center, red_cell), (east_center, blue_cell)]
+        axis_crossings, axis_ford_cells = stamp_axis_fords(
+            types, river_mask, index_of, axes)
+        more_flooded, labels = flood_isolated()
+        flooded += more_flooded
+        passable = (types != index_of["water"]) & \
+                   (types != index_of["obstacle"])
+        if not bands_connectable(passable, width, height, chosen_fraction):
+            raise RuntimeError(f"region '{region}': axis fords broke band "
+                               "connectivity (a mapgen bug)")
+        march = march_analysis(types, move_cost, width, band, blue_cell,
+                               red_cell)
 
     counts = {}
     for i, entry in enumerate(table["types"]):
@@ -562,6 +808,16 @@ def generate_map(region, bbox, width, height, sample_elev, river_polylines,
         "isolated_land_cells_flooded": flooded,
         "synthetic_forest": bool(synthetic_forest),
     }
+    if variant == "v2":
+        # v1 metas stay byte-identical to the shipped M9 files; the m11a
+        # analysis fields exist only in the -v2 metas.
+        meta.update({
+            "variant": variant,
+            "balanced_band_pick": balance_info,
+            "axis_ford_cells": axis_ford_cells,
+            "axis_river_crossings": axis_crossings,
+            "march": march,
+        })
     return types, meta
 
 
@@ -583,22 +839,26 @@ def hillshade(elev, bbox, width, height, path):
 
 
 def write_outputs(types, meta, region, elev, bbox, width, height, palette,
-                  out_root=REPO, preview=None, sources=None):
+                  out_root=REPO, preview=None, sources=None, variant="v1"):
+    """Writes <region>.png/.meta.json + earth-<region>.json (variant v1,
+    byte-compatible with the shipped M9 files) or the m11a -v2 names
+    (<region>-v2.*, earth-<region>-v2.json) with tool_version 1.1.0."""
     table, index_of, colors = palette
     maps_dir = Path(out_root) / "data" / "maps"
     scen_dir = Path(out_root) / "data" / "scenarios"
     maps_dir.mkdir(parents=True, exist_ok=True)
     scen_dir.mkdir(parents=True, exist_ok=True)
+    name = region if variant == "v1" else f"{region}-v2"
 
     rgb = np.zeros((height, width, 3), dtype=np.uint8)
     for i, color in colors.items():
         rgb[types == i] = color
-    png_path = maps_dir / f"{region}.png"
+    png_path = maps_dir / f"{name}.png"
     Image.fromarray(rgb).save(png_path, optimize=False)
 
     meta_full = dict(meta)
     meta_full["map"] = png_path.name
-    meta_full["scenario"] = f"earth-{region}.json"
+    meta_full["scenario"] = f"earth-{name}.json"
     meta_full["world"] = {"width": width * CELL_SIZE,
                           "height": height * CELL_SIZE}
     meta_full["scale"] = {
@@ -614,14 +874,15 @@ def write_outputs(types, meta, region, elev, bbox, width, height, palette,
     }
     meta_full["thresholds"] = json.loads(
         (Path(__file__).parent / "classify.json").read_text())
-    meta_full["tool_version"] = TOOL_VERSION
+    meta_full["tool_version"] = TOOL_VERSION if variant == "v1" \
+        else TOOL_VERSION_V2
     meta_full["sources"] = sources or {}
     meta_full["synthetic_forest"] = meta_full.get("synthetic_forest", False)
     if meta_full["synthetic_forest"]:
         meta_full["synthetic_forest_note"] = (
             "forest cells are a SYNTHETIC mask (low elevation, low slope), "
             "not real land-cover data")
-    meta_path = maps_dir / f"{region}.meta.json"
+    meta_path = maps_dir / f"{name}.meta.json"
     meta_path.write_text(json.dumps(meta_full, indent=2, sort_keys=True) +
                          "\n")
 
@@ -645,7 +906,7 @@ def write_outputs(types, meta, region, elev, bbox, width, height, palette,
         "squads": {"red": {"count": 40, "size": 25},
                    "blue": {"count": 40, "size": 25}},
     }
-    scen_path = scen_dir / f"earth-{region}.json"
+    scen_path = scen_dir / f"earth-{name}.json"
     scen_path.write_text(json.dumps(scenario, indent=2, sort_keys=True) + "\n")
     if preview:
         hillshade(elev, bbox, width, height, preview)
@@ -696,6 +957,12 @@ def main(argv=None):
     parser.add_argument("--synthetic-forest", action="store_true",
                         help="deterministic synthetic forest on low "
                              "grassland, labeled 'synthetic' in the meta")
+    parser.add_argument("--v2", action="store_true",
+                        help="m11a variant: balanced spawn bands, ford "
+                             "patches on march-axis river crossings, march "
+                             "cost + both-orientation connectivity in the "
+                             "meta; writes <region>-v2.* files (the v1 "
+                             "files stay untouched)")
     args = parser.parse_args(argv)
 
     if args.region:
@@ -715,9 +982,11 @@ def main(argv=None):
     mosaic = EtopoMosaic()
     rivers, lakes = load_natural_earth()
     sample = mosaic.sample_grid
+    variant = "v2" if args.v2 else "v1"
     types, meta = generate_map(region, bbox, args.grid, args.grid, sample,
                                rivers, lakes, cfg, palette,
-                               synthetic_forest=args.synthetic_forest)
+                               synthetic_forest=args.synthetic_forest,
+                               variant=variant)
     sources = build_sources(mosaic)
 
     lons, lats = grid_axes(bbox, args.grid, args.grid)
@@ -726,7 +995,7 @@ def main(argv=None):
     preview = (CACHE / f"preview-{region}.png") if args.preview else None
     png, meta_path, scen = write_outputs(
         types, meta, region, elev, bbox, args.grid, args.grid, palette,
-        preview=preview, sources=sources)
+        preview=preview, sources=sources, variant=variant)
     total = args.grid * args.grid
     share = {k: f"{100.0 * v / total:.1f}%" for k, v in
              meta["terrain_counts"].items()}

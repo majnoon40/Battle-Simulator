@@ -429,7 +429,100 @@ TEST(CliArgsTest, UsageTextDocumentsAllOptions) {
   EXPECT_NE(text.find("--formations"), std::string::npos);
   EXPECT_NE(text.find("--commanders"), std::string::npos);
   EXPECT_NE(text.find("--export-json"), std::string::npos);
+  EXPECT_NE(text.find("--nav"), std::string::npos);
+  EXPECT_NE(text.find("--trace"), std::string::npos);
   EXPECT_NE(text.find("--help"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// m11a: --nav flag and the --swap-sides setup mirror.
+// ---------------------------------------------------------------------------
+
+TEST(CliArgsTest, NavDefaultsToV2) {
+  const cli::ParseOutcome outcome = parse({"battle_cli"});
+  ASSERT_TRUE(outcome.ok);
+  EXPECT_TRUE(outcome.args.nav_v2);
+}
+
+TEST(CliArgsTest, NavFlagParses) {
+  EXPECT_TRUE(parse({"battle_cli", "--nav", "v2"}).args.nav_v2);
+  EXPECT_TRUE(parse({"battle_cli", "--nav", "on"}).args.nav_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--nav", "v1"}).args.nav_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--nav", "off"}).args.nav_v2);
+}
+
+TEST(CliArgsTest, InvalidNavValueIsRejected) {
+  const cli::ParseOutcome outcome = parse({"battle_cli", "--nav", "v3"});
+  EXPECT_FALSE(outcome.ok);
+  EXPECT_NE(outcome.error.find("--nav"), std::string::npos);
+}
+
+TEST(CliArgsTest, TraceFlagsParse) {
+  const cli::ParseOutcome outcome =
+      parse({"battle_cli", "--trace", "out.jsonl", "--trace-interval", "25"});
+  ASSERT_TRUE(outcome.ok);
+  EXPECT_TRUE(outcome.args.trace_on);
+  EXPECT_EQ(outcome.args.trace_path, "out.jsonl");
+  EXPECT_EQ(outcome.args.trace_interval, 25u);
+}
+
+TEST(CliArgsTest, TraceIntervalBoundsAreEnforced) {
+  EXPECT_FALSE(parse({"battle_cli", "--trace-interval", "0"}).ok);
+  EXPECT_FALSE(parse({"battle_cli", "--trace-interval", "100001"}).ok);
+}
+
+TEST(SideSwapTest, SwapsExplicitObjectivesExactlyOnce) {
+  // The M10 bug: the swap loop ran per faction, so the Red iteration
+  // swapped the objectives and the Blue iteration swapped them right
+  // back — a swapped battle parked each army on the objective inside
+  // its own spawn band.
+  sim::SimulationConfig config;
+  const std::size_t red = static_cast<std::size_t>(sim::Faction::Red);
+  const std::size_t blue = static_cast<std::size_t>(sim::Faction::Blue);
+  config.objectives[red] = sim::ObjectivePoint{100.0, 200.0, true};
+  config.objectives[blue] = sim::ObjectivePoint{300.0, 400.0, true};
+  cli::apply_side_swap(config);
+  EXPECT_TRUE(config.objectives[red].explicit_set);
+  EXPECT_DOUBLE_EQ(config.objectives[red].x, 300.0);
+  EXPECT_DOUBLE_EQ(config.objectives[red].y, 400.0);
+  EXPECT_DOUBLE_EQ(config.objectives[blue].x, 100.0);
+  EXPECT_DOUBLE_EQ(config.objectives[blue].y, 200.0);
+}
+
+TEST(SideSwapTest, SwapsCompositionsPlansAndPatterns) {
+  sim::SimulationConfig config;
+  const std::size_t red = static_cast<std::size_t>(sim::Faction::Red);
+  const std::size_t blue = static_cast<std::size_t>(sim::Faction::Blue);
+  config.composition[red] = {sim::TypeCount{0, 10}};
+  config.composition[blue] = {sim::TypeCount{1, 20}};
+  config.squad_plans[red] = sim::SquadPlan{2, 5};
+  config.squad_plans[blue] = sim::SquadPlan{4, 3};
+  config.spawn_patterns[red] = sim::SpawnPattern::Cluster;
+  config.spawn_patterns[blue] = sim::SpawnPattern::Echelon;
+  cli::apply_side_swap(config);
+  EXPECT_EQ(config.composition[red][0].type_index, 1u);
+  EXPECT_EQ(config.composition[red][0].count, 20u);
+  EXPECT_EQ(config.composition[blue][0].type_index, 0u);
+  EXPECT_EQ(config.composition[blue][0].count, 10u);
+  EXPECT_EQ(config.squad_plans[red]->count, 4);
+  EXPECT_EQ(config.squad_plans[blue]->count, 2);
+  EXPECT_EQ(config.spawn_patterns[red], sim::SpawnPattern::Echelon);
+  EXPECT_EQ(config.spawn_patterns[blue], sim::SpawnPattern::Cluster);
+}
+
+TEST(SideSwapTest, DefaultObjectivesAreNotTouched) {
+  // Default objectives (explicit_set false) are computed inside the
+  // simulation from the bands; the swap must leave them alone.
+  sim::SimulationConfig config;
+  config.objectives[static_cast<std::size_t>(sim::Faction::Red)] =
+      sim::ObjectivePoint{0.0, 0.0, false};
+  config.objectives[static_cast<std::size_t>(sim::Faction::Blue)] =
+      sim::ObjectivePoint{0.0, 0.0, false};
+  cli::apply_side_swap(config);
+  EXPECT_FALSE(config.objectives[static_cast<std::size_t>(
+                   sim::Faction::Red)].explicit_set);
+  EXPECT_FALSE(config.objectives[static_cast<std::size_t>(
+                   sim::Faction::Blue)].explicit_set);
 }
 
 }  // namespace

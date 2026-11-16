@@ -104,6 +104,12 @@ bool parse_replay(const std::string& path, ReplayData& out,
           out.squads = value;
         } else if (name == "swap_sides") {
           out.swap_sides = value;
+        } else if (name == "nav") {
+          if (value != "v1" && value != "v2") {
+            error = "bad nav flag value '" + value + "' in replay";
+            return false;
+          }
+          out.nav = value;
         } else {
           error = "unknown flag '" + name + "' in replay";
           return false;
@@ -184,7 +190,7 @@ bool write_replay(const std::string& path, const ReplayData& data) {
   file << "flags variance=" << data.variance
        << " contact_seek=" << data.contact_seek
        << " neighbor=" << data.neighbor << " squads=" << data.squads
-       << " swap_sides=" << data.swap_sides << "\n";
+       << " swap_sides=" << data.swap_sides << " nav=" << data.nav << "\n";
   for (const Intervention& intervention : data.interventions) {
     file << "intervene kill " << intervention.unit << " "
          << intervention.tick << "\n";

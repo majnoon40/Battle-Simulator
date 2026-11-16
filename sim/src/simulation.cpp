@@ -728,6 +728,7 @@ BattleResult Simulation::result() const {
     out.units_stuck_over_100 = units_stuck_over_100_;
     out.terrain_kills = terrain_kills_;
   }
+  out.first_contact_tick = first_contact_tick_;
   return out;
 }
 
@@ -778,6 +779,16 @@ void Simulation::decide_targets() {
       ActionScores scores{};
       const Action action = decide_unit_action(i, perception, scores);
       last_perception_[i] = perception;
+      if (perception.visible_enemies > 0 && first_contact_tick_ == 0) {
+        // m11a: the first enemy sighting of the battle (report field +
+        // FirstContact event). Record the seer's id; deterministic
+        // because the unit loop is in index order.
+        first_contact_tick_ = world_.tick_count + 1;
+        if (events_ != nullptr) {
+          events_->record(first_contact_tick_, EventType::FirstContact,
+                          world_.units[i].id);
+        }
+      }
       if (events_ != nullptr) {
         const std::uint8_t previous = world_.units[i].last_action;
         const std::uint8_t now = static_cast<std::uint8_t>(action);
@@ -1324,6 +1335,41 @@ void Simulation::resolve_movement() {
         if (!is_commander &&
             (action == Action::Hold || action == Action::Advance)) {
           member.in_formation = true;
+          if (config_.nav_v2 && terrain_ != nullptr &&
+              action == Action::Advance) {
+            // m11a navigation v2 — field-march: a member whose projected
+            // slot is far away marches with the army along the faction
+            // flow field instead of beelining to the slot. In a terrain
+            // corridor (coastal strip, valley, ford line) the projected
+            // slots bunch onto the few passable cells and the beeline
+            // jams the whole squad against the water or the valley wall
+            // (measured: swapped Lebanon parked 1040 units in one
+            // 21-unit strip at a mean 0.036 units/tick). Following the
+            // field keeps the squad moving at terrain speed; once the
+            // slot is within kSlotMarchDist the normal shape steering
+            // takes over again and the formation re-forms on open
+            // ground. The march is goal-seeking, so the stuck
+            // accounting sees members too.
+            double slot_x = 0.0;
+            double slot_y = 0.0;
+            formation_slot_world(squad, static_cast<std::size_t>(
+                                             unit_member_[i]),
+                                 slot_x, slot_y);
+            const double sx = slot_x - unit.x;
+            const double sy = slot_y - unit.y;
+            if (sx * sx + sy * sy >
+                    kSlotMarchDist * kSlotMarchDist &&
+                flow_step(faction_index(unit.faction), unit.x, unit.y,
+                          advance_dx, advance_dy)) {
+              PendingMove move;
+              move.moves = true;
+              move.goal_seeking = true;
+              move.x = unit.x + advance_dx * speed;
+              move.y = unit.y + advance_dy * speed;
+              pending_moves_[i] = move;
+              continue;
+            }
+          }
           if (steer_in_formation(i, unit, squad, member)) {
             continue;
           }
