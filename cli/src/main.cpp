@@ -522,7 +522,7 @@ int run_with_replay(const cli::Arguments& args,
     nlohmann::json script;
     try {
       script_file >> script;
-    } catch (const nlohmann::json::parse_error& error) {
+    } catch (const nlohmann::json::exception& error) {
       std::cerr << "error: UI script is not valid JSON: " << error.what()
                 << "\n";
       return 1;

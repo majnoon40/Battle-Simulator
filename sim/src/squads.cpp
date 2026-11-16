@@ -149,7 +149,7 @@ FormationConfig parse_formations(std::string_view json_text) {
   nlohmann::json root;
   try {
     root = nlohmann::json::parse(json_text.begin(), json_text.end());
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   if (!root.is_object()) {
@@ -263,7 +263,7 @@ FormationConfig parse_formations(std::istream& stream) {
   nlohmann::json root;
   try {
     root = nlohmann::json::parse(stream);
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   // Reuse the text parser for everything after the JSON decode.
@@ -292,7 +292,7 @@ CommanderConfig parse_commanders(std::string_view json_text) {
   nlohmann::json root;
   try {
     root = nlohmann::json::parse(json_text.begin(), json_text.end());
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   if (!root.is_object()) {
@@ -562,7 +562,7 @@ CommanderConfig parse_commanders(std::istream& stream) {
   nlohmann::json root;
   try {
     root = nlohmann::json::parse(stream);
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   return parse_commanders(root.dump());

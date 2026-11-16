@@ -712,6 +712,15 @@ bool Simulation::issue_order(
       report.rejected += squad_ids.size();
       return false;
     }
+  } else if (point_order) {
+    // m12 audit: flat maps validated nothing — negative, off-map and
+    // non-finite points were accepted and recorded into replays.
+    if (!std::isfinite(point_x) || !std::isfinite(point_y) ||
+        point_x < 0.0 || point_x > world_.width ||
+        point_y < 0.0 || point_y > world_.height) {
+      report.rejected += squad_ids.size();
+      return false;
+    }
   }
   // Rate limit: at most max_per_tick successful calls per faction per
   // tick (issue_order runs between ticks; the counter resets in
@@ -1448,6 +1457,7 @@ Action Simulation::decide_unit_action(std::size_t index,
     // leaderless squad (no commander to propagate — delivered directly
     // at reduced obedience), and MoveTo adds a small keep-marching bias
     // on Hold while enemies are visible.
+    bool player_order_scored = false;
     if (squads_active_ && unit_squad_[index] >= 0) {
       const Squad& squad = squads_[unit_squad_[index]];
       const SquadMemberState& member =
@@ -1511,10 +1521,42 @@ Action Simulation::decide_unit_action(std::size_t index,
         double delivery_strength = obedience;
         if (squad.player_order_active) {
           delivery_strength = 0.5 + 0.5 * obedience;
+          player_order_scored = true;
         }
         order_bonus = order_score_bonus(member.order, delivery_strength,
                                         commanders_->order_weights);
         if (squad.player_order_active) {
+          // m12 audit: docs/squads.md promises "AttackMove leaves
+          // engagement scoring untouched" (and MoveTo marches past
+          // enemies). The Order::Advance mapping boosts Approach, which
+          // at weight_scale 4.0 saturates at 1.0 and outranked Attack:
+          // ordered armies crowded the enemy without ever attacking
+          // (measured kill ratios 0.026 / 0.003 in the m11 study).
+          //
+          // There is a second amplifier: the M10 regroup term clamps
+          // Advance as clamp(-1 + 0, 0, 1) = 0.0 while enemies are
+          // visible (an unavailable action lifted to a pseudo-available
+          // 0.0 — harmless without orders, where 0.0 never wins). The
+          // order bonus adds to any score >= 0, so even a march-only
+          // bonus would score Advance 0.88 over Approach 0.70 and the
+          // army would march past the enemy without closing to melee.
+          //
+          // So: MoveTo keeps the march bonus (Advance + Search — that
+          // is what makes it march past enemies; in melee range base
+          // Attack ~0.9 still outranks the saturated Advance 0.88, so a
+          // MoveTo column defends itself) and loses the Approach boost
+          // (it must not chase). AttackMove zeroes the whole bonus: the
+          // ordered point still steers the Advance move, and Attack and
+          // Approach keep their base scores, so an attack-moving army
+          // fights normally on contact.
+          if (squad.player_order_type == PlayerOrderType::MoveTo) {
+            order_bonus[static_cast<std::size_t>(Action::Approach)] = 0.0;
+          } else if (squad.player_order_type ==
+                     PlayerOrderType::AttackMove) {
+            order_bonus[static_cast<std::size_t>(Action::Approach)] = 0.0;
+            order_bonus[static_cast<std::size_t>(Action::Advance)] = 0.0;
+            order_bonus[static_cast<std::size_t>(Action::Search)] = 0.0;
+          }
           for (double& bonus : order_bonus) {
             bonus *= commanders_->player_orders.weight_scale;
           }
@@ -1546,7 +1588,12 @@ Action Simulation::decide_unit_action(std::size_t index,
       chosen = previous;
       action_commit_[index] -= 1;
     } else {
-      chosen = choose_action(scores, previous, config_.action_stickiness);
+      // m12 audit: under a delivered player order, cap the stickiness
+      // bonus at the bounded score maximum so saturated actions tie-break
+      // by enum priority (Attack first) instead of sticky-locking the
+      // current one (a Hold order used to pin Hold over Attack forever).
+      chosen = choose_action(scores, previous, config_.action_stickiness,
+                             player_order_scored);
       if (tactics_active_) {
         const std::uint32_t interval =
             unit.decision_interval > 0 ? unit.decision_interval : 1;
@@ -1810,11 +1857,29 @@ void Simulation::resolve_movement() {
         pending_moves_[i] = move;
       } else if (action == Action::Advance) {
         const std::size_t faction = faction_index(unit.faction);
-        const double dx = objective_x_[faction] - unit.x;
-        const double dy = objective_y_[faction] - unit.y;
+        // m12 audit: a delivered point order steers Advance on flat maps
+        // too (the squad flow field only exists with terrain; before, the
+        // point was accepted, recorded — and ignored without terrain).
+        // Within kOrderArrivalDist of the point the unit holds position.
+        double goal_x = objective_x_[faction];
+        double goal_y = objective_y_[faction];
+        bool to_point = false;
+        if (squads_active_ && unit_squad_[i] >= 0) {
+          const Squad& squad =
+              squads_[static_cast<std::size_t>(unit_squad_[i])];
+          if (squad.player_order_active && squad.player_order_point) {
+            goal_x = squad.player_order_x;
+            goal_y = squad.player_order_y;
+            to_point = true;
+          }
+        }
+        const double dx = goal_x - unit.x;
+        const double dy = goal_y - unit.y;
         const double dist_sq = dx * dx + dy * dy;
-        if (dist_sq <= 0.0) {
-          continue;  // already at the objective
+        const double stop_dist_sq =
+            to_point ? kOrderArrivalDist * kOrderArrivalDist : 0.0;
+        if (dist_sq <= stop_dist_sq) {
+          continue;  // already at the objective / ordered point
         }
         const double dist = std::sqrt(dist_sq);
         const double step = std::min(speed, dist);
@@ -1825,6 +1890,29 @@ void Simulation::resolve_movement() {
         move.y = unit.y + dy / dist * step;
         pending_moves_[i] = move;
       } else if (action == Action::Retreat) {
+        // m12 audit: on flat maps a point retreat withdraws straight to
+        // the point at half speed (the flow-field path needs terrain);
+        // at the point the withdrawal is complete and the unit holds.
+        if (terrain_ == nullptr && squads_active_ && unit_squad_[i] >= 0) {
+          const Squad& squad =
+              squads_[static_cast<std::size_t>(unit_squad_[i])];
+          if (squad.player_order_active && squad.player_order_point) {
+            const double dx = squad.player_order_x - unit.x;
+            const double dy = squad.player_order_y - unit.y;
+            const double dist_sq = dx * dx + dy * dy;
+            if (dist_sq > kOrderArrivalDist * kOrderArrivalDist) {
+              const double dist = std::sqrt(dist_sq);
+              const double step = std::min(0.5 * speed, dist);
+              PendingMove move;
+              move.moves = true;
+              move.goal_seeking = true;
+              move.x = unit.x + dx / dist * step;
+              move.y = unit.y + dy / dist * step;
+              pending_moves_[i] = move;
+            }
+            continue;
+          }
+        }
         // m11b: a squad with an active point order withdraws to that
         // point (fighting withdrawal at half speed along the squad's
         // field) instead of straight away from the enemy.
@@ -2310,18 +2398,24 @@ void Simulation::apply_deaths() {
       // commander dying later is just a casualty).
       if (squads_active_ && unit_squad_[i] >= 0) {
         Squad& squad = squads_[unit_squad_[i]];
-        if (events_ != nullptr) {
-          bool any_alive = false;
-          for (const SquadMemberState& member : squad.members) {
-            if (world_.units[member.unit_index].alive) {
-              any_alive = true;
-              break;
-            }
+        bool any_alive = false;
+        for (const SquadMemberState& member : squad.members) {
+          if (world_.units[member.unit_index].alive) {
+            any_alive = true;
+            break;
           }
-          if (!any_alive) {
+        }
+        if (!any_alive) {
+          if (events_ != nullptr) {
             events_->record(world_.tick_count + 1,
                             EventType::SquadCollapse, squad.id);
           }
+          // m12 audit: docs/squads.md says a player order ends on squad
+          // collapse; clear_player_order was dead code until now. (A
+          // no-op for squads without orders: the fields are already
+          // false/0 and the flow slot empty, so no-order runs stay
+          // byte-identical.)
+          clear_player_order(squad);
         }
         if (squad.commander_index == i && squad.command_active) {
           const std::size_t faction = faction_index(unit.faction);

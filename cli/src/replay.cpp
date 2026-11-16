@@ -1,5 +1,6 @@
 #include "cli/replay.hpp"
 
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -45,7 +46,9 @@ bool parse_order_script(const std::string& path,
   nlohmann::json root;
   try {
     file >> root;
-  } catch (const nlohmann::json::parse_error& parse_error) {
+  } catch (const nlohmann::json::exception& parse_error) {
+    // json::exception, not just parse_error: a number overflow (1e999)
+    // throws out_of_range.406, which used to escape and abort the CLI.
     error = std::string("order script is not valid JSON: ") +
             parse_error.what();
     return false;
@@ -69,6 +72,10 @@ bool parse_order_script(const std::string& path,
       return false;
     }
     order.tick = entry["tick"].get<std::uint64_t>();
+    if (!entry["faction"].is_string()) {
+      error = "order script: faction must be a string ('red' or 'blue')";
+      return false;
+    }
     const std::string faction = entry["faction"].get<std::string>();
     if (faction != "red" && faction != "blue") {
       error = "order script: faction must be 'red' or 'blue', got '" +
@@ -98,6 +105,11 @@ bool parse_order_script(const std::string& path,
       error = "order script: squads must be \"all\" or an id array";
       return false;
     }
+    if (!entry["order"].is_string()) {
+      error = "order script: order must be a string (moveto, attackmove, "
+              "hold, retreat, regroup or formation)";
+      return false;
+    }
     const std::string type = entry["order"].get<std::string>();
     if (!sim::parse_player_order_type(type, order.type)) {
       error = "order script: unknown order type '" + type +
@@ -118,6 +130,10 @@ bool parse_order_script(const std::string& path,
         }
         order.x = entry["x"].get<double>();
         order.y = entry["y"].get<double>();
+        if (!std::isfinite(order.x) || !std::isfinite(order.y)) {
+          error = "order script: x and y must be finite numbers";
+          return false;
+        }
         order.has_point = true;
       } else if (needs_point) {
         error = "order script: " + type + " requires x and y";

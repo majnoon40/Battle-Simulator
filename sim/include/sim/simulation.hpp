@@ -411,6 +411,14 @@ class Simulation {
   // earth-map cell size, comfortably above the slot spacing (3.0) so a
   // member ON its slot still steers by the shape rules.
   static constexpr double kSlotMarchDist = 6.0;
+
+  // m12 audit: arrival radius for point orders (MoveTo / AttackMove /
+  // Retreat-to-point). Within it a unit holds at the ordered point instead
+  // of resuming the march to the faction objective (on terrain maps the
+  // squad flow field has no direction on its target cell, which used to
+  // fall through to a straight-line faction-objective beeline: the squad
+  // oscillated around the point forever).
+  static constexpr double kOrderArrivalDist = 3.0;
   // m11a: first tick any unit saw an enemy (0 = none yet).
   std::uint64_t first_contact_tick_ = 0;
   void assign_personalities(
