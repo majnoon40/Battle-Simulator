@@ -45,6 +45,11 @@ struct Arguments {
   // exact M10 navigation — byte-identical to the M10 binary, including
   // the swapped-orientation stall it had).
   bool nav_v2 = true;
+
+  // m13 item 2: availability (--ai-avail v2|v1) and termination
+  // (--end v2|v1) rules; v2 default, v1 reproduces milestone-12.
+  bool ai_avail_v2 = true;
+  bool end_v2 = true;
   // m11b player orders: --orders on (default) or off (issue_order is
   // inert; a --script is rejected). With no order issued battles are
   // byte-identical either way.

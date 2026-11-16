@@ -388,3 +388,49 @@ TEST(ReplayCliTest, SeekStopsAtTheRequestedTick) {
   EXPECT_NE(buffer.str().find("\"ticks_elapsed\": 150"), std::string::npos)
       << buffer.str().substr(0, 200);
 }
+
+// m13 item 2: the ai_avail / end flags round-trip through replay files.
+TEST(ReplayTest, AvailEndFlagRoundTripAndLegacyDefault) {
+  cli::ReplayData data;
+  data.version = sim::kSimVersion;
+  data.scenario = "default";
+  data.mod = "-";
+  data.seed = 42;
+  data.ticks = 3000;
+  data.ai_avail = "v1";
+  data.end = "v1";
+  data.hashes.emplace_back(25, "aabbccddeeff00112233445566778899");
+  ASSERT_TRUE(cli::write_replay("/tmp/m13-avail.replay", data));
+  cli::ReplayData parsed;
+  std::string error;
+  ASSERT_TRUE(cli::parse_replay("/tmp/m13-avail.replay", parsed, error))
+      << error;
+  EXPECT_EQ(parsed.ai_avail, "v1");
+  EXPECT_EQ(parsed.end, "v1");
+
+  // A pre-13.0 file (no ai_avail/end flags) parses as the v2 defaults
+  // (older files are refused by the version check before flags matter).
+  const std::string legacy =
+      "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+      "\nscenario default\nmod -\nseed 42\nticks 100\n"
+      "flags variance=on contact_seek=on neighbor=grid squads=on "
+      "swap_sides=off nav=v2 orders=on\n"
+      "hash 25 aabbccddeeff00112233445566778899\n";
+  { std::ofstream file("/tmp/m13-legacy.replay"); file << legacy; }
+  cli::ReplayData legacy_parsed;
+  ASSERT_TRUE(
+      cli::parse_replay("/tmp/m13-legacy.replay", legacy_parsed, error))
+      << error;
+  EXPECT_EQ(legacy_parsed.ai_avail, "v2");
+  EXPECT_EQ(legacy_parsed.end, "v2");
+
+  // Unknown values are rejected.
+  const std::string bad =
+      "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+      "\nscenario default\nmod -\nseed 42\nticks 100\n"
+      "flags ai_avail=v3\nhash 25 aabbccddeeff00112233445566778899\n";
+  { std::ofstream file("/tmp/m13-bad.replay"); file << bad; }
+  cli::ReplayData bad_parsed;
+  EXPECT_FALSE(cli::parse_replay("/tmp/m13-bad.replay", bad_parsed, error));
+  EXPECT_NE(error.find("ai_avail"), std::string::npos);
+}

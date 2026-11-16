@@ -17,6 +17,11 @@ enum class TerminationReason : std::uint8_t {
   FactionRouted,      // M5: a faction had no active units (all dead or routed)
                       // for rout_timeout_ticks consecutive ticks
   TickLimit,          // configured tick limit reached
+  RoutedThreshold,    // m13: active units stayed below max(5, 5% of the
+                      // initial strength) for routed_threshold_ticks
+  Stalemate,          // m13: after first contact, both factions together
+                      // executed fewer than stalemate_max_engagements
+                      // attacks over the last stalemate_ticks ticks
 };
 
 [[nodiscard]] const char* to_string(TerminationReason reason) noexcept;

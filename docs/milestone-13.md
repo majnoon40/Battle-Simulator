@@ -120,3 +120,58 @@ instead of living only in the unverified raylib file:
 Known gaps (documented in docs/viewer.md, planned for 5a): no
 battle->menu navigation in the App reducer yet; a window resize rebuilds
 the screens without preserving widget values.
+
+## Item 2 — availability and termination (PR #8, branch m13-avail-end)
+
+`--ai-avail v1|v2` and `--end v1|v2`, both default v2; v1 reproduces
+milestone-12 byte-for-byte (committed baselines in
+`data/baselines/m13_avail_v1/`, pinned by tests/test_avail_end.cpp; the
+M7 no-map pins in test_terrain.cpp now also run with the v1 flags).
+Sim version 13.0; replay setups record and re-apply both flags.
+
+- **Availability v2**: the M10 regroup term no longer clamps an
+  unavailable Advance (enemy visible) to a pseudo-available 0.0 — the
+  m12 audit's root cause; a delivered MoveTo keeps the march available
+  explicitly (documented "marches past enemies", melee self-defense
+  still wins); Help is capped per ally per tick
+  (`help.max_helpers_per_ally`, deterministic in unit index order) and
+  never targets routed allies farther than
+  `help.routed_help_enemy_distance` from any living enemy; a contact
+  seeker that reaches the faction estimate and sees nothing drops it
+  (v1 keeps milling at the stale point — pinned by test).
+- **Termination v2**: (a) a faction's active units below
+  `max(routed_threshold_min_units, routed_threshold_fraction x initial)`
+  for `routed_threshold_ticks` consecutive ticks ends the battle
+  (ROUTED_THRESHOLD, winner = the other faction); (b) the stalemate
+  rule — after first contact, when the last `stalemate_ticks` ticks
+  average fewer than `stalemate_max_engagements` attackers (alive
+  units, both factions combined, choosing Attack), the battle ends
+  (STALEMATE, winner by alive count). Values in data/morale.json's
+  `termination` block (optional; spec defaults 5% / 5 / 60 / 600 / 5).
+
+### The acceptance, with the diagnosis trail
+
+- Swapped Nile (earth-nile-delta, 20 seeds, 3000 ticks): main ends 0/20
+  before the limit; the threshold rule alone reaches 11/20 (55%) — the
+  remainder are the M12-documented rout-lock standoffs (85-90% routed,
+  56-698 active survivors, 0-3 attackers per tick with sporadic bursts).
+  A streak rule failed at 75% (bursts reset it); the windowed-average
+  rule reaches **20/20 (100%)**: 9 routed_threshold + 11 stalemate.
+- Default 250v250 (10 seeds): v1 mean end 881.5 (8 faction_routed /
+  2 tick_limit) vs v2 632.7 (2 routed / 2 routed_threshold /
+  6 stalemate). Viewer-demo: 345.0 vs 330.1 (8 routed / 2
+  routed_threshold). Not worse — battles end earlier, none drag.
+
+### Tests (376 total; 14 new for this item)
+
+Regroup availability at the score_actions level; the Help cap (2 of 5
+helpers pass, v1 uncapped); routed-ally exclusion; estimate decay on
+arrival (v1 keeps the stale estimate); threshold termination (winner
+and both-below draw, v1 runs on); stalemate termination (quiet window,
+winner by alive count, v1 runs to the tick limit); morale termination
+block parse + defaults + range validation; CLI flag parsing + usage;
+replay flag round-trip + legacy defaults + bad-value rejection; five
+scenario baselines + an orders battle reproduce main byte-for-byte
+under v1; v1- and v2-flagged records verify on the swapped Nile map.
+Two M5-era fixtures pin `end_v2 = false` (they test the v1 rout rules
+with armies below the v2 floor); the M7 no-map pins run with v1 flags.

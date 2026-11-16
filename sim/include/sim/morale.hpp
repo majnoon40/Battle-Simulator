@@ -105,6 +105,26 @@ struct MoraleConfig {
   // A faction ends (FACTION_ROUTED) after this many consecutive ticks with
   // no active units (all dead or routed).
   std::uint64_t rout_timeout_ticks = 30;
+
+  // Termination v2 (m13 item 2, --end v2): a faction also ends the battle
+  // (ROUTED_THRESHOLD) when its active units (alive and not routed) stay
+  // below max(routed_threshold_min_units, routed_threshold_fraction of
+  // its initial alive count) for routed_threshold_ticks consecutive
+  // ticks — the mass-rout tail the full-route timeout never catches.
+  // The block is optional in data files; these are the spec defaults.
+  struct Termination {
+    double routed_threshold_fraction = 0.05;
+    std::uint32_t routed_threshold_min_units = 5;
+    std::uint64_t routed_threshold_ticks = 60;
+    // The zero-progress rule for the post-contact rout-lock standoffs:
+    // when the last stalemate_ticks ticks after first contact average
+    // fewer than stalemate_max_engagements attackers (alive units, both
+    // factions combined, choosing Attack), the battle ends as a
+    // stalemate. Real fights run dozens of attackers per tick; the
+    // rout-lock trickle is 0-3 with rare bursts.
+    std::uint64_t stalemate_ticks = 600;
+    std::uint32_t stalemate_max_engagements = 5;
+  } termination;
 };
 
 // Parses a morale configuration from JSON text (see data/morale.json for the

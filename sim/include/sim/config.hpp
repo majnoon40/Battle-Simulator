@@ -180,6 +180,22 @@ struct SimulationConfig {
   // references are identical either way.
   bool nav_v2 = true;
 
+  // Availability and termination v2 (m13 item 2, --ai-avail / --end
+  // v2|v1; both default v2). ai_avail_v2: unavailable actions stay
+  // excluded from selection — the M10 regroup term no longer clamps an
+  // unavailable Advance (enemy visible) up to a pseudo-available 0.0
+  // (the m12 audit's root cause), a delivered MoveTo keeps the march
+  // available explicitly instead, Help is capped per ally and never
+  // targets routed allies far from combat, and stale faction contact
+  // estimates decay when a seeker reaches them and sees nothing.
+  // end_v2: a faction also ends the battle (ROUTED_THRESHOLD) when its
+  // active units stay below max(termination.routed_threshold_min_units,
+  // termination.routed_threshold_fraction of its initial strength) for
+  // termination.routed_threshold_ticks consecutive ticks (data/morale.json).
+  // v1 for both flags reproduces milestone-12 byte-for-byte.
+  bool ai_avail_v2 = true;
+  bool end_v2 = true;
+
   // Player orders (m11b, --orders on|off; default on). issue_order is
   // inert when false. With no orders issued the battle is byte-identical
   // either way (the delivery machinery only runs when an order exists).

@@ -526,3 +526,32 @@ TEST(SideSwapTest, DefaultObjectivesAreNotTouched) {
 }
 
 }  // namespace
+
+// m13 item 2: --ai-avail / --end rule-version flags.
+TEST(CliArgsTest, AvailabilityAndEndFlagsParse) {
+  EXPECT_TRUE(parse({"battle_cli", "--ai-avail", "v2"}).args.ai_avail_v2);
+  EXPECT_TRUE(parse({"battle_cli", "--ai-avail", "on"}).args.ai_avail_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--ai-avail", "v1"}).args.ai_avail_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--ai-avail", "off"}).args.ai_avail_v2);
+  EXPECT_TRUE(parse({"battle_cli", "--end", "v2"}).args.end_v2);
+  EXPECT_TRUE(parse({"battle_cli", "--end", "on"}).args.end_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--end", "v1"}).args.end_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--end", "off"}).args.end_v2);
+  // Defaults are v2 for both.
+  EXPECT_TRUE(parse({"battle_cli", "--seed", "42"}).args.ai_avail_v2);
+  EXPECT_TRUE(parse({"battle_cli", "--seed", "42"}).args.end_v2);
+  // Bad values are rejected with an error naming the flag.
+  const cli::ParseOutcome bad_avail =
+      parse({"battle_cli", "--ai-avail", "v3"});
+  EXPECT_FALSE(bad_avail.ok);
+  EXPECT_NE(bad_avail.error.find("--ai-avail"), std::string::npos);
+  const cli::ParseOutcome bad_end = parse({"battle_cli", "--end", "soon"});
+  EXPECT_FALSE(bad_end.ok);
+  EXPECT_NE(bad_end.error.find("--end"), std::string::npos);
+  // The usage text documents them.
+  std::ostringstream out;
+  cli::print_usage(out);
+  const std::string usage = out.str();
+  EXPECT_NE(usage.find("--ai-avail"), std::string::npos);
+  EXPECT_NE(usage.find("--end"), std::string::npos);
+}

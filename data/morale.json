@@ -41,5 +41,12 @@
   },
   "max_loss_per_tick": 10.0,
   "max_gain_per_tick": 2.5,
-  "rout_timeout_ticks": 30
+  "rout_timeout_ticks": 30,
+  "termination": {
+    "routed_threshold_fraction": 0.05,
+    "routed_threshold_min_units": 5,
+    "routed_threshold_ticks": 60,
+    "stalemate_ticks": 600,
+    "stalemate_max_engagements": 5
+  }
 }

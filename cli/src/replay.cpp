@@ -270,6 +270,18 @@ bool parse_replay(const std::string& path, ReplayData& out,
             return false;
           }
           out.nav = value;
+        } else if (name == "ai_avail") {
+          if (value != "v1" && value != "v2") {
+            error = "bad ai_avail flag value '" + value + "' in replay";
+            return false;
+          }
+          out.ai_avail = value;
+        } else if (name == "end") {
+          if (value != "v1" && value != "v2") {
+            error = "bad end flag value '" + value + "' in replay";
+            return false;
+          }
+          out.end = value;
         } else if (name == "orders") {
           if (value != "on" && value != "off") {
             error = "bad orders flag value '" + value + "' in replay";
@@ -433,6 +445,7 @@ bool write_replay(const std::string& path, const ReplayData& data) {
        << " contact_seek=" << data.contact_seek
        << " neighbor=" << data.neighbor << " squads=" << data.squads
        << " swap_sides=" << data.swap_sides << " nav=" << data.nav
+       << " ai_avail=" << data.ai_avail << " end=" << data.end
        << " orders=" << data.orders << "\n";
   for (const Intervention& intervention : data.interventions) {
     file << "intervene kill " << intervention.unit << " "

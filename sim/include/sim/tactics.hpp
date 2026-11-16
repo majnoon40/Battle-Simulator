@@ -56,6 +56,14 @@ struct TacticsConfig {
     double score_base = 0.50;
     double health_weight = 0.30;
     double distance_weight = 0.20;
+    // m13 item 2 (--ai-avail v2): at most max_helpers_per_ally units may
+    // choose Help toward the same ally in one tick (decisions run in unit
+    // index order, so the cap is deterministic), and a routed ally farther
+    // than routed_help_enemy_distance from any living enemy is never a
+    // Help target (it is out of the fight, not in danger). Optional in
+    // data files; these are the defaults.
+    int max_helpers_per_ally = 2;
+    double routed_help_enemy_distance = 30.0;
   } help;
 
   // Flank (M10): when the unit's squad has a frontally engaged enemy group

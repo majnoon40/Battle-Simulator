@@ -95,7 +95,7 @@ MoraleConfig parse_config(const nlohmann::json& root) {
   reject_unknown(root, "morale config",
                  {"start", "states", "loss", "gain", "thresholds", "recovery",
                   "ai", "max_loss_per_tick", "max_gain_per_tick",
-                  "rout_timeout_ticks"});
+                  "rout_timeout_ticks", "termination"});
 
   MoraleConfig config;
 
@@ -266,6 +266,49 @@ MoraleConfig parse_config(const nlohmann::json& root) {
       whole_number_at_least(
           required_field(root, "morale config", "rout_timeout_ticks"), 1,
           "morale config", "rout_timeout_ticks"));
+
+  // m13 item 2: optional termination block (defaults above; mods without
+  // it keep the spec values).
+  if (root.contains("termination")) {
+    const nlohmann::json& termination = section_of(root, "termination");
+    reject_unknown(termination, "termination",
+                   {"routed_threshold_fraction",
+                    "routed_threshold_min_units", "routed_threshold_ticks",
+                    "stalemate_ticks", "stalemate_max_engagements"});
+    const double fraction = number_at_least(
+        required_field(termination, "termination",
+                       "routed_threshold_fraction"),
+        0.0, "termination", "routed_threshold_fraction");
+    if (fraction > 1.0) {
+      fail("termination.routed_threshold_fraction must be in [0, 1]");
+    }
+    config.termination.routed_threshold_fraction = fraction;
+    config.termination.routed_threshold_min_units =
+        static_cast<std::uint32_t>(whole_number_at_least(
+            required_field(termination, "termination",
+                           "routed_threshold_min_units"),
+            1, "termination", "routed_threshold_min_units"));
+    config.termination.routed_threshold_ticks =
+        static_cast<std::uint64_t>(whole_number_at_least(
+            required_field(termination, "termination",
+                           "routed_threshold_ticks"),
+            1, "termination", "routed_threshold_ticks"));
+    if (termination.contains("stalemate_ticks")) {
+      config.termination.stalemate_ticks = static_cast<std::uint64_t>(
+          whole_number_at_least(
+              termination.at("stalemate_ticks"), 1, "termination",
+              "stalemate_ticks"));
+      if (config.termination.stalemate_ticks > 10000) {
+        fail("termination.stalemate_ticks must be <= 10000");
+      }
+    }
+    if (termination.contains("stalemate_max_engagements")) {
+      config.termination.stalemate_max_engagements =
+          static_cast<std::uint32_t>(whole_number_at_least(
+              termination.at("stalemate_max_engagements"), 0,
+              "termination", "stalemate_max_engagements"));
+    }
+  }
 
   return config;
 }

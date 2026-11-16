@@ -12,6 +12,10 @@ const char* to_string(TerminationReason reason) noexcept {
       return "faction_routed";
     case TerminationReason::TickLimit:
       return "tick_limit";
+    case TerminationReason::RoutedThreshold:
+      return "routed_threshold";
+    case TerminationReason::Stalemate:
+      return "stalemate";
   }
   return "unknown";
 }
