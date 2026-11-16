@@ -214,6 +214,41 @@ and download URLs listed in
   byte-for-byte — see [docs/terrain.md](docs/terrain.md) and
   [docs/milestone-11.md](docs/milestone-11.md)).
 
+## Known issues
+
+Measured on main (M13 item 0 state check; full method and tables in
+[docs/milestone-13.md](docs/milestone-13.md)):
+
+- **Hold and Retreat on open ground lose almost always.** In the 200-paired-
+  seed orders study (both orientations) the ordered faction's win share is
+  0.003 for hold and 0.003 for retreat, with kill ratios 0.046 and 0.072
+  (attackmove: 0.560 [0.511, 0.608] and flank: 0.568 [0.519, 0.615] win
+  share — those two orders are significantly beneficial). The hold
+  diagnosis: holding units *do* fight back (81-86% of engaged unit-ticks
+  choose Attack), but a stationary, concentrated blob is focus-fired at its
+  perimeter, the deaths concentrate, and a rout wave rolls inward (193 of
+  216 alive units routed within 300 ticks of first contact in the probe
+  battle); routed units cannot fight and are run down. This is battle
+  dynamics, not an order bug — but the termination rule lets it grind (see
+  the next bullet), and combat depth (facing/flank/rear damage) is meant to
+  reward secure flanks and punish head-on stands less absolutely.
+- **A mass-routed side does not end the battle.** The routed-faction end
+  condition waits for a full route; battles where one side is >90% routed
+  but ~20 units stay active run to the tick limit (the study's hold arm
+  averaged 1463 of 1500 ticks). The M13 termination v2 work
+  (`--end v2`) ends a battle when a faction's active units stay below
+  max(5, 5% of initial) for 60 ticks.
+- **The M10 regroup term lifts an unavailable Advance to 0.0**
+  (`clamp(-1 + 0, 0, 1)` while enemies are visible). Harmless without
+  orders (0.0 never wins a fair score) and documented in the m12 audit;
+  `--ai-avail v2` removes it (unavailable actions stay excluded from
+  selection).
+- **The raylib window is compile-verified only** (CI `game-build`); it has
+  never been run by the maintainers. The UI screens' window wiring is new
+  (M13 item 1) — the hand checklist is in
+  [docs/viewer.md](docs/viewer.md). Known window gaps: no battle->menu
+  navigation yet, and a window resize resets the UI widget values.
+
 ## Documentation
 
 | File | Contents |

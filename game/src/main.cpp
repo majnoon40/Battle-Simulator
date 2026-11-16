@@ -1,17 +1,28 @@
-// battle_game — the raylib viewer window (M7).
+// battle_game — the raylib viewer window (M7), with the sandbox UI
+// screens (m13 item 1): the window maps OS input to ui::Events, runs the
+// pure reducer (reduce_app), draws the UI tree over the battle DrawList
+// and reloads the battle when the scenario picker picks one. All policy
+// lives in pure functions (render/ui/shell.cpp, game_core, render/) that
+// the headless tests cover; this file only wires them to raylib, so it
+// stays compile-verified (CI game-build) plus the human checklist in
+// docs/viewer.md.
 //
 // UNVERIFIED CODE: this file needs raylib, which needs X11/GL development
 // headers that this sandbox does not have; it is built only with
 // -DBUILD_GAME=ON and was NOT compiled or run here. All of its logic that
 // could be made pure lives in game_core (camera, accumulator, picking, HUD
-// text, colors) and render/ (the DrawList both backends consume), which
-// ARE built and tested headlessly; this file only wires them to raylib.
+// text, colors), render/ (the DrawList both backends consume) and
+// render/ui/shell.cpp (the window policy), which ARE built and tested
+// headlessly; this file only wires them to raylib.
 //
-// Controls: Space pause, +/- speed (1,2,4,8,16x), '.' step one tick when
-// paused, WASD/arrows and right-drag pan, wheel zoom, F fit, R restart
-// from tick 0 with the same seed, N new seed, left-click a unit or squad
-// badge to inspect, L squad links, I sight radius, O formation slots,
-// T terrain, G grid, H HUD. The sim runs at 60 ticks/s at 1x.
+// Controls (battle screen): Space pause, +/- speed (1,2,4,8,16x), '.'
+// step one tick when paused, WASD/arrows and right-drag pan, wheel zoom,
+// F fit, R restart from tick 0 with the same seed, N new seed, left-click
+// a unit or squad badge to inspect, L squad links, I sight radius, O
+// formation slots, T terrain, G grid, H HUD. The sim runs at 60 ticks/s
+// at 1x. UI keys (Tab / Enter / Escape / arrows over a slider or open
+// select) reach the screens; the pointer over UI panels belongs to the
+// UI. The sim runs at 60 ticks/s at 1x.
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -29,6 +40,8 @@
 #include "game/view.hpp"
 #include "render/battle_view.hpp"
 #include "render/raster.hpp"
+#include "render/ui/screens.hpp"
+#include "render/ui/shell.hpp"
 #include "sim/config.hpp"
 #include "sim/scenario.hpp"
 #include "sim/simulation.hpp"
@@ -214,6 +227,7 @@ int main(int argc, char** argv) {
   game::Camera camera = game::Camera::fit(
       simulation.world().width, simulation.world().height,
       GetRenderWidth(), GetRenderHeight());
+  double base_zoom = camera.zoom;  // the slider's midpoint
   game::TickAccumulator accumulator(60.0, 256);
   game::ViewOptions options;
   bool paused = false;
@@ -221,11 +235,165 @@ int main(int argc, char** argv) {
   double sim_seconds = 0.0;  // total time spent ticking, for the HUD tps
   std::uint64_t sim_ticks_done = 0;
 
+  // --- the sandbox UI (m13 item 1) ------------------------------------
+  // The app starts on the menu; the CLI-provided battle renders as the
+  // backdrop until a scenario is picked (the picker's Start reloads the
+  // battle). All policy — gating, clicks, zoom mapping — lives in
+  // render/ui/shell.cpp; this loop only translates raylib input into
+  // ui::Events and renders what the reducers produce.
+  std::vector<std::string> scenario_names =
+      render::ui::list_scenarios("data/scenarios");
+  if (scenario_names.empty()) {
+    scenario_names.push_back("default");
+  }
+  render::ui::App app = render::ui::sandbox_app(
+      GetRenderWidth(), GetRenderHeight(), scenario_names);
+  const render::ui::Theme ui_theme = render::ui::default_theme();
+  render::ui::BattleView view;  // pause/speed/options/zoom from the UI
+  std::string loaded_scenario = scenario_name;  // what the sim runs now
+
+  // (Re)builds the battle for a scenario stem; resets every viewer
+  // state exactly like R (restart) does.
+  const auto load_scenario = [&](const std::string& stem) {
+    const std::string path = "data/scenarios/" + stem + ".json";
+    const sim::Scenario picked =
+        sim::parse_scenario(read_file(path, "scenario"));
+    cli::Arguments scenario_args = args;
+    scenario_args.scenario_path = path;
+    config = build_config(scenario_args, types, picked, personalities,
+                          morale, formations, commanders, scenario_name);
+    simulation = sim::Simulation(config);
+    camera = game::Camera::fit(simulation.world().width,
+                               simulation.world().height,
+                               GetRenderWidth(), GetRenderHeight());
+    accumulator.reset();
+    sim_seconds = 0.0;
+    sim_ticks_done = 0;
+    paused = false;
+    finished = false;
+    options.selected_unit = -1;
+    options.selected_squad = -1;
+    loaded_scenario = stem;
+  };
+
   while (!WindowShouldClose()) {
     const int screen_width = GetRenderWidth();
     const int screen_height = GetRenderHeight();
 
+    // A resized window relayouts the screens (the widget values reset —
+    // the sandbox keeps no per-size state; noted in docs/viewer.md).
+    if (app.width != screen_width || app.height != screen_height) {
+      app = render::ui::sandbox_app(screen_width, screen_height,
+                                    scenario_names);
+    }
+    const bool in_battle = app.screen == render::ui::Screen::Battle;
+
+    // --- UI events: raylib input -> ui::Event -> reduce_app -----------
+    {
+      std::vector<render::ui::Event> events;
+      const Vector2 mouse = GetMousePosition();
+      render::ui::Event move;
+      move.type = render::ui::Event::Type::MouseMove;
+      move.pos = render::ui::Point{static_cast<int>(mouse.x),
+                                   static_cast<int>(mouse.y)};
+      events.push_back(move);
+      if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        render::ui::Event down;
+        down.type = render::ui::Event::Type::MouseDown;
+        down.pos = move.pos;
+        down.button = 0;
+        events.push_back(down);
+      }
+      if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        render::ui::Event up;
+        up.type = render::ui::Event::Type::MouseUp;
+        up.pos = move.pos;
+        up.button = 0;
+        events.push_back(up);
+      }
+      const double wheel = GetMouseWheelMove();
+      if (wheel != 0.0) {
+        render::ui::Event scroll;
+        scroll.type = render::ui::Event::Type::Wheel;
+        scroll.pos = move.pos;
+        scroll.delta = wheel > 0.0 ? 1 : -1;
+        events.push_back(scroll);
+      }
+      const auto key_event = [](render::ui::Key key) {
+        render::ui::Event event;
+        event.type = render::ui::Event::Type::Key;
+        event.key = key;
+        return event;
+      };
+      // Arrow keys go to the UI when it owns them (menus, a focused
+      // slider / open select on the battle screen); otherwise they pan.
+      const render::ui::ArrowOwnership arrows =
+          render::ui::ui_arrow_ownership(app);
+      if (IsKeyPressed(KEY_TAB)) {
+        events.push_back(key_event(render::ui::Key::Tab));
+      }
+      if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+        events.push_back(key_event(render::ui::Key::Enter));
+      }
+      if (IsKeyPressed(KEY_ESCAPE)) {
+        events.push_back(key_event(render::ui::Key::Escape));
+      }
+      if (IsKeyPressed(KEY_HOME)) {
+        events.push_back(key_event(render::ui::Key::Home));
+      }
+      if (IsKeyPressed(KEY_END)) {
+        events.push_back(key_event(render::ui::Key::End));
+      }
+      if (arrows.up_down) {
+        if (IsKeyPressed(KEY_UP)) {
+          events.push_back(key_event(render::ui::Key::Up));
+        }
+        if (IsKeyPressed(KEY_DOWN)) {
+          events.push_back(key_event(render::ui::Key::Down));
+        }
+      }
+      if (arrows.left_right) {
+        if (IsKeyPressed(KEY_LEFT)) {
+          events.push_back(key_event(render::ui::Key::Left));
+        }
+        if (IsKeyPressed(KEY_RIGHT)) {
+          events.push_back(key_event(render::ui::Key::Right));
+        }
+      }
+      for (const render::ui::Event& event : events) {
+        app = render::ui::reduce_app(std::move(app), event,
+                                     scenario_names);
+      }
+      if (app.quit) {
+        break;
+      }
+      // The picker's Start reloads the battle with the chosen scenario
+      // (once; Back to the battle keeps the running one).
+      if (app.screen == render::ui::Screen::Battle &&
+          !app.chosen_scenario.empty() &&
+          app.chosen_scenario != loaded_scenario) {
+        load_scenario(app.chosen_scenario);
+        // The slider's midpoint follows the newly fitted camera.
+        base_zoom = camera.zoom;
+      }
+    }
+
+    // --- battle-screen controls from the UI ---------------------------
+    if (in_battle) {
+      view = render::ui::apply_battle_frame(app, view, base_zoom);
+      options = view.options;
+      paused = view.paused;
+      accumulator.set_speed(view.speed);
+      camera.zoom = view.zoom;
+      camera.clamp_zoom();
+    }
+    const render::ui::Point pointer{
+        static_cast<int>(GetMousePosition().x),
+        static_cast<int>(GetMousePosition().y)};
+    const bool pointer_over_ui = render::ui::ui_covers(app, pointer);
+
     // --- input -----------------------------------------------------------
+    if (in_battle) {
     if (IsKeyPressed(KEY_SPACE)) {
       paused = !paused;
     }
@@ -285,24 +453,32 @@ int main(int argc, char** argv) {
     if (IsKeyPressed(KEY_H)) {
       options.show_hud = !options.show_hud;
     }
+    }
     // Pan: held keys and right-drag (pixels per second at 1x speed feel).
+    // Arrow keys pan only when the UI does not own them.
     {
+      const render::ui::ArrowOwnership arrows =
+          render::ui::ui_arrow_ownership(app);
       const double dt = GetFrameTime();
       double pan_x = 0.0;
       double pan_y = 0.0;
-      if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP)) {
+      if (IsKeyDown(KEY_W) || (in_battle && !arrows.up_down &&
+                               IsKeyDown(KEY_UP))) {
         pan_y -= 600.0 * dt;
       }
-      if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN)) {
+      if (IsKeyDown(KEY_S) || (in_battle && !arrows.up_down &&
+                               IsKeyDown(KEY_DOWN))) {
         pan_y += 600.0 * dt;
       }
-      if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) {
+      if (IsKeyDown(KEY_A) || (in_battle && !arrows.left_right &&
+                               IsKeyDown(KEY_LEFT))) {
         pan_x -= 600.0 * dt;
       }
-      if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) {
+      if (IsKeyDown(KEY_D) || (in_battle && !arrows.left_right &&
+                               IsKeyDown(KEY_RIGHT))) {
         pan_x += 600.0 * dt;
       }
-      if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+      if (in_battle && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
         const Vector2 delta = GetMouseDelta();
         pan_x += delta.x;
         pan_y += delta.y;
@@ -311,17 +487,25 @@ int main(int argc, char** argv) {
         camera.pan(pan_x, pan_y);
       }
     }
-    // Zoom: wheel about the cursor.
+    // Zoom: wheel about the cursor — the UI's slider follows the camera
+    // (slider_from_zoom is the exact inverse of the shell's mapping).
     {
       const double wheel = GetMouseWheelMove();
-      if (wheel != 0.0) {
+      if (wheel != 0.0 && in_battle && !pointer_over_ui) {
         const Vector2 mouse = GetMousePosition();
         camera.zoom_at(mouse.x, mouse.y, std::pow(1.15, wheel),
                        screen_width, screen_height);
+        for (render::ui::Widget& widget : app.battle.tree.widgets) {
+          if (widget.id == "zoom") {
+            widget.value =
+                render::ui::slider_from_zoom(camera.zoom, base_zoom);
+          }
+        }
       }
     }
-    // Click: unit first, then squad badge.
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+    // Click: unit first, then squad badge — never through the UI.
+    if (in_battle && !pointer_over_ui &&
+        IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
       const Vector2 mouse = GetMousePosition();
       const std::int32_t unit = game::pick_unit(
           simulation, camera, screen_width, screen_height, mouse.x, mouse.y,
@@ -348,7 +532,7 @@ int main(int argc, char** argv) {
 
     // --- simulation ------------------------------------------------------
     bool limited = false;
-    if (!paused && !finished) {
+    if (in_battle && !paused && !finished) {
       // Keep the capture on the selected unit for the coming tick.
       if (options.selected_unit >= 0) {
         sim::AiDebugCapture capture;
@@ -373,7 +557,9 @@ int main(int argc, char** argv) {
     }
 
     // --- draw ------------------------------------------------------------
-    // Live playback stats go straight into the HUD text.
+    // Live playback stats go straight into the HUD text (battle screen
+    // only; the menus draw over a plain background, exactly like the
+    // --ui-script harness).
     render::HudStats stats;
     stats.fps = GetFPS();
     stats.sim_tps =
@@ -383,13 +569,18 @@ int main(int argc, char** argv) {
     stats.speed = accumulator.speed();
     stats.limited = limited;
     stats.scenario_name = scenario_name;
-    const render::DrawList list = render::build_battle_draw_list(
+    render::DrawList list = render::build_battle_draw_list(
         simulation, camera, options, screen_width, screen_height, stats);
+    if (!in_battle) {
+      list.background = game::background_color();
+      list.cmds.clear();
+    }
+    render::ui::draw_ui(app.active(), ui_theme, list);
 
     BeginDrawing();
     ClearBackground(to_raylib(list.background));
     draw_list_raylib(list);
-    if (finished) {
+    if (in_battle && finished) {
       DrawText("battle over - R restart, N new seed", 8,
                screen_height - 20, 14, LIGHTGRAY);
     }

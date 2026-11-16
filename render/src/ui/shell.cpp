@@ -1,0 +1,110 @@
+// m13 item 1 — the window shell policy implementation. See shell.hpp.
+#include "render/ui/shell.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
+
+#include "game/camera.hpp"
+#include "render/ui/demo.hpp"
+
+namespace render::ui {
+
+std::vector<std::string> list_scenarios(const std::string& dir) {
+  std::vector<std::string> names;
+  std::error_code ec;
+  for (const auto& entry :
+       std::filesystem::directory_iterator(dir, ec)) {
+    if (entry.path().extension() == ".json") {
+      names.push_back(entry.path().stem().string());
+    }
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+bool ui_covers(const App& app, Point p) {
+  const Tree& tree = app.active().tree;
+  for (const Widget& widget : tree.widgets) {
+    if (widget.kind == Kind::Panel && widget.chrome &&
+        widget.rect.contains(p)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ArrowOwnership ui_arrow_ownership(const App& app) {
+  ArrowOwnership owned;
+  if (app.screen != Screen::Battle) {
+    owned.left_right = true;
+    owned.up_down = true;
+    return owned;
+  }
+  const std::int32_t focus = app.battle.focus;
+  if (focus < 0 ||
+      focus >= static_cast<std::int32_t>(app.battle.tree.size())) {
+    return owned;
+  }
+  const Widget& widget = app.battle.tree.at(static_cast<std::size_t>(focus));
+  if (widget.kind == Kind::Slider) {
+    owned.left_right = true;
+  } else if (widget.kind == Kind::Select && widget.on) {
+    owned.up_down = true;
+  }
+  return owned;
+}
+
+BattleClicks battle_clicks(const State& battle) {
+  BattleClicks clicks;
+  const std::string& clicked = battle.clicked;
+  if (clicked == kIdPause) {
+    clicks.pause = true;
+  } else if (clicked == kIdPlay) {
+    clicks.play = true;
+  } else if (clicked == kIdSpeed1) {
+    clicks.speed = 1;
+  } else if (clicked == kIdSpeed2) {
+    clicks.speed = 2;
+  } else if (clicked == kIdSpeed4) {
+    clicks.speed = 4;
+  }
+  return clicks;
+}
+
+double zoom_from_slider(double slider, double base) {
+  slider = std::clamp(slider, 0.0, 1.0);
+  const double zoom = base * std::pow(16.0, 2.0 * slider - 1.0);
+  return std::clamp(zoom, game::kMinZoom, game::kMaxZoom);
+}
+
+double slider_from_zoom(double zoom, double base) {
+  if (!(base > 0.0)) {
+    return 0.5;
+  }
+  zoom = std::clamp(zoom, game::kMinZoom, game::kMaxZoom);
+  const double clamped = std::clamp(zoom / base, 1.0 / 16.0, 16.0);
+  // ratio = 16^(2s-1)  <=>  s = 1/2 + log16(ratio)/2 = 1/2 + log2(ratio)/8.
+  const double slider = 0.5 + std::log2(clamped) / 8.0;
+  return std::clamp(slider, 0.0, 1.0);
+}
+
+BattleView apply_battle_frame(const App& app, const BattleView& previous,
+                              double base_zoom) {
+  BattleView view = previous;
+  view.options = options_from(app.battle);
+  view.zoom = zoom_from_slider(zoom_from(app.battle), base_zoom);
+  const BattleClicks clicks = battle_clicks(app.battle);
+  if (clicks.pause) {
+    view.paused = true;
+  }
+  if (clicks.play) {
+    view.paused = false;
+  }
+  if (clicks.speed != 0) {
+    view.speed = static_cast<double>(clicks.speed);
+  }
+  return view;
+}
+
+}  // namespace render::ui
