@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -138,6 +139,18 @@ sim::Simulation corridor_battle(const sim::TerrainGrid* grid,
   config.squad_plans[kBlue] = sim::SquadPlan{1, 10};
   config.events = recorder;
   return sim::Simulation(config);
+}
+
+// Dead units of a faction (flat-map battle counters for the m12 tests).
+std::uint32_t flat_dead(const sim::Simulation& battle,
+                        sim::Faction faction) {
+  std::uint32_t dead = 0;
+  for (const sim::Unit& unit : battle.world().units) {
+    if (!unit.alive && unit.faction == faction) {
+      ++dead;
+    }
+  }
+  return dead;
 }
 
 }  // namespace
@@ -422,6 +435,170 @@ TEST(PlayerOrderTest, MoveToReachesAPointAcrossTerrain) {
   EXPECT_LT(std::fabs(cy - 60.0), 40.0);
 }
 
+// ---------------------------------------------------------------------------
+// m12 audit: ordered armies must still fight, point orders must work on
+// flat maps (validation, steering, arrival) and end on squad collapse.
+// ---------------------------------------------------------------------------
+
+TEST(PlayerOrderTest, AttackMoveEngagesOnFlatMap) {
+  // m11b defect (m12 audit): AttackMove mapped to Order::Advance terms
+  // boosted Approach; at weight_scale 4.0 Approach saturated at 1.0 and
+  // outranked Attack, so an attack-moving army crowded the enemy
+  // without ever attacking (kill ratio 0.026 in the 250v250 study).
+  // March orders now boost the march only: an attack-moving army must
+  // fight normally when it reaches the enemy.
+  const auto run = [](bool ordered) {
+    sim::Simulation battle = corridor_battle(nullptr);
+    if (ordered) {
+      EXPECT_TRUE(battle.issue_order(sim::Faction::Red, {0},
+                                     sim::PlayerOrderType::AttackMove,
+                                     150.0, 50.0));
+    }
+    for (int tick = 0; tick < 600; ++tick) {
+      battle.tick();
+    }
+    return flat_dead(battle, sim::Faction::Blue);
+  };
+  const std::uint32_t control_kills = run(false);
+  const std::uint32_t attackmove_kills = run(true);
+  EXPECT_GT(control_kills, 0u);
+  EXPECT_GE(attackmove_kills, control_kills / 2)
+      << "attack-moving army barely fought (control " << control_kills
+      << " kills, attackmove " << attackmove_kills << ")";
+}
+
+TEST(PlayerOrderTest, HoldOrderFightsBackOnFlatMap) {
+  // m11b defect: a delivered Hold saturates Hold and Attack at 1.0; the
+  // stickiness bonus then pinned Hold over Attack, so a holding army
+  // stood still while being shredded (kill ratio 0.003 in the 250v250
+  // study; only the few low-obedience units ever fought back). A holding
+  // unit must attack an enemy that walks into range: the ordered side's
+  // kills must be comparable to the control's, not a rounding error.
+  const auto run = [](bool ordered) {
+    sim::Simulation battle = corridor_battle(nullptr);
+    if (ordered) {
+      EXPECT_TRUE(battle.issue_order(sim::Faction::Red, {0},
+                                     sim::PlayerOrderType::Hold));
+    }
+    for (int tick = 0; tick < 600; ++tick) {
+      battle.tick();
+    }
+    return flat_dead(battle, sim::Faction::Blue);
+  };
+  const std::uint32_t control_kills = run(false);
+  const std::uint32_t hold_kills = run(true);
+  EXPECT_GT(control_kills, 0u);
+  EXPECT_GE(hold_kills, control_kills / 2)
+      << "holding army barely fought back (control " << control_kills
+      << " kills, hold " << hold_kills << ")";
+}
+
+TEST(PlayerOrderTest, MoveToPointWorksOnFlatMap) {
+  // m12 audit: point orders were accepted and recorded on flat maps but
+  // never steered — the squad flow field only exists with terrain, and
+  // the flat-map Advance beelined to the faction objective, then the
+  // slot logic pulled the squad back: an oscillator. A MoveTo must
+  // march the squad to the point on any map and stop within the
+  // kOrderArrivalDist radius instead of resuming the faction march.
+  sim::Simulation battle = corridor_battle(nullptr);
+  ASSERT_TRUE(battle.issue_order(sim::Faction::Red, {0},
+                                 sim::PlayerOrderType::MoveTo, 60.0, 95.0));
+  // Blue holds in its spawn band so the probe measures the march, not a
+  // battle (a few aggressive Blue units refuse Hold by design; Red
+  // engages them normally at the point).
+  ASSERT_TRUE(battle.issue_order(sim::Faction::Blue, {1},
+                                 sim::PlayerOrderType::Hold));
+  for (int tick = 0; tick < 300; ++tick) {
+    battle.tick();
+  }
+  const auto centroid = [&battle] {
+    double sum_x = 0.0;
+    double sum_y = 0.0;
+    std::uint32_t alive = 0;
+    for (const sim::Unit& unit : battle.world().units) {
+      if (unit.alive && unit.faction == sim::Faction::Red) {
+        sum_x += unit.x;
+        sum_y += unit.y;
+        ++alive;
+      }
+    }
+    EXPECT_GT(alive, 0u);
+    return std::pair<double, double>(sum_x / alive, sum_y / alive);
+  };
+  {
+    const auto [cx, cy] = centroid();
+    EXPECT_LT(std::fabs(cx - 60.0), 15.0)
+        << "the squad did not reach the point (cx " << cx << ")";
+    EXPECT_LT(std::fabs(cy - 95.0), 15.0)
+        << "the squad did not reach the point (cy " << cy << ")";
+  }
+  // And it stays at the point: 200 more ticks must not resume the
+  // march to the faction objective (the old oscillation).
+  for (int tick = 0; tick < 200; ++tick) {
+    battle.tick();
+  }
+  const auto [cx, cy] = centroid();
+  EXPECT_LT(std::fabs(cx - 60.0), 15.0)
+      << "the squad drifted away from the point (cx " << cx << ")";
+  EXPECT_LT(std::fabs(cy - 95.0), 15.0)
+      << "the squad drifted away from the point (cy " << cy << ")";
+}
+
+TEST(PlayerOrderTest, PointOrdersAreValidatedOnFlatMaps) {
+  // m12 audit: flat maps validated nothing — negative, off-map and
+  // non-finite points were accepted and recorded into replays.
+  sim::Simulation battle = corridor_battle(nullptr);  // 200 x 100
+  EXPECT_FALSE(battle.issue_order(sim::Faction::Red, {0},
+                                  sim::PlayerOrderType::MoveTo, -5.0,
+                                  50.0));
+  EXPECT_FALSE(battle.issue_order(sim::Faction::Red, {0},
+                                  sim::PlayerOrderType::MoveTo, 60.0,
+                                  150.0));
+  EXPECT_FALSE(battle.issue_order(sim::Faction::Red, {0},
+                                  sim::PlayerOrderType::MoveTo,
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  50.0));
+  EXPECT_FALSE(battle.issue_order(sim::Faction::Red, {0},
+                                  sim::PlayerOrderType::AttackMove,
+                                  std::numeric_limits<double>::infinity(),
+                                  50.0));
+  // An in-bounds point still goes through (the four rejections above
+  // do not consume the per-tick rate limit: they return before it).
+  EXPECT_TRUE(battle.issue_order(sim::Faction::Red, {0},
+                                 sim::PlayerOrderType::MoveTo, 60.0, 95.0));
+}
+
+TEST(PlayerOrderTest, PointOrderEndsOnSquadCollapse) {
+  // m12 audit: docs/squads.md says a player order ends on squad
+  // collapse; clear_player_order was dead code until now.
+  sim::EventRecorder recorder;
+  sim::Simulation battle = corridor_battle(nullptr, &recorder);
+  ASSERT_TRUE(battle.squads_active());
+  ASSERT_TRUE(battle.issue_order(sim::Faction::Red, {0},
+                                 sim::PlayerOrderType::Hold));
+  for (int tick = 0; tick < 40; ++tick) {
+    battle.tick();  // let the order deliver (no contact yet)
+  }
+  ASSERT_TRUE(battle.squads()[0].player_order_active);
+  // Kill the whole squad through the public intervention API: the next
+  // tick's death sweep collapses it and must clear the order.
+  for (const sim::Unit& unit : battle.world().units) {
+    if (unit.alive && unit.faction == sim::Faction::Red) {
+      ASSERT_TRUE(battle.intervene_kill(unit.id));
+    }
+  }
+  battle.tick();
+  EXPECT_FALSE(battle.squads()[0].player_order_active)
+      << "collapse left the player order active";
+  bool collapsed = false;
+  for (const sim::Event& event : recorder.events()) {
+    if (event.type == sim::EventType::SquadCollapse && event.a == 0) {
+      collapsed = true;
+    }
+  }
+  EXPECT_TRUE(collapsed) << "no SquadCollapse event for squad 0";
+}
+
 TEST(PlayerOrderTest, ChangeFormationChangesTheSquadShape) {
   const sim::TerrainTypeTable table = order_table();
   const sim::TerrainGrid grid = corridor_grid(table);
@@ -615,6 +792,34 @@ TEST(PlayerOrderTest, ScriptParserValidates) {
                  "order": "moveto"}])",
             "moveto");
   check_bad("not json", "JSON");
+}
+
+TEST(PlayerOrderTest, ScriptParserHardensTypesAndPoints) {
+  // m12 audit: a non-string faction/order entry used to throw an
+  // uncaught type_error out of get<std::string> (the try only wrapped
+  // the initial parse), 1e999 overflowed to out_of_range.406 — both
+  // aborted the CLI — and non-finite points were accepted. All are now
+  // clean rejections with an error naming the problem.
+  const fs::path path = "/tmp/m12_script_test.json";
+  const auto check_bad = [&](const char* text, const char* needle) {
+    { std::ofstream file(path); file << text; }
+    std::vector<cli::OrderIntervention> bad;
+    std::string bad_error;
+    EXPECT_FALSE(cli::parse_order_script(path.string(), bad, bad_error));
+    EXPECT_NE(bad_error.find(needle), std::string::npos) << bad_error;
+  };
+  check_bad(R"([{"tick": 5, "faction": 3, "squads": "all",
+                 "order": "hold"}])",
+            "faction must be a string");
+  check_bad(R"([{"tick": 5, "faction": "red", "squads": "all",
+                 "order": 7}])",
+            "order must be a string");
+  check_bad(R"([{"tick": 5, "faction": "red", "squads": "all",
+                 "order": "moveto", "x": 1e999, "y": 50}])",
+            "not valid JSON");
+  check_bad(R"([{"tick": 5, "faction": "red", "squads": "all",
+                 "order": "moveto", "x": null, "y": 50}])",
+            "x and y must be numbers");
 }
 
 TEST(PlayerOrderTest, ReplayFileCarriesOrdersRoundTrip) {

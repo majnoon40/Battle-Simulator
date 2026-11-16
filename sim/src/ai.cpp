@@ -151,7 +151,8 @@ ActionScores score_actions(const ScoreInputs& inputs,
 }
 
 Action choose_action(const ActionScores& scores, Action current,
-                     double stickiness) noexcept {
+                     double stickiness,
+                     bool bound_stickiness) noexcept {
   std::size_t best = static_cast<std::size_t>(Action::Hold);
   double best_score = -1.0;
   // Enum order is the tie-break order, so scanning ascending and requiring a
@@ -160,6 +161,14 @@ Action choose_action(const ActionScores& scores, Action current,
     double score = scores[a];
     if (a == static_cast<std::size_t>(current) && current != Action::None) {
       score += stickiness;
+      // m12 audit: bounded order terms can saturate several actions at
+      // 1.0; an uncapped stickiness bonus then pins the current action
+      // forever (a Hold order kept Hold over Attack). Bound the bonus at
+      // the score ceiling so saturated actions tie-break by enum
+      // priority (Attack first) instead.
+      if (bound_stickiness) {
+        score = std::min(score, 1.0);
+      }
     }
     if (score > best_score) {
       best_score = score;

@@ -376,7 +376,7 @@ Scenario parse_scenario(std::string_view json_text) {
   OrderedJson root;
   try {
     root = OrderedJson::parse(json_text.begin(), json_text.end());
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   return parse_scenario_document(root);
@@ -389,7 +389,7 @@ Scenario parse_scenario(std::istream& stream) {
   OrderedJson root;
   try {
     root = OrderedJson::parse(stream);
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   return parse_scenario_document(root);

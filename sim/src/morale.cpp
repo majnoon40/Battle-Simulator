@@ -292,7 +292,7 @@ MoraleConfig parse_morale(std::string_view json_text) {
   nlohmann::json root;
   try {
     root = nlohmann::json::parse(json_text.begin(), json_text.end());
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   return parse_config(root);
@@ -305,7 +305,7 @@ MoraleConfig parse_morale(std::istream& stream) {
   nlohmann::json root;
   try {
     root = nlohmann::json::parse(stream);
-  } catch (const nlohmann::json::parse_error& error) {
+  } catch (const nlohmann::json::exception& error) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   return parse_config(root);

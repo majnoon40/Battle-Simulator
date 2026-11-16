@@ -85,8 +85,14 @@ struct ScoreInputs {
 // action, or None) receives a `stickiness` bonus added to its score so units
 // do not flip-flop between near-equal actions. Exact ties break by the fixed
 // action order Attack > Approach > Advance > Retreat > Hold (the enum order).
+// With `bound_stickiness` (a delivered player order is active) the bonus
+// cannot lift a score past the bounded score maximum (1.0), so order-
+// saturated actions tie-break by enum priority instead of the bonus pinning
+// the current action forever (m12 audit: a Hold order used to pin Hold
+// over Attack while the army was shredded).
 [[nodiscard]] Action choose_action(const ActionScores& scores, Action current,
-                                   double stickiness) noexcept;
+                                   double stickiness,
+                                   bool bound_stickiness = false) noexcept;
 
 // Minimum commit time (M4): a freshly chosen action is held for this many
 // ticks before scores are consulted again, as long as it stays available.
