@@ -51,6 +51,9 @@ void unit_bytes(std::string& out, const Unit& u) {
   u8(out, u.last_action);
   f64(out, u.last_move_x);
   f64(out, u.last_move_y);
+  f64(out, u.facing);      // m13 item 3 (0.0 under --combat v1)
+  f64(out, u.fatigue);
+  f64(out, u.experience);
   f64(out, u.morale);
   u8(out, u.morale_state);
   boolean(out, u.routed);
@@ -121,6 +124,10 @@ std::string Simulation::state_hash() const {
     u64(bytes, squad_stats_[f].commander_deaths);
     u64(bytes, squad_stats_[f].drops_from_formation);
     u32(bytes, squad_stats_[f].squads);
+    u64(bytes, faction_reports_[f].combat.flank_hits);
+    u64(bytes, faction_reports_[f].combat.rear_hits);
+    u64(bytes, faction_reports_[f].combat.charge_hits);
+    u64(bytes, faction_reports_[f].combat.stance_hits_taken);
     f64(bytes, forward_x_[f]);
     f64(bytes, forward_y_[f]);
     f64(bytes, lateral_x_[f]);
@@ -186,6 +193,26 @@ std::string Simulation::state_hash() const {
   }
   for (std::uint16_t kill : terrain_kills_) {
     u16(bytes, kill);
+  }
+  // m13 item 3 (--combat v2): per-tick combat-depth buffers (zeros
+  // under v1) and the charge run ring.
+  for (std::uint8_t aura : aura_active_) {
+    u8(bytes, aura);
+  }
+  for (std::uint8_t stance : defensive_stance_) {
+    u8(bytes, stance);
+  }
+  for (std::uint32_t rear : rear_hits_this_tick_) {
+    u32(bytes, rear);
+  }
+  for (std::uint32_t attacked : attacked_this_tick_) {
+    u8(bytes, static_cast<std::uint8_t>(attacked));
+  }
+  for (double move : charge_ring_) {
+    f64(bytes, move);
+  }
+  for (std::uint32_t pos : charge_ring_pos_) {
+    u32(bytes, pos);
   }
   u32(bytes, units_stuck_over_100_);
 

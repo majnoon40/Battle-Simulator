@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "sim/ai.hpp"
+#include "sim/combat.hpp"
 #include "sim/morale.hpp"
 #include "sim/neighbors.hpp"
 #include "sim/personalities.hpp"
@@ -174,6 +175,30 @@ Simulation::Simulation(SimulationConfig config,
       0);
   stalemate_ring_pos_ = 0;
   stalemate_samples_ = 0;
+  // m13 item 3: combat depth. Utility mode only (legacy reproduces M1
+  // exactly); every buffer stays zero under v1 so hashes and exports
+  // are unchanged.
+  static const CombatConfig kDefaultCombat;
+  effective_combat_ =
+      config_.combat != nullptr ? config_.combat : &kDefaultCombat;
+  combat_v2_ = config_.combat_v2 && config_.ai_mode == AiMode::Utility;
+  aura_active_.assign(world_.units.size(), 0);
+  defensive_stance_.assign(world_.units.size(), 0);
+  rear_hits_this_tick_.assign(world_.units.size(), 0);
+  attacked_this_tick_.assign(world_.units.size(), 0);
+  charge_window_ = effective_combat_->charge.window_ticks;
+  charge_ring_.assign(2 * charge_window_ * world_.units.size(), 0.0);
+  charge_ring_pos_.assign(world_.units.size(), 0);
+  combat_probe_buffer_.clear();
+  if (combat_v2_) {
+    // Every unit starts facing its faction's objective (across the
+    // field, toward the enemy).
+    for (Unit& unit : world_.units) {
+      const std::size_t faction = faction_index(unit.faction);
+      unit.facing = std::atan2(objective_y_[faction] - unit.y,
+                               objective_x_[faction] - unit.x);
+    }
+  }
   events_ = config_.events;
   for (Unit& unit : world_.units) {
     unit.decision_interval =
@@ -1028,6 +1053,7 @@ BattleResult Simulation::result() const {
     report.action_counts = action_counts_[faction_index(faction)];
     report.routing = routing_stats_[faction_index(faction)];
     report.squad = squad_stats_[faction_index(faction)];
+    report.combat = faction_reports_[faction_index(faction)].combat;
   }
   // Active units (M5): alive and not routed. With morale off (and in legacy
   // mode) routed is always false, so active == survivors.
@@ -2130,6 +2156,18 @@ void Simulation::resolve_movement() {
 
   for (std::size_t i = 0; i < world_.units.size(); ++i) {
     Unit& unit = world_.units[i];
+    if (combat_v2_ &&
+        unit.fatigue >= effective_combat_->fatigue.exhausted_level) {
+      // m13: an exhausted unit moves at the fatigue speed factor (the
+      // displacement scales uniformly, which is the speed scaling for
+      // this tick's move).
+      pending_moves_[i].x =
+          unit.x + (pending_moves_[i].x - unit.x) *
+                       effective_combat_->fatigue.speed_factor;
+      pending_moves_[i].y =
+          unit.y + (pending_moves_[i].y - unit.y) *
+                       effective_combat_->fatigue.speed_factor;
+    }
     if (!pending_moves_[i].moves) {
       // A unit that stands still has no heading: reset so the squad's
       // alignment average never reads a stale move.
@@ -2151,6 +2189,16 @@ void Simulation::resolve_movement() {
     unit.last_move_y = pending_moves_[i].y - unit.y;
     unit.x = pending_moves_[i].x;
     unit.y = pending_moves_[i].y;
+  }
+  if (combat_v2_) {
+    // m13: the heading follows the committed displacement (both commit
+    // paths set last_move; a standing unit keeps its heading).
+    for (Unit& unit : world_.units) {
+      if (unit.alive &&
+          (unit.last_move_x != 0.0 || unit.last_move_y != 0.0)) {
+        unit.facing = std::atan2(unit.last_move_y, unit.last_move_x);
+      }
+    }
   }
   update_grid_after_movement();
 }
@@ -2339,6 +2387,87 @@ void Simulation::update_grid_after_movement() {
   }
 }
 
+// m13 item 3 (--combat v2): commander auras and the defensive stance,
+// computed once per tick at combat time (positions are final after
+// movement). The aura covers same-faction units inside a commander's
+// (leadership_radius > 0) radius; the stance marks units whose chosen
+// action is Hold and whose squad's cohesion is above
+// stance.cohesion_min.
+void Simulation::update_command_auras() {
+  std::fill(aura_active_.begin(), aura_active_.end(), 0);
+  std::fill(defensive_stance_.begin(), defensive_stance_.end(), 0);
+  for (std::size_t i = 0; i < world_.units.size(); ++i) {
+    const Unit& unit = world_.units[i];
+    if (!unit.alive || unit.stats.leadership_radius <= 0.0) {
+      continue;
+    }
+    grid_.radius_query(world_.units, unit.x, unit.y,
+                       unit.stats.leadership_radius,
+                       combat_probe_buffer_);
+    for (std::uint32_t probe : combat_probe_buffer_) {
+      if (world_.units[probe].alive &&
+          world_.units[probe].faction == unit.faction) {
+        aura_active_[probe] = 1;
+      }
+    }
+  }
+  if (squads_active_) {
+    // The stance needs a squad (its cohesion); without squads the
+    // per-unit squad index and squad table do not exist.
+    for (std::size_t i = 0; i < world_.units.size(); ++i) {
+      const Unit& unit = world_.units[i];
+      if (!unit.alive ||
+          static_cast<Action>(unit.last_action) != Action::Hold) {
+        continue;
+      }
+      if (unit_squad_[i] < 0) {
+        continue;
+      }
+      const Squad& squad =
+          squads_[static_cast<std::size_t>(unit_squad_[i])];
+      if (squad.cohesion >= effective_combat_->stance.cohesion_min) {
+        defensive_stance_[i] = 1;
+      }
+    }
+  }
+}
+
+// m13 item 3: per-tick fatigue and the charge run ring, after combat
+// (both this tick's moves and attacks are known). Fight fatigue is
+// charged per attack in resolve_combat; this pass handles full-speed
+// moves, idle recovery (a fighting unit neither gains nor recovers
+// here) and records the displacement the charge check projects.
+void Simulation::update_fatigue_experience() {
+  for (std::size_t i = 0; i < world_.units.size(); ++i) {
+    const Unit& unit = world_.units[i];
+    if (!unit.alive) {
+      continue;
+    }
+    const double moved_sq = unit.last_move_x * unit.last_move_x +
+                            unit.last_move_y * unit.last_move_y;
+    const double cruise = 0.9 * unit.stats.speed;
+    const bool full_speed = moved_sq >= cruise * cruise;
+    const bool attacked = attacked_this_tick_[i] != 0;
+    const bool idle = moved_sq == 0.0 && !attacked;
+    if (full_speed) {
+      world_.units[i].fatigue =
+          std::clamp(unit.fatigue +
+                         effective_combat_->fatigue.move_gain_per_tick,
+                     0.0, 1.0);
+    } else if (idle) {
+      world_.units[i].fatigue =
+          std::clamp(unit.fatigue -
+                         effective_combat_->fatigue.recover_per_tick,
+                     0.0, 1.0);
+    }
+    const std::size_t base = i * 2 * charge_window_;
+    const std::size_t slot = base + 2 * charge_ring_pos_[i];
+    charge_ring_[slot] = unit.last_move_x;
+    charge_ring_[slot + 1] = unit.last_move_y;
+    charge_ring_pos_[i] = (charge_ring_pos_[i] + 1) % charge_window_;
+  }
+}
+
 // Phase 3 — combat. First every attack is decided from the post-movement
 // state (alive, in range, cooldown ready), then all attacks resolve
 // simultaneously: two units can kill each other in the same tick and focus
@@ -2347,6 +2476,9 @@ void Simulation::update_grid_after_movement() {
 // with units whose chosen action is Attack.
 void Simulation::resolve_combat() {
   pending_attacks_.clear();
+  if (combat_v2_) {
+    update_command_auras();
+  }
   const bool utility = config_.ai_mode == AiMode::Utility;
   // M10: combat rolls are keyed by (seed, attacker id, tick, channel), so
   // the resolve order can never matter. With tactics off no roll exists
@@ -2377,18 +2509,123 @@ void Simulation::resolve_combat() {
     attack.attacker = i;
     attack.target = static_cast<std::size_t>(target);
     attack.damage = unit.stats.damage;
+    if (combat_v2_) {
+      // m13: experience sharpens accuracy, exhaustion dulls it.
+      double accuracy = unit.stats.accuracy +
+                        effective_combat_->experience.accuracy_bonus_max *
+                            unit.experience;
+      if (unit.fatigue >= effective_combat_->fatigue.exhausted_level) {
+        accuracy *= effective_combat_->fatigue.accuracy_factor;
+      }
+      attack.accuracy = std::clamp(accuracy, 0.0, 1.0);
+    } else {
+      attack.accuracy = unit.stats.accuracy;
+    }
     if (tactics_active_) {
       // Accuracy: a miss still costs the attack (cooldown) but connects
       // with nothing.
       const double hit_roll =
           tactics_roll(config_.seed, unit.id, tick_number, 0);
-      if (hit_roll >= unit.stats.accuracy) {
+      if (hit_roll >= attack.accuracy) {
         attack.damage = 0.0;
       } else if (unit.stats.damage_variance > 0.0) {
         const double roll =
             tactics_roll(config_.seed, unit.id, tick_number, 1);
         attack.damage *=
             1.0 + unit.stats.damage_variance * (2.0 * roll - 1.0);
+      }
+    }
+    if (combat_v2_) {
+      // m13 item 3: the attacker-side depth multipliers.
+      double multiplier = 1.0;
+      // Charge: a fast unit (type speed >= charge.min_speed) that
+      // covered at least min_distance toward this target over the run
+      // window.
+      if (unit.stats.speed >= effective_combat_->charge.min_speed) {
+        const double tdx = goal.x - unit.x;
+        const double tdy = goal.y - unit.y;
+        const double tlen = std::sqrt(tdx * tdx + tdy * tdy);
+        // The direction to project the run on: toward the target — or,
+        // for a coincident pair (approach ends on the target's spot),
+        // the direction of the summed run itself.
+        double ux = 0.0;
+        double uy = 0.0;
+        const std::size_t base = i * 2 * charge_window_;
+        if (tlen > 0.0) {
+          ux = tdx / tlen;
+          uy = tdy / tlen;
+        } else {
+          double sx = 0.0;
+          double sy = 0.0;
+          for (std::size_t k = 0; k < charge_window_; ++k) {
+            sx += charge_ring_[base + 2 * k];
+            sy += charge_ring_[base + 2 * k + 1];
+          }
+          const double slen = std::sqrt(sx * sx + sy * sy);
+          if (slen <= 0.0) {
+            ux = -1.0;  // no run at all: the projection below is 0
+          } else {
+            ux = sx / slen;
+            uy = sy / slen;
+          }
+        }
+        if (ux != 0.0 || uy != 0.0) {
+          double run = 0.0;
+          for (std::size_t k = 0; k < charge_window_; ++k) {
+            run += charge_ring_[base + 2 * k] * ux +
+                   charge_ring_[base + 2 * k + 1] * uy;
+          }
+          if (run >= effective_combat_->charge.min_distance) {
+            bool reduced =
+                defensive_stance_[static_cast<std::size_t>(target)] !=
+                    0 ||
+                static_cast<Action>(goal.last_action) == Action::Hold;
+            if (!reduced) {
+              // A dense line around the target blunts the charge too.
+              grid_.radius_query(
+                  world_.units, goal.x, goal.y,
+                  effective_combat_->charge.dense_line_radius,
+                  combat_probe_buffer_);
+              std::uint32_t allies = 0;
+              for (std::uint32_t probe : combat_probe_buffer_) {
+                const Unit& other = world_.units[probe];
+                if (other.alive && other.faction == goal.faction &&
+                    probe != static_cast<std::uint32_t>(target)) {
+                  ++allies;
+                }
+              }
+              reduced =
+                  allies >= effective_combat_->charge.dense_line_allies;
+            }
+            double charge_mult = effective_combat_->charge.multiplier;
+            if (reduced) {
+              charge_mult =
+                  1.0 + (charge_mult - 1.0) *
+                            effective_combat_->charge.held_reduction;
+            }
+            multiplier *= charge_mult;
+            attack.charge_hit = true;
+          }
+        }
+      }
+      // Facing: the arc at the target (front / flank / rear).
+      const AttackArc arc =
+          attack_arc(goal.facing, unit.x - goal.x, unit.y - goal.y,
+                     *effective_combat_);
+      multiplier *= arc.multiplier;
+      attack.flank_hit = arc.flank;
+      attack.rear_hit = arc.rear;
+      // Fatigue and the commander's aura.
+      if (unit.fatigue >= effective_combat_->fatigue.exhausted_level) {
+        multiplier *= effective_combat_->fatigue.damage_factor;
+      }
+      if (aura_active_[i] != 0) {
+        multiplier *= 1.0 + effective_combat_->aura.damage_bonus;
+      }
+      attack.damage *= multiplier;
+      // The defender's high-cohesion Hold stance.
+      if (defensive_stance_[static_cast<std::size_t>(target)] != 0) {
+        attack.damage *= effective_combat_->stance.damage_factor;
       }
     }
     if (terrain_ != nullptr) {
@@ -2426,8 +2663,58 @@ void Simulation::resolve_combat() {
     // update_morale. Accumulated unconditionally (two array writes) and
     // reset there every tick; with morale off nothing reads them.
     damage_this_tick_[attack.target] += attack.damage;
+    if (combat_v2_) {
+      // m13 item 3: fight fatigue and engagement experience per attack
+      // (a swing costs, hit or miss), and the report counters.
+      attacked_this_tick_[attack.attacker] = 1;
+      attacker.fatigue =
+          std::clamp(attacker.fatigue +
+                         effective_combat_->fatigue.fight_gain_per_attack,
+                     0.0, 1.0);
+      attacker.experience =
+          std::clamp(attacker.experience +
+                         effective_combat_->experience
+                             .gain_per_engaged_tick,
+                     0.0, 1.0);
+      if (attack.damage > 0.0) {
+        CombatStats& stats =
+            faction_reports_[faction_index(attacker.faction)].combat;
+        if (attack.flank_hit) {
+          ++stats.flank_hits;
+        }
+        if (attack.rear_hit) {
+          ++stats.rear_hits;
+          ++rear_hits_this_tick_[attack.target];
+        }
+        if (attack.charge_hit) {
+          ++stats.charge_hits;
+        }
+        if (defensive_stance_[attack.target] != 0) {
+          ++faction_reports_[faction_index(goal.faction)]
+               .combat.stance_hits_taken;
+        }
+      }
+      if (attack.charge_hit) {
+        // The run is spent: reset the attacker's ring.
+        const std::size_t base = attack.attacker * 2 * charge_window_;
+        std::fill(charge_ring_.begin() +
+                      static_cast<std::ptrdiff_t>(base),
+                  charge_ring_.begin() +
+                      static_cast<std::ptrdiff_t>(
+                          base + 2 * charge_window_),
+                  0.0);
+        charge_ring_pos_[attack.attacker] = 0;
+      }
+    }
     if (health_before > 0.0 && goal.health <= 0.0) {
       kills_this_tick_[attack.attacker] += 1;
+      if (combat_v2_) {
+        // m13: kills teach.
+        attacker.experience = std::clamp(
+            attacker.experience +
+                effective_combat_->experience.gain_per_kill,
+            0.0, 1.0);
+      }
       if (events_ != nullptr) {
         // M10 Part 2a: the killing blow (the same condition that credits
         // the type kill above), with victim and killer ids.
@@ -2445,6 +2732,9 @@ void Simulation::resolve_combat() {
         report.kills += 1;
       }
     }
+  }
+  if (combat_v2_) {
+    update_fatigue_experience();  // once per tick, after the resolves
   }
 }
 
@@ -2620,6 +2910,22 @@ void Simulation::update_morale() {
       inputs.routed_allies = perception.routed_allies;
       inputs.bravery = std::clamp(unit.personality.bravery, 0.0, 1.0);
       inputs.caution = std::clamp(unit.personality.caution, 0.0, 1.0);
+      if (combat_v2_) {
+        // m13: rear hits cost extra morale; experience, the defensive
+        // stance and a commander's aura resist losses.
+        inputs.rear_hits = rear_hits_this_tick_[i];
+        inputs.rear_morale_loss =
+            effective_combat_->facing.rear_morale_loss;
+        double resist = effective_combat_->experience.morale_resist_max *
+                        unit.experience;
+        if (defensive_stance_[i] != 0) {
+          resist += effective_combat_->stance.morale_resist;
+        }
+        if (aura_active_[i] != 0) {
+          resist += effective_combat_->aura.morale_reduction;
+        }
+        inputs.loss_resist = std::min(resist, 0.9);
+      }
 
       unit.morale =
           std::clamp(unit.morale + morale_delta(inputs, morale), 0.0, 100.0);
@@ -2683,6 +2989,8 @@ void Simulation::update_morale() {
   std::fill(kills_this_tick_.begin(), kills_this_tick_.end(), 0);
   std::fill(ally_death_count_.begin(), ally_death_count_.end(), 0);
   std::fill(ally_rout_count_.begin(), ally_rout_count_.end(), 0);
+  std::fill(rear_hits_this_tick_.begin(), rear_hits_this_tick_.end(), 0);
+  std::fill(attacked_this_tick_.begin(), attacked_this_tick_.end(), 0);
 }
 
 // Phase 6 — squads, formations and command (M6; docs/squads.md). Runs after

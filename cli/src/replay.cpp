@@ -282,6 +282,12 @@ bool parse_replay(const std::string& path, ReplayData& out,
             return false;
           }
           out.end = value;
+        } else if (name == "combat") {
+          if (value != "v1" && value != "v2") {
+            error = "bad combat flag value '" + value + "' in replay";
+            return false;
+          }
+          out.combat = value;
         } else if (name == "orders") {
           if (value != "on" && value != "off") {
             error = "bad orders flag value '" + value + "' in replay";
@@ -446,6 +452,7 @@ bool write_replay(const std::string& path, const ReplayData& data) {
        << " neighbor=" << data.neighbor << " squads=" << data.squads
        << " swap_sides=" << data.swap_sides << " nav=" << data.nav
        << " ai_avail=" << data.ai_avail << " end=" << data.end
+       << " combat=" << data.combat
        << " orders=" << data.orders << "\n";
   for (const Intervention& intervention : data.interventions) {
     file << "intervene kill " << intervention.unit << " "

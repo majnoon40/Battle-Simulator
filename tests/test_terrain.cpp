@@ -834,7 +834,7 @@ TEST(ModTest, ExampleModChangesBehaviorWithoutRecompiling) {
   // With the mod: infantry has 120 health and the swamp map loads.
   const std::string with_mod =
       export_via_cli("--mod " + mod.string() + " --scenario swamp-war "
-                     "--seed 7 --ticks 1");
+                     "--seed 7 --ticks 1 --combat v1");
   EXPECT_NE(with_mod.find("\"format_version\": 6"), std::string::npos);
   // The swampy map's grid uses the 'swamp' type, so this load only
   // succeeds with the mod's terrain table (9 types) active.
@@ -928,7 +928,8 @@ TEST(NoMapPinsTest, M7BaselinesReproduceByteForByte) {
     // conditions, so the default-flag run is no longer era-faithful.
     const std::string exported =
         export_via_cli(std::string("--scenario ") + pin.scenario +
-                       " --seed " + pin.seed + " --ai-avail v1 --end v1");
+                       " --seed " + pin.seed +
+                       " --ai-avail v1 --end v1 --combat v1");
     const std::string baseline =
         read_text(baselines / pin.file);
     ASSERT_FALSE(baseline.empty()) << pin.file << " missing";
@@ -940,16 +941,16 @@ TEST(NoMapPinsTest, M7BaselinesReproduceByteForByte) {
 
 TEST(TerrainDeterminismTest, DoubleRunWithTerrainAndNeighborModes) {
   const std::string a = export_via_cli(
-      "--scenario demo-river --seed 42 --ticks 200");
+      "--scenario demo-river --seed 42 --ticks 200 --combat v1");
   const std::string b = export_via_cli(
-      "--scenario demo-river --seed 42 --ticks 200");
+      "--scenario demo-river --seed 42 --ticks 200 --combat v1");
   EXPECT_EQ(a, b);  // same run twice: byte-identical
   EXPECT_NE(a.find("\"format_version\": 6"), std::string::npos);
   EXPECT_NE(a.find("terrain_kills"), std::string::npos);
   // Grid and brute neighbor modes agree exactly with terrain.
   const std::string grid_mode =
       export_via_cli("--scenario demo-river --seed 42 --ticks 200 "
-                     "--neighbor-mode grid");
+                     "--combat v1 --neighbor-mode grid");
   EXPECT_EQ(a, grid_mode);
 }
 

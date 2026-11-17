@@ -16,6 +16,7 @@
 namespace sim {
 
 class EventRecorder;  // events.hpp (M10 Part 2a)
+struct CombatConfig;  // combat.hpp (m13 item 3)
 
 // Hard cap on the number of units in one battle (raised by M3 to 20,000;
 // the spatial hash keeps the neighbor search from dominating at scale).
@@ -195,6 +196,15 @@ struct SimulationConfig {
   // v1 for both flags reproduces milestone-12 byte-for-byte.
   bool ai_avail_v2 = true;
   bool end_v2 = true;
+
+  // Combat depth (m13 item 3, --combat v2|v1; default v2). v2 adds
+  // facing (flank/rear damage multipliers, rear morale loss), cavalry
+  // charges, fatigue, experience, the commander aura and the defensive
+  // stance of high-cohesion Hold squads — every value in
+  // data/combat.json (config.combat; nullptr = the built-in defaults).
+  // v1 is the exact milestone-12 combat, byte-for-byte.
+  bool combat_v2 = true;
+  const CombatConfig* combat = nullptr;
 
   // Player orders (m11b, --orders on|off; default on). issue_order is
   // inert when false. With no orders issued the battle is byte-identical

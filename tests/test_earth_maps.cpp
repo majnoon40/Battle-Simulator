@@ -33,6 +33,7 @@ TEST(EarthMaps, AllGeneratedRegionsLoadAndRun) {
   for (const char* region : regions) {
     const int code = run_cli(std::string("--scenario ") + region +
                              " --seed 7 --ticks 1 --variance off "
+                             "--combat v1 "
                              "--export-json /tmp/m9_earth_export.json");
     ASSERT_EQ(code, 0) << region << " failed to load (see "
                           "/tmp/m9_cli_out.txt)";

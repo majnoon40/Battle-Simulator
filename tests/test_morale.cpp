@@ -676,6 +676,7 @@ TEST(MoraleOffTest, ReproducesM4UtilityResultsExactly) {
     config.ai_mode = sim::AiMode::Utility;
     config.morale_enabled = false;  // M4 semantics
     config.tactics_enabled = false;  // M10: M4 reproduction
+    config.combat_v2 = false;  // m13: M4 reproduction
     config.red_stats = infantry_stats();
     config.blue_stats = infantry_stats();
     sim::Simulation simulation(config);
@@ -709,6 +710,7 @@ TEST(MoraleOffTest, ReproducesM4UtilityResultsExactly) {
     config.ai_mode = sim::AiMode::Utility;
     config.morale_enabled = false;
     config.tactics_enabled = false;  // M10: M4 reproduction
+    config.combat_v2 = false;  // m13: the exact v3 shape
     config.red_stats = infantry_stats();
     config.blue_stats = infantry_stats();
     sim::Simulation simulation(config);
@@ -769,6 +771,7 @@ TEST(MoraleOnTest, ExportCarriesMoraleStateAndRoutingStats) {
   config.ai_mode = sim::AiMode::Utility;
   config.morale_enabled = true;
   config.tactics_enabled = false;  // M10: M5-era reproduction test
+  config.combat_v2 = false;  // m13: keep the format-4 rung
   config.composition[kRed] = {{0, 375}};
   config.composition[kBlue] = {{0, 125}};
   sim::Simulation simulation(config);

@@ -52,6 +52,8 @@ struct ReplayData {
   // before the flags matter, so "v2" defaults are safe.
   std::string ai_avail = "v2";
   std::string end = "v2";
+  // m13 item 3: combat depth rule version (13.1+ replays carry it).
+  std::string combat = "v2";
   // m11b: the orders side of the flags line ("on" | "off"); files from
   // before m11b parse as "on" (orders disabled was not representable).
   std::string orders = "on";

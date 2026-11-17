@@ -50,6 +50,10 @@ struct Arguments {
   // (--end v2|v1) rules; v2 default, v1 reproduces milestone-12.
   bool ai_avail_v2 = true;
   bool end_v2 = true;
+
+  // m13 item 3: combat depth (--combat v2|v1); v2 default, v1
+  // reproduces milestone-12 combat byte-for-byte.
+  bool combat_v2 = true;
   // m11b player orders: --orders on (default) or off (issue_order is
   // inert; a --script is rejected). With no order issued battles are
   // byte-identical either way.

@@ -46,6 +46,14 @@ struct RoutingStats {
   std::uint64_t recoveries = 0;       // cumulative recovery events
 };
 
+// Per-faction combat-depth counters (m13 item 3, --combat v2 only).
+struct CombatStats {
+  std::uint64_t flank_hits = 0;
+  std::uint64_t rear_hits = 0;
+  std::uint64_t charge_hits = 0;
+  std::uint64_t stance_hits_taken = 0;  // connected hits absorbed by stance
+};
+
 struct FactionReport {
   std::uint32_t initial = 0;    // units the faction started with
   std::uint32_t deaths = 0;     // units that died
@@ -59,6 +67,7 @@ struct FactionReport {
 
   // Routing statistics (M5); all zeros with morale off.
   RoutingStats routing{};
+  CombatStats combat{};  // m13 item 3 (--combat v2; zeros under v1)
 
   // Squad statistics (M6); all zeros with squads off.
   SquadStats squad{};

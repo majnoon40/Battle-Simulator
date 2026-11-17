@@ -160,6 +160,13 @@ struct MoraleInputs {
   std::uint32_t routed_allies = 0;  // routed allies within sight right now
   double bravery = 0.5;
   double caution = 0.5;
+  // m13 item 3 (--combat v2; zero under v1): rear hits taken this tick
+  // (with their per-hit loss, carried from the combat config), and the
+  // combined loss resistance (experience + stance + aura), clamped by
+  // the caller to [0, 0.9].
+  std::uint32_t rear_hits = 0;
+  double rear_morale_loss = 0.0;
+  double loss_resist = 0.0;
 };
 
 // The bounded morale change for one tick. Deterministic pure function of the

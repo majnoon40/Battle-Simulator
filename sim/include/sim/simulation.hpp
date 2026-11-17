@@ -154,6 +154,9 @@ class Simulation {
   }
 
   // True when morale and routing are active (M5: utility mode + morale on).
+  // m13 item 3: whether combat depth ran (utility mode + --combat v2).
+  [[nodiscard]] bool combat_v2() const noexcept { return combat_v2_; }
+
   [[nodiscard]] bool morale_enabled() const noexcept {
     return morale_enabled_;
   }
@@ -357,7 +360,18 @@ class Simulation {
     std::size_t attacker = 0;
     std::size_t target = 0;
     double damage = 0.0;
+    double accuracy = 1.0;  // m13: experience/fatigue-adjusted
+    bool flank_hit = false;
+    bool rear_hit = false;
+    bool charge_hit = false;
   };
+
+  // m13 item 3 (--combat v2): commander auras + the defensive stance
+  // (computed at combat time, positions final), and per-tick fatigue +
+  // the charge run ring (after combat: this tick's moves and attacks
+  // are known).
+  void update_command_auras();
+  void update_fatigue_experience();
 
   void spawn_armies();
 
@@ -585,6 +599,22 @@ class Simulation {
   // threshold scales from.
   std::array<std::uint64_t, kFactionCount> below_threshold_ticks_{};
   std::array<std::uint32_t, kFactionCount> initial_alive_{};
+
+  // m13 item 3 (--combat v2): per-tick combat-depth state. All of it
+  // stays zero under v1 (and is hashed as zeros, so v1 hashes are
+  // unchanged).
+  std::vector<std::uint8_t> aura_active_{};       // in a commander's aura
+  std::vector<std::uint8_t> defensive_stance_{};  // high-cohesion Hold
+  std::vector<std::uint32_t> rear_hits_this_tick_{};
+  std::vector<std::uint32_t> attacked_this_tick_{};
+  // The charge run ring: per unit, charge window_ticks (dx, dy) pairs
+  // (stride 2 * window), oldest-first head position per unit.
+  std::vector<double> charge_ring_{};
+  std::vector<std::uint32_t> charge_ring_pos_{};
+  std::vector<std::uint32_t> combat_probe_buffer_{};
+  std::size_t charge_window_ = 0;      // ring window per unit
+  const CombatConfig* effective_combat_ = nullptr;
+  bool combat_v2_ = false;
 
   // m13 item 2 (--end v2, stalemate): a ring of the combined
   // attacker count (alive units, both factions, choosing Attack) per

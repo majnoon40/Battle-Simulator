@@ -391,19 +391,24 @@ double morale_delta(const MoraleInputs& inputs,
       config.loss.min_scale, 2.0);
 
   double delta = 0.0;
-  // Losses (personality-scaled).
-  delta -= config.loss.ally_death * inputs.ally_deaths * scale;
-  delta -= config.loss.ally_rout * inputs.ally_routs * scale;
+  // Losses (personality-scaled), resisted by experience / the defensive
+  // stance / a commander's aura (m13 --combat v2; loss_resist is exactly
+  // 0.0 under v1 and multiplying by 1.0 is exact, so v1 deltas are
+  // unchanged). Rear hits (combat depth) are an unscaled shock loss.
+  const double loss_scale = scale * (1.0 - inputs.loss_resist);
+  delta -= config.loss.ally_death * inputs.ally_deaths * loss_scale;
+  delta -= config.loss.ally_rout * inputs.ally_routs * loss_scale;
   delta -= config.loss.routed_ally_presence_per_tick * inputs.routed_allies *
-           scale;
+           loss_scale;
   delta -= config.loss.damage_per_health_fraction * inputs.damage_fraction *
-           scale;
+           loss_scale;
+  delta -= inputs.rear_morale_loss * static_cast<double>(inputs.rear_hits);
   if (inputs.enemies_visible) {
     if (inputs.strength_ratio < config.thresholds.outnumbered_below) {
-      delta -= config.loss.outnumbered_per_tick * scale;
+      delta -= config.loss.outnumbered_per_tick * loss_scale;
     }
     if (!inputs.allies_visible) {
-      delta -= config.loss.isolation_per_tick * scale;
+      delta -= config.loss.isolation_per_tick * loss_scale;
     }
   }
   // Gains (unscaled).

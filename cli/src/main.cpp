@@ -35,6 +35,7 @@
 #include "render/ui/screens.hpp"
 #include "render/ui/ui.hpp"
 #include "render/raster.hpp"
+#include "sim/combat.hpp"
 #include "sim/config.hpp"
 #include "sim/factions.hpp"
 #include "sim/json_export.hpp"
@@ -122,6 +123,16 @@ sim::MoraleConfig load_morale(const std::string& path) {
     return sim::parse_morale(text);
   } catch (const std::invalid_argument& error) {
     throw std::runtime_error("invalid morale config '" + path +
+                             "': " + error.what());
+  }
+}
+
+sim::CombatConfig load_combat(const std::string& path) {
+  const std::string text = read_file(path, "combat config");
+  try {
+    return sim::parse_combat(text);
+  } catch (const std::invalid_argument& error) {
+    throw std::runtime_error("invalid combat config '" + path +
                              "': " + error.what());
   }
 }
@@ -281,6 +292,14 @@ int run_with_replay(const cli::Arguments& args,
       args.utility_ai && args.variance_on
           ? load_tactics(tactics_path)
           : sim::TacticsConfig{};
+  // m13 item 3: combat depth config — loaded whenever utility mode can
+  // run (validated even with --combat v1 so a corrupt file is reported
+  // instead of silently ignored).
+  const std::string combat_path =
+      cli::mods::data_file(args.mod_dir, "combat.json").string();
+  const sim::CombatConfig combat_config = args.utility_ai
+                                               ? load_combat(combat_path)
+                                               : sim::CombatConfig{};
 
   sim::SimulationConfig config;
   config.seed = args.seed;
@@ -305,6 +324,7 @@ int run_with_replay(const cli::Arguments& args,
   config.contact_seek_enabled = args.contact_seek_on && args.variance_on &&
                                 args.utility_ai;
   config.tactics = &tactics;
+  // m13 item 3: combat depth (utility mode only; the sim gates it).
   // M10 Part 2a: event recording + timeline sampling. Off by default;
   // --report-png needs the timeline, so it implies sampling. (render_mode
   // is computed here because the recorders must attach before the
@@ -332,6 +352,8 @@ int run_with_replay(const cli::Arguments& args,
   config.nav_v2 = args.nav_v2;
   config.ai_avail_v2 = args.ai_avail_v2;
   config.end_v2 = args.end_v2;
+  config.combat_v2 = args.combat_v2;
+  config.combat = &combat_config;
   config.orders_enabled = args.orders_on;
 
   // m11b: load and validate the order script (unless replaying — the
@@ -985,6 +1007,7 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.nav = args.nav_v2 ? "v2" : "v1";
       replay_data.ai_avail = args.ai_avail_v2 ? "v2" : "v1";
       replay_data.end = args.end_v2 ? "v2" : "v1";
+      replay_data.combat = args.combat_v2 ? "v2" : "v1";
       replay_data.orders = args.orders_on ? "on" : "off";
       replay_data.order_interventions = script_orders;
       for (const std::string& spec : args.interventions) {
@@ -1492,6 +1515,7 @@ int main(int argc, char** argv) {
     effective.nav_v2 = replay_data.nav == "v2";
     effective.ai_avail_v2 = replay_data.ai_avail == "v2";
     effective.end_v2 = replay_data.end == "v2";
+    effective.combat_v2 = replay_data.combat == "v2";
     effective.orders_on = replay_data.orders == "on";
   }
   return run_with_replay(effective, std::move(replay_data));

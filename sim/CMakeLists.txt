@@ -4,6 +4,7 @@ add_library(sim STATIC
   src/config.cpp
   src/unit_types.cpp
   src/personalities.cpp
+  src/combat.cpp
   src/morale.cpp
   src/squads.cpp
   src/events.cpp
