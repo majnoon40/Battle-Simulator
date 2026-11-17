@@ -210,6 +210,18 @@ struct SimulationConfig {
   // inert when false. With no orders issued the battle is byte-identical
   // either way (the delivery machinery only runs when an order exists).
   bool orders_enabled = true;
+
+  // Deterministic multithreading (m13 item 4, --threads N; default 1).
+  // 0 and 1 both run every phase inline on the simulation thread —
+  // byte-identical to the pre-threads binary. N >= 2 creates a
+  // persistent worker pool that runs the read-only perception and
+  // decision computations in fixed-size chunks (the chunk size is
+  // independent of N); every worker writes only its own preallocated
+  // slots and all ordered state (event recording, the per-ally Help
+  // cap, the faction estimate decay, commits) stays on the simulation
+  // thread. Output is byte-identical for every thread count (verified
+  // across 1/2/3/4/8 by tests; docs/determinism.md "Threading").
+  std::uint32_t thread_count = 1;
 };
 
 // Per-faction unit counts for a total: Red receives the extra unit when the

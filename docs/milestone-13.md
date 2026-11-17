@@ -426,3 +426,96 @@ passes plus the new regression tests, the shipped scenario and data
 files load unchanged, and recorded-replay verification round-trips
 (the known-answer digests pin it). The only visible changes are
 rejections of inputs that were never valid.
+
+## Item 4 — deterministic threads (`--threads`)
+
+Shipped: `--threads N` (0 = one worker per hardware core, resolved and
+printed at start; 1 = the default, every phase inline on the simulation
+thread — byte-identical to the pre-threads binary; 2..256 = a persistent
+worker pool; malformed values, signs, trailing junk and > 256 are
+rejected with errors naming the flag) and `--profile-phases` (per-tick
+mean wall time for perception / decision / resolution / commit / total;
+clock reads only — the battle hash and export are unchanged, pinned by
+`PhaseProfilingTest.ProfilingDoesNotChangeOutput`).
+
+### Architecture (docs/determinism.md "Threading" has the full contract)
+
+The decision phase of `decide_targets` was split into two passes:
+
+- **Pass A — parallel** (`compute_decision_inputs`): perception (the
+  sight-radius grid query and its aggregation), the tactical memory
+  update, the contactless streak, squad intel, the Help scan (including
+  the routed-ally probes), the contact variants, the order-term inputs
+  and the broken flag. Everything read is stable for the whole phase;
+  everything written is that unit's own slot (memory, streak, its
+  `DecisionInputs` record). Runs in fixed 256-unit chunks
+  (`kDecisionChunkUnits`, independent of the thread count) on the pool;
+  each worker has its own radius-query buffers. The legacy grid/brute
+  nearest-enemy scans run the same way.
+- **Pass B — ordered, single-threaded** (`finish_unit_decision`, unit
+  index order): the state whose semantics are order-dependent — the
+  faction estimate decay (pass A flags the seekers that reached the
+  tick-start estimate; the lowest index is the dropper, and it and
+  every later seeker fall back to their personal contact — the exact
+  serial semantics), the per-ally Help cap (greedy in-order), event
+  recording in serial order, scoring, choice, commit timers, pursuit
+  bookkeeping, tactic goals and the debug capture.
+
+The pool (`sim/thread_pool.hpp`) is persistent (created once per
+Simulation, joined on destruction), dispatches through a stack-allocated
+task adapter (no per-dispatch allocation), guards chunk claims and
+completion accounting under one mutex while chunk bodies run unlocked,
+captures worker exceptions and rethrows them on the caller after all
+chunks finish, and stays usable afterwards.
+
+### Determinism verification (all executed)
+
+- `ThreadsDeterminismTest.SameBattleAcrossThreadCounts` — a library
+  battle with squads + commanders, player orders, the Help cap, contact
+  seeking and interventions: identical 25-tick state hashes, exports,
+  winners and run lengths for 1/2/3/4/8 threads (threads=1 is the
+  pre-refactor code path).
+- `ScenarioExportsAreByteIdentical` — default, viewer-demo, demo-river
+  and earth-lebanon (+ `--swap-sides`): byte-identical `--export-json`
+  for 1/2/3/4/8 threads (20 CLI runs).
+- `GridAndBruteAgreeUnderThreads` — legacy grid == brute under the
+  pool, and equal to the inline result.
+- `ReplayRecordedWithThreadsVerifies` — a replay recorded with 4
+  threads verifies under 1 and 4 threads.
+- The full pre-existing suite (416 tests: era baselines, v1
+  byte-identity, M1-M13 reproductions) passes unchanged — the refactor
+  itself is behavior-preserving.
+- `test_thread_pool.cpp` (9 tests): inline mode, exact chunk partitions
+  with uneven tails for 2/3/4/8 workers, exclusive slots, scheduling
+  independence, 32 repeated dispatches, worker-index bounds, exception
+  capture/rethrow with the pool staying usable, all-chunks-complete
+  after a throw, clean shutdown, single-chunk degenerate case.
+- ThreadSanitizer: CI job `ThreadSanitizer` (gcc, Debug, thread
+  sanitizer) runs the pool tests, the multithreading determinism tests
+  and the simulation/squad/morale mechanics that feed the parallel
+  pass; verified locally before the job was written.
+
+### Benchmarks (measured on this 2-vCPU sandbox, gcc 14.2.0, Release,
+-fno-fast-math -ffp-contract=off, Intel Xeon, 3.9 GiB RAM; single runs,
+seed 42; `--profile-phases` numbers are per-tick means)
+
+| scenario | threads | t/s | ms/tick | perception | decision | resolution | commit | peak RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| perf-5000 (286 ticks, faction_routed) | 1 | 23.4 | 42.8 | 40.8 | 0.57 | 0.98 | 0.39 | 16.6 MiB |
+| | 2 | 28.4 | 35.2 | 34.1 | 0.44 | 0.42 | 0.23 | 16.6 MiB |
+| | 4 | 37.9 | 26.4 | 25.2 | 0.47 | 0.53 | 0.23 | 16.5 MiB |
+| perf-20000 (676 ticks, routed_threshold) | 1 | 7.7 | 129.9 | 120.1 | 2.10 | 5.09 | 2.57 | 54.6 MiB |
+| | 2 | 14.2 | 70.4 | 63.7 | 1.33 | 3.76 | 1.62 | 55.3 MiB |
+| | 4 | 14.5 | 69.1 | 62.5 | 1.40 | 3.55 | 1.66 | 54.4 MiB |
+
+Speedups (t/s vs 1 thread): 5000 units — 1.22x (2 threads), 1.62x
+(4); 20000 units — 1.85x (2), 1.88x (4). The box has 2 cores, so 4
+threads saturates at the same wall time as 2 (the pool oversubscribes
+harmlessly). Amdahl: at 20000 units the serial remainder is
+(69.1 - 62.5) / 69.1 = 9.6% of the tick, giving a 2-core ceiling of
+1 / (0.096 + 0.904/2) = 1.83x — the measured 1.85-1.88x is at the
+ceiling (the 4-thread run wins slightly from cache warmth on the
+oversubscribed cores). Memory is thread-count-independent (the
+per-worker buffers are tens of KiB). Per-core throughput on this
+sandbox is below the M13 item-3 box (23 vs 49-60 t/s at 5000 units);
+the relative speedups are the meaningful numbers.

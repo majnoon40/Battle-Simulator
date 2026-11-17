@@ -1,6 +1,7 @@
 #include "sim/simulation.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <unordered_set>
@@ -161,7 +162,6 @@ Simulation::Simulation(SimulationConfig config,
   // m13 item 2: Help caps, the routed-threshold streaks, the initial
   // strengths the threshold scales from, and the stalemate ring.
   help_target_count_.assign(world_.units.size(), 0);
-  help_probe_buffer_.clear();
   below_threshold_ticks_.fill(0);
   initial_alive_.fill(0);
   for (const Unit& unit : world_.units) {
@@ -247,6 +247,35 @@ Simulation::Simulation(SimulationConfig config,
                     bucket_reserve);
     grid_.build(world_.units);
   }
+
+  // m13 item 4: the persistent worker pool and its per-worker scratch
+  // (plus the preallocated decision-input slots) come last — everything
+  // they touch is sized by then.
+  init_threading();
+}
+
+// m13 item 4: creates the persistent pool for thread_count >= 2 (0 and 1
+// run inline — byte-identical to the pre-threads binary) and sizes the
+// per-worker radius-query buffers plus the per-unit decision-input
+// slots. Called once from the constructor; the buffers are reused every
+// tick, so the steady-state tick performs no allocations through them.
+void Simulation::init_threading() {
+  if (config_.thread_count >= 2) {
+    thread_pool_ = std::make_unique<ThreadPool>(config_.thread_count);
+  }
+  // Pool workers get one buffer each; inline mode uses a single buffer
+  // on the simulation thread (worker index 0).
+  const std::size_t buffers =
+      thread_pool_ != nullptr ? thread_pool_->worker_count() : 1;
+  worker_perceive_.assign(buffers, {});
+  worker_probe_.assign(buffers, {});
+  for (std::vector<std::uint32_t>& buffer : worker_perceive_) {
+    buffer.reserve(256);
+  }
+  for (std::vector<std::uint32_t>& buffer : worker_probe_) {
+    buffer.reserve(64);
+  }
+  decide_inputs_.resize(world_.units.size());
 }
 
 // Personalities never touch rng_: the same (seed, unit id, table) triple
@@ -658,20 +687,53 @@ void Simulation::tick() {
   if (finished_) {
     return;
   }
+  // --profile-phases (m13 item 4): steady-clock accumulation around the
+  // pipeline phases; reads the clock only, never simulation state, so
+  // battles are byte-identical with profiling on or off.
+  using Clock = std::chrono::steady_clock;
+  const bool profile = phase_profiling_;
+  const Clock::time_point total_start = profile ? Clock::now()
+                                                : Clock::time_point{};
+  Clock::time_point mark = total_start;
   if (terrain_ != nullptr) {
     refresh_flow_fields();
   }
   resolve_cooldowns();
+  // decide_targets accumulates perception_ns/decision_ns itself.
+  const std::uint64_t perception_before = phase_timings_.perception_ns;
+  const std::uint64_t decision_before = phase_timings_.decision_ns;
   decide_targets();
   resolve_movement();
   resolve_combat();
   apply_deaths();
+  if (profile) {
+    const Clock::time_point now = Clock::now();
+    // Resolution covers everything since the tick started minus the two
+    // decision sub-phases timed inside decide_targets.
+    phase_timings_.resolution_ns +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark)
+            .count() -
+        (phase_timings_.perception_ns - perception_before) -
+        (phase_timings_.decision_ns - decision_before);
+    mark = now;
+  }
   update_morale();
   update_squads();
   update_termination();
   if (config_.timeline_interval > 0 &&
       world_.tick_count % config_.timeline_interval == 0) {
     sample_timeline();
+  }
+  if (profile) {
+    const Clock::time_point now = Clock::now();
+    phase_timings_.commit_ns +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark)
+            .count();
+    phase_timings_.total_ns +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now -
+                                                             total_start)
+            .count();
+    phase_timings_.ticks += 1;
   }
 }
 
@@ -1136,13 +1198,68 @@ void Simulation::decide_targets() {
         }
       }
     }
-    for (std::size_t i = 0; i < world_.units.size(); ++i) {
+    // ---- pass A (m13 item 4): perception + decision inputs ----------
+    // Everything here only reads state stable for the whole phase and
+    // writes each unit's OWN slots (tactical memory, the contactless
+    // streak, its DecisionInputs record), so it runs in fixed-size
+    // chunks on the worker pool; each worker uses its own radius-query
+    // scratch buffers. With thread_count <= 1 it runs inline in the
+    // same chunk order — byte-identical to the pre-threads binary.
+    const std::chrono::steady_clock::time_point pass_a_start =
+        phase_profiling_ ? std::chrono::steady_clock::now()
+                         : std::chrono::steady_clock::time_point{};
+    const std::size_t unit_count = world_.units.size();
+    auto pass_a = [&](std::size_t worker, std::size_t begin,
+                      std::size_t end) {
+      std::vector<std::uint32_t>& perceive = worker_perceive_[worker];
+      std::vector<std::uint32_t>& probe = worker_probe_[worker];
+      for (std::size_t i = begin; i < end; ++i) {
+        if (world_.units[i].alive) {
+          compute_decision_inputs(i, decide_inputs_[i], perceive, probe);
+        }
+      }
+    };
+    if (thread_pool_ != nullptr) {
+      thread_pool_->run_chunked(unit_count, kDecisionChunkUnits, pass_a);
+    } else {
+      pass_a(0, 0, unit_count);
+    }
+    // The first estimate dropper per faction (avail v2): pass A flagged
+    // every seeker that reached the (tick-start) faction estimate; the
+    // lowest index is the one that drops it, exactly as the serial scan
+    // did — pass B replays the decay in that order.
+    std::array<std::size_t, kFactionCount> estimate_dropper{};
+    for (std::size_t i = 0; i < unit_count; ++i) {
+      if (decide_inputs_[i].drop_candidate) {
+        const std::size_t faction =
+            faction_index(world_.units[i].faction);
+        if (estimate_dropper[faction] == 0) {
+          estimate_dropper[faction] = i + 1;  // 1-based; 0 = none
+        }
+      }
+    }
+    if (phase_profiling_) {
+      phase_timings_.perception_ns +=
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - pass_a_start)
+              .count();
+    }
+    // ---- pass B (m13 item 4): ordered decisions + commits -----------
+    // Single-threaded, unit-index order: the estimate decay, the Help
+    // cap, event recording and every commit keep their exact serial
+    // semantics (the pass A outputs carry everything order-free).
+    const std::chrono::steady_clock::time_point pass_b_start =
+        phase_profiling_ ? std::chrono::steady_clock::now()
+                         : std::chrono::steady_clock::time_point{};
+    for (std::size_t i = 0; i < unit_count; ++i) {
       if (!world_.units[i].alive) {
         continue;  // target stays -1; last_action/perception keep their values
       }
       Perception perception;
       ActionScores scores{};
-      const Action action = decide_unit_action(i, perception, scores);
+      const Action action =
+          finish_unit_decision(i, decide_inputs_[i], estimate_dropper,
+                               perception, scores);
       last_perception_[i] = perception;
       if (perception.visible_enemies > 0 && first_contact_tick_ == 0) {
         // m11a: the first enemy sighting of the battle (report field +
@@ -1178,38 +1295,82 @@ void Simulation::decide_targets() {
     }
     update_squad_contacts();
     update_faction_estimates();
+    if (phase_profiling_) {
+      phase_timings_.decision_ns +=
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - pass_b_start)
+              .count();
+    }
     return;
   }
+  // Legacy targeting: pure per-unit nearest-enemy scans (own slot only),
+  // parallelized with the same fixed chunks.
+  const std::chrono::steady_clock::time_point legacy_start =
+      phase_profiling_ ? std::chrono::steady_clock::now()
+                       : std::chrono::steady_clock::time_point{};
+  const std::size_t unit_count = world_.units.size();
   if (use_grid_) {
-    for (std::size_t i = 0; i < world_.units.size(); ++i) {
-      const Unit& unit = world_.units[i];
-      if (!unit.alive) {
-        continue;
+    auto scan = [&](std::size_t /*worker*/, std::size_t begin,
+                    std::size_t end) {
+      for (std::size_t i = begin; i < end; ++i) {
+        const Unit& unit = world_.units[i];
+        if (!unit.alive) {
+          continue;
+        }
+        target_index_[i] = grid_.nearest_enemy(world_.units, unit);
       }
-      target_index_[i] = grid_.nearest_enemy(world_.units, unit);
+    };
+    if (thread_pool_ != nullptr) {
+      thread_pool_->run_chunked(unit_count, kDecisionChunkUnits, scan);
+    } else {
+      scan(0, 0, unit_count);
     }
-    return;
+  } else {
+    auto scan = [&](std::size_t /*worker*/, std::size_t begin,
+                    std::size_t end) {
+      for (std::size_t i = begin; i < end; ++i) {
+        const Unit& unit = world_.units[i];
+        if (!unit.alive) {
+          continue;
+        }
+        target_index_[i] = nearest_enemy_index(world_.units, unit);
+      }
+    };
+    if (thread_pool_ != nullptr) {
+      thread_pool_->run_chunked(unit_count, kDecisionChunkUnits, scan);
+    } else {
+      scan(0, 0, unit_count);
+    }
   }
-  for (std::size_t i = 0; i < world_.units.size(); ++i) {
-    const Unit& unit = world_.units[i];
-    if (!unit.alive) {
-      continue;
-    }
-    target_index_[i] = nearest_enemy_index(world_.units, unit);
+  if (phase_profiling_) {
+    phase_timings_.perception_ns +=
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - legacy_start)
+            .count();
   }
 }
 
-// Utility AI (M4) for one unit, entirely from the tick-start snapshot: the
-// grid is current as of the end of the previous tick (or construction), and
-// positions do not change between this phase and the movement commit.
-Action Simulation::decide_unit_action(std::size_t index,
-                                       Perception& perception,
-                                       ActionScores& scores) {
+// Pass A of the decision phase (m13 item 4) — the parallelizable half of
+// the old decide_unit_action: perception through the spatial grid, the
+// tactical memory update, the contactless streak, the squad-intel and
+// help scans, the contact variants and the order-term inputs. Everything
+// read here is stable for the whole decide phase; everything written is
+// this unit's own slot (memory, streak, the DecisionInputs record).
+void Simulation::compute_decision_inputs(
+    std::size_t index, DecisionInputs& out,
+    std::vector<std::uint32_t>& perceive_buffer,
+    std::vector<std::uint32_t>& probe_buffer) {
   const Unit& unit = world_.units[index];
   const double sight = effective_sight(unit);
 
-  perception = Perception{};
-  grid_.radius_query(world_.units, unit.x, unit.y, sight, perceive_buffer_);
+  out = DecisionInputs{};
+  out.sight = sight;
+
+  // Perception (M4): the sight-radius query over the tick-start grid,
+  // aggregated exactly as the serial scan did (fixed cell order, ties to
+  // the lower unit id).
+  Perception& perception = out.perception;
+  grid_.radius_query(world_.units, unit.x, unit.y, sight, perceive_buffer);
 
   const Faction enemy =
       unit.faction == Faction::Red ? Faction::Blue : Faction::Red;
@@ -1220,7 +1381,7 @@ Action Simulation::decide_unit_action(std::size_t index,
   std::uint32_t enemies = 0;
   std::uint32_t allies = 0;
   std::uint32_t routed_allies = 0;
-  for (std::uint32_t candidate : perceive_buffer_) {
+  for (std::uint32_t candidate : perceive_buffer) {
     if (candidate == index) {
       continue;  // a unit is not its own ally
     }
@@ -1257,30 +1418,33 @@ Action Simulation::decide_unit_action(std::size_t index,
     perception.enemy_centroid_x = sum_x / enemies;
     perception.enemy_centroid_y = sum_y / enemies;
   }
+  out.enemy_in_attack_range =
+      best >= 0 &&
+      best_d2 <= unit.stats.attack_range * unit.stats.attack_range;
+  out.target_routed =
+      best >= 0 && world_.units[static_cast<std::size_t>(best)].routed;
+  {
+    const double adx = unit.x - unit.pursuit_anchor_x;
+    const double ady = unit.y - unit.pursuit_anchor_y;
+    out.pursuit_within_bounds =
+        out.target_routed &&
+        unit.pursuit_ticks < effective_tactics_->pursuit.max_ticks &&
+        (unit.pursuit_ticks == 0 ||
+         adx * adx + ady * ady <
+             effective_tactics_->pursuit.max_distance *
+                 effective_tactics_->pursuit.max_distance);
+  }
 
   // M10 tactical state (tactics on only; see docs/ai.md). Personal memory
   // records the nearest visible enemy; the freshest usable contact (own
   // memory, or squad intel read inside the commander's radius once the
   // share delay has passed) feeds Search.
-  double search_goal_x = 0.0;
-  double search_goal_y = 0.0;
-  bool has_fresh_contact = false;
-  double contact_distance = 0.0;
-  double contact_age = 0.0;
-  bool ally_in_need = false;
-  double ally_health_fraction = 1.0;
-  double ally_distance = 0.0;
-  std::size_t ally_goal = 0;
-  bool squad_engaged = false;
-  bool member_may_flank = false;
-  double squad_cohesion = 1.0;
-  bool has_squad = false;
   if (tactics_active_) {
     const std::uint64_t tick_number = world_.tick_count + 1;
     if (best >= 0) {
-      const Unit& enemy = world_.units[static_cast<std::size_t>(best)];
-      world_.units[index].memory_x = enemy.x;
-      world_.units[index].memory_y = enemy.y;
+      const Unit& seen = world_.units[static_cast<std::size_t>(best)];
+      world_.units[index].memory_x = seen.x;
+      world_.units[index].memory_y = seen.y;
       world_.units[index].memory_tick = tick_number;
     }
     std::uint64_t best_tick = 0;
@@ -1294,12 +1458,12 @@ Action Simulation::decide_unit_action(std::size_t index,
     if (squads_active_ && unit_squad_[index] >= 0) {
       const Squad& squad = squads_[static_cast<std::size_t>(
           unit_squad_[index])];
-      has_squad = true;
-      squad_cohesion = squad.cohesion;
-      squad_engaged = squad_engaged_[static_cast<std::size_t>(
+      out.has_squad = true;
+      out.squad_cohesion = squad.cohesion;
+      out.squad_engaged = squad_engaged_[static_cast<std::size_t>(
           unit_squad_[index])] != 0;
       const std::uint32_t member_index = unit_member_[index];
-      member_may_flank =
+      out.member_may_flank =
           member_index >= 1 &&
           member_index <= effective_tactics_->flank.max_per_squad;
       if (squad.command_active) {
@@ -1336,7 +1500,7 @@ Action Simulation::decide_unit_action(std::size_t index,
                  effective_tactics_->contact_seek.idle_ticks) {
         contactless_streak_[index] += 1;
       }
-      bool seeking_now =
+      out.base_seeking =
           best < 0 &&
           contactless_streak_[index] >=
               effective_tactics_->contact_seek.idle_ticks &&
@@ -1345,42 +1509,28 @@ Action Simulation::decide_unit_action(std::size_t index,
               effective_tactics_->contact_seek.estimate_max_age;
       // m13 item 2 (--ai-avail v2): a seeker that has reached the
       // estimated position and still sees nothing proves the estimate
-      // stale — drop it (the next real sighting refreshes it) instead
-      // of milling around the point forever.
-      if (config_.ai_avail_v2 && seeking_now) {
+      // stale — the FIRST such seeker (unit index order) drops it and
+      // everyone later falls back to their personal contact. Pass A only
+      // flags the condition; the ordered pass B performs the decay.
+      if (config_.ai_avail_v2 && out.base_seeking) {
         const double edx = unit.x - estimate_x_[faction];
         const double edy = unit.y - estimate_y_[faction];
-        if (edx * edx + edy * edy <= sight * sight) {
-          estimate_tick_[faction] = 0;
-          seeking_now = false;
-        }
-      }
-      if (events_ != nullptr && seeking_now && !was_seeking_[index]) {
-        events_->record(tick_number, EventType::SeekStart, unit.id);
-      }
-      was_seeking_[index] = seeking_now ? 1 : 0;
-      if (seeking_now) {
-        best_tick = estimate_tick_[faction];
-        best_x = estimate_x_[faction];
-        best_y = estimate_y_[faction];
+        out.drop_candidate = edx * edx + edy * edy <= sight * sight;
+        out.estimate_tick = estimate_tick_[faction];
+        out.estimate_x = estimate_x_[faction];
+        out.estimate_y = estimate_y_[faction];
       }
     }
-    if (best_tick > 0) {
-      contact_age = static_cast<double>(tick_number - best_tick);
-      if (contact_age <
-          static_cast<double>(effective_tactics_->memory.forget_ticks)) {
-        has_fresh_contact = true;
-        search_goal_x = best_x;
-        search_goal_y = best_y;
-        const double dx = best_x - unit.x;
-        const double dy = best_y - unit.y;
-        contact_distance = std::sqrt(dx * dx + dy * dy);
-      }
-    }
+    // The personal contact variant (own memory / squad intel), stored so
+    // the ordered pass can switch to it after an estimate decay without
+    // re-deriving anything.
+    out.personal_tick = best_tick;
+    out.personal_x = best_x;
+    out.personal_y = best_y;
     // Help: the neediest visible ally inside help.radius — hurt below the
     // threshold or damaged on the previous tick (damage_this_tick_ still
     // holds that tick's combat at decide time).
-    for (std::uint32_t candidate : perceive_buffer_) {
+    for (std::uint32_t candidate : perceive_buffer) {
       if (candidate == index) {
         continue;
       }
@@ -1402,9 +1552,9 @@ Action Simulation::decide_unit_action(std::size_t index,
         const double reach =
             effective_tactics_->help.routed_help_enemy_distance;
         grid_.radius_query(world_.units, other.x, other.y, reach,
-                           help_probe_buffer_);
+                           probe_buffer);
         bool near_enemy = false;
-        for (std::uint32_t probe : help_probe_buffer_) {
+        for (std::uint32_t probe : probe_buffer) {
           const Unit& probe_unit = world_.units[probe];
           if (probe_unit.alive && probe_unit.faction != unit.faction) {
             near_enemy = true;
@@ -1423,134 +1573,40 @@ Action Simulation::decide_unit_action(std::size_t index,
         continue;
       }
       const double distance = std::sqrt(d2);
-      if (!ally_in_need || fraction < ally_health_fraction - 1e-12 ||
-          (fraction == ally_health_fraction &&
-           candidate < static_cast<std::uint32_t>(ally_goal))) {
-        ally_in_need = true;
-        ally_health_fraction = fraction;
-        ally_distance = distance;
-        ally_goal = candidate;
+      if (!out.ally_in_need ||
+          fraction < out.ally_health_fraction - 1e-12 ||
+          (fraction == out.ally_health_fraction &&
+           candidate < static_cast<std::uint32_t>(out.ally_goal))) {
+        out.ally_in_need = true;
+        out.ally_health_fraction = fraction;
+        out.ally_distance = distance;
+        out.ally_goal = candidate;
       }
     }
   }
-
-  // Every score input is clamped to [0, 1] so scores stay finite and in
-  // [0, 1] by construction (see docs/ai.md).
-  ScoreInputs inputs;
-  inputs.health_fraction =
-      std::clamp(unit.health / unit.stats.max_health, 0.0, 1.0);
-  inputs.strength_ratio = static_cast<double>(allies + 1) /
-                          static_cast<double>(allies + enemies + 1);
-  inputs.distance_fraction =
-      best >= 0 ? std::clamp(std::sqrt(best_d2) / sight, 0.0, 1.0) : 0.0;
-  inputs.cooldown_readiness =
-      std::clamp(1.0 - static_cast<double>(unit.cooldown_remaining) /
-                           static_cast<double>(unit.stats
-                                                   .attack_cooldown_ticks),
-                 0.0, 1.0);
-  inputs.bravery = std::clamp(unit.personality.bravery, 0.0, 1.0);
-  inputs.caution = std::clamp(unit.personality.caution, 0.0, 1.0);
-  inputs.aggression = std::clamp(unit.personality.aggression, 0.0, 1.0);
-  inputs.has_visible_enemy = best >= 0;
-  inputs.enemy_in_attack_range =
-      best >= 0 &&
-      best_d2 <= unit.stats.attack_range * unit.stats.attack_range;
-  // M10 inputs (zeros/defaults with tactics off, so legacy scoring and
-  // every M1-M9 reference are untouched).
-  inputs.sight_radius = sight;
-  // m13 item 2: --ai-avail v2 gates the regroup lift in score_actions.
-  inputs.availability_v2 = config_.ai_avail_v2;
-  inputs.has_fresh_contact = has_fresh_contact;
-  inputs.contact_distance = contact_distance;
-  inputs.contact_age = contact_age;
-  inputs.ally_in_need = ally_in_need;
-  inputs.ally_health_fraction = ally_health_fraction;
-  inputs.ally_distance = ally_distance;
-  inputs.squad_engaged = squad_engaged;
-  inputs.member_may_flank = member_may_flank;
-  inputs.local_enemy_ratio =
-      std::min(99.0, static_cast<double>(allies + 1) /
-                         static_cast<double>(enemies + 1));
-  inputs.target_routed = best >= 0 && world_.units[static_cast<std::size_t>(best)].routed;
-  inputs.unit_speed = unit.stats.speed;
-  {
-    const double adx = unit.x - unit.pursuit_anchor_x;
-    const double ady = unit.y - unit.pursuit_anchor_y;
-    inputs.pursuit_within_bounds =
-        inputs.target_routed &&
-        unit.pursuit_ticks < effective_tactics_->pursuit.max_ticks &&
-        (unit.pursuit_ticks == 0 ||
-         adx * adx + ady * ady <
-             effective_tactics_->pursuit.max_distance *
-                 effective_tactics_->pursuit.max_distance);
-  }
-  inputs.has_squad = has_squad;
-  inputs.squad_cohesion = squad_cohesion;
-  // Pursuit disengagement (M10): past the time or distance bound a routed
-  // enemy stops driving movement — for scoring it is as if no enemy were
-  // visible (an adjacent one can still be attacked), and the unit's
-  // memory of it is suppressed this tick.
-  const bool pursuit_expired =
-      tactics_active_ && inputs.target_routed &&
-      !inputs.pursuit_within_bounds;
-  if (pursuit_expired) {
-    if (!inputs.enemy_in_attack_range) {
-      inputs.has_visible_enemy = false;
-      inputs.enemy_in_attack_range = false;
-    }
-    has_fresh_contact = false;
-  }
-
-  scores = score_actions(inputs, tactics_active_ ? effective_tactics_
-                                                 : nullptr);
-  const Action previous = static_cast<Action>(unit.last_action);
-  // The order term (M6), captured for --ai-debug even when zero.
-  std::array<double, kActionCount> order_bonus{};
-  double obedience = 0.0;
-  Action chosen;
-  // Broken units (M5) do not score: they flee, cannot Advance, Approach or
-  // attack, and the commit time does not apply (they stay routed until the
-  // recovery conditions are met in update_morale). A unit whose morale is
-  // below the breaking value flees immediately, even on the same tick it
-  // crossed the threshold; the routed flag records the break for the
-  // hysteresis and statistics machinery.
-  const bool broken =
-      morale_enabled_ &&
-      (unit.routed || unit.morale < effective_morale_->states.shaken_min);
-  if (broken) {
-    scores.fill(-1.0);
-    chosen = Action::Flee;
-    action_commit_[index] = 0;
-  } else {
-    if (morale_enabled_) {
-      // Morale-state score modifiers (docs/morale.md): Worried/Shaken lower
-      // attack and approach and raise retreat; Confident does the opposite.
-      apply_morale_modifiers(
-          scores, static_cast<MoraleState>(unit.morale_state),
-          effective_morale_->ai);
-    }
-    // The commander's order as a bounded score term (M6): obedience *
-    // order weight on the actions the order favors, only where the action
-    // is available, then clamped to [0, 1]. Never an override — it nudges
-    // scores, availability rules stay untouched.
-    // m11b: a delivered player order applies the same term to a
-    // leaderless squad (no commander to propagate — delivered directly
-    // at reduced obedience), and MoveTo adds a small keep-marching bias
-    // on Hold while enemies are visible.
-    bool player_order_scored = false;
-    if (squads_active_ && unit_squad_[index] >= 0) {
-      const Squad& squad = squads_[unit_squad_[index]];
-      const SquadMemberState& member =
-          squad.members[unit_member_[index]];
-      if (member.order != Order::None &&
-          (squad.command_active || squad.player_order_active)) {
-        if (squad.command_active && !squad.player_order_active) {
+  // Broken units (M5) do not score: they flee, cannot Advance, Approach
+  // or attack, and the commit time does not apply (computed from pure
+  // reads; the forced Flee is applied in the ordered pass). Outside the
+  // tactics block — morale routing exists without M10 tactics.
+  out.broken = morale_enabled_ &&
+               (unit.routed ||
+                unit.morale < effective_morale_->states.shaken_min);
+  // The commander's order as a bounded score term (M6), and the m11b
+  // player-order variant — both computed from stable squad state. Also
+  // outside the tactics block: orders exist without M10 tactics.
+  if (squads_active_ && unit_squad_[index] >= 0) {
+    const Squad& squad = squads_[unit_squad_[index]];
+    const SquadMemberState& member = squad.members[unit_member_[index]];
+    if (member.order != Order::None &&
+        (squad.command_active || squad.player_order_active)) {
+      out.order_active = true;
+      if (squad.command_active && !squad.player_order_active) {
           // M6 AI order: obedience falls with the member's distance to
           // the commander inside the leadership radius.
           const Unit& commander = world_.units[squad.commander_index];
           const double dx = unit.x - commander.x;
           const double dy = unit.y - commander.y;
-          obedience = obedience_weight(
+          out.obedience = obedience_weight(
               unit.personality.discipline, std::sqrt(dx * dx + dy * dy),
               squad.leadership_radius,
               static_cast<MoraleState>(unit.morale_state), squad.cohesion,
@@ -1582,14 +1638,14 @@ Action Simulation::decide_unit_action(std::size_t index,
                                    ? 1.0
                                    : commanders_->player_orders
                                          .leaderless_obedience;
-          obedience = std::clamp(
+          out.obedience = std::clamp(
               unit.personality.discipline * morale_factor *
                   cohesion_term * scale,
               0.0, 1.0);
         } else {
           // Leaderless AI order path (kept for symmetry): cohesion
           // only.
-          obedience = 0.0;
+          out.obedience = 0.0;
         }
         // m11b strength model: a delivered player order carries the
         // faction's authority, so its delivery strength floors at half
@@ -1598,75 +1654,254 @@ Action Simulation::decide_unit_action(std::size_t index,
         // bounded score term: clamped to [0, 1] per action, never
         // touching availability, and routed units (forced Flee) never
         // see it.
-        double delivery_strength = obedience;
+        double delivery_strength = out.obedience;
         if (squad.player_order_active) {
-          delivery_strength = 0.5 + 0.5 * obedience;
-          player_order_scored = true;
+          delivery_strength = 0.5 + 0.5 * out.obedience;
+          out.player_order_scored = true;
         }
-        order_bonus = order_score_bonus(member.order, delivery_strength,
-                                        commanders_->order_weights);
-        if (squad.player_order_active) {
-          // m12 audit: docs/squads.md promises "AttackMove leaves
-          // engagement scoring untouched" (and MoveTo marches past
-          // enemies). The Order::Advance mapping boosts Approach, which
-          // at weight_scale 4.0 saturates at 1.0 and outranked Attack:
-          // ordered armies crowded the enemy without ever attacking
-          // (measured kill ratios 0.026 / 0.003 in the m11 study).
-          //
-          // There is a second amplifier: the M10 regroup term clamps
-          // Advance as clamp(-1 + 0, 0, 1) = 0.0 while enemies are
-          // visible (an unavailable action lifted to a pseudo-available
-          // 0.0 — harmless without orders, where 0.0 never wins). The
-          // order bonus adds to any score >= 0, so even a march-only
-          // bonus would score Advance 0.88 over Approach 0.70 and the
-          // army would march past the enemy without closing to melee.
-          //
-          // So: MoveTo keeps the march bonus (Advance + Search — that
-          // is what makes it march past enemies; in melee range base
-          // Attack ~0.9 still outranks the saturated Advance 0.88, so a
-          // MoveTo column defends itself) and loses the Approach boost
-          // (it must not chase). AttackMove zeroes the whole bonus: the
-          // ordered point still steers the Advance move, and Attack and
-          // Approach keep their base scores, so an attack-moving army
-          // fights normally on contact.
-          if (squad.player_order_type == PlayerOrderType::MoveTo) {
-            order_bonus[static_cast<std::size_t>(Action::Approach)] = 0.0;
-          } else if (squad.player_order_type ==
-                     PlayerOrderType::AttackMove) {
-            order_bonus[static_cast<std::size_t>(Action::Approach)] = 0.0;
-            order_bonus[static_cast<std::size_t>(Action::Advance)] = 0.0;
-            order_bonus[static_cast<std::size_t>(Action::Search)] = 0.0;
+        out.order_bonus = order_score_bonus(member.order, delivery_strength,
+                                            commanders_->order_weights);
+      }
+    }
+}
+
+// Pass B of the decision phase (m13 item 4) — the ordered half of the old
+// decide_unit_action, run single-threaded in unit-index order: resolves
+// the estimate decay and the Help cap with their exact serial semantics,
+// records events in order, scores, chooses and commits the decision's
+// own-slot state.
+Action Simulation::finish_unit_decision(
+    std::size_t index, const DecisionInputs& inputs,
+    const std::array<std::size_t, kFactionCount>& estimate_dropper,
+    Perception& perception, ActionScores& scores) {
+  const Unit& unit = world_.units[index];
+  const double sight = inputs.sight;
+  const std::uint64_t tick_number = world_.tick_count + 1;
+
+  perception = inputs.perception;
+  const int best = perception.nearest_visible_enemy;
+  const std::uint32_t allies = perception.visible_allies;
+  const std::uint32_t enemies = perception.visible_enemies;
+
+  // Contact variant resolution + the ordered estimate decay.
+  double search_goal_x = 0.0;
+  double search_goal_y = 0.0;
+  bool has_fresh_contact = false;
+  double contact_distance = 0.0;
+  double contact_age = 0.0;
+  if (tactics_active_) {
+    std::uint64_t best_tick = 0;
+    double best_x = 0.0;
+    double best_y = 0.0;
+    if (contact_seek_active_) {
+      bool seeking_now = inputs.base_seeking;
+      if (config_.ai_avail_v2 && inputs.base_seeking) {
+        // Ordered replay of the serial scan: the FIRST seeker that
+        // reached the estimate drops it; it and every later would-be
+        // seeker fall back to the personal contact (the estimate they
+        // would read is already gone).
+        const std::size_t faction = faction_index(unit.faction);
+        const std::size_t dropper = estimate_dropper[faction];
+        if (dropper != 0) {
+          if (index + 1 == dropper) {
+            estimate_tick_[faction] = 0;  // the drop, at its serial point
           }
-          for (double& bonus : order_bonus) {
-            bonus *= commanders_->player_orders.weight_scale;
-          }
-        }
-        if (config_.ai_avail_v2 && squad.player_order_active &&
-            squad.player_order_type == PlayerOrderType::MoveTo &&
-            scores[static_cast<std::size_t>(Action::Advance)] < 0.0) {
-          // m13 item 2: the regroup clamp that used to lift an
-          // unavailable Advance to a pseudo-available 0.0 is gone under
-          // --ai-avail v2, but MoveTo's documented "marches past
-          // enemies" needs the march available while enemies are
-          // visible — the same 0.0 base, now explicit and scoped to
-          // delivered MoveTo orders only (melee still wins: base Attack
-          // ~0.9 outranks the saturated Advance bonus of ~0.88).
-          scores[static_cast<std::size_t>(Action::Advance)] = 0.0;
-        }
-        for (std::size_t action = 0; action < kActionCount; ++action) {
-          if (scores[action] >= 0.0) {
-            scores[action] =
-                std::clamp(scores[action] + order_bonus[action], 0.0, 1.0);
+          if (index + 1 >= dropper) {
+            seeking_now = false;
           }
         }
-        if (squad.player_order_active &&
-            squad.player_order_type == PlayerOrderType::MoveTo &&
-            scores[static_cast<std::size_t>(Action::Hold)] >= 0.0) {
-          scores[static_cast<std::size_t>(Action::Hold)] = std::clamp(
-              scores[static_cast<std::size_t>(Action::Hold)] +
-                  obedience * commanders_->player_orders.moveto_hold_bias,
-              0.0, 1.0);
+        if (seeking_now) {
+          best_tick = inputs.estimate_tick;
+          best_x = inputs.estimate_x;
+          best_y = inputs.estimate_y;
         }
+      } else if (seeking_now) {
+        // v1: seekers use the estimate without the decay rule.
+        const std::size_t faction = faction_index(unit.faction);
+        best_tick = estimate_tick_[faction];
+        best_x = estimate_x_[faction];
+        best_y = estimate_y_[faction];
+      }
+      if (events_ != nullptr && seeking_now && !was_seeking_[index]) {
+        events_->record(tick_number, EventType::SeekStart, unit.id);
+      }
+      was_seeking_[index] = seeking_now ? 1 : 0;
+    }
+    if (best_tick == 0 && inputs.personal_tick > 0) {
+      best_tick = inputs.personal_tick;
+      best_x = inputs.personal_x;
+      best_y = inputs.personal_y;
+    }
+    if (best_tick > 0) {
+      contact_age = static_cast<double>(tick_number - best_tick);
+      if (contact_age <
+          static_cast<double>(effective_tactics_->memory.forget_ticks)) {
+        has_fresh_contact = true;
+        search_goal_x = best_x;
+        search_goal_y = best_y;
+        const double dx = best_x - unit.x;
+        const double dy = best_y - unit.y;
+        contact_distance = std::sqrt(dx * dx + dy * dy);
+      }
+    }
+  }
+
+  // Every score input is clamped to [0, 1] so scores stay finite and in
+  // [0, 1] by construction (see docs/ai.md).
+  ScoreInputs score_inputs;
+  score_inputs.health_fraction =
+      std::clamp(unit.health / unit.stats.max_health, 0.0, 1.0);
+  score_inputs.strength_ratio = static_cast<double>(allies + 1) /
+                                static_cast<double>(allies + enemies + 1);
+  score_inputs.distance_fraction =
+      best >= 0
+          ? std::clamp(perception.nearest_visible_enemy_distance / sight,
+                       0.0, 1.0)
+          : 0.0;
+  score_inputs.cooldown_readiness =
+      std::clamp(1.0 - static_cast<double>(unit.cooldown_remaining) /
+                           static_cast<double>(unit.stats
+                                                   .attack_cooldown_ticks),
+                 0.0, 1.0);
+  score_inputs.bravery = std::clamp(unit.personality.bravery, 0.0, 1.0);
+  score_inputs.caution = std::clamp(unit.personality.caution, 0.0, 1.0);
+  score_inputs.aggression = std::clamp(unit.personality.aggression, 0.0, 1.0);
+  score_inputs.has_visible_enemy = best >= 0;
+  score_inputs.enemy_in_attack_range = inputs.enemy_in_attack_range;
+  // M10 inputs (zeros/defaults with tactics off, so legacy scoring and
+  // every M1-M9 reference are untouched).
+  score_inputs.sight_radius = sight;
+  // m13 item 2: --ai-avail v2 gates the regroup lift in score_actions.
+  score_inputs.availability_v2 = config_.ai_avail_v2;
+  score_inputs.has_fresh_contact = has_fresh_contact;
+  score_inputs.contact_distance = contact_distance;
+  score_inputs.contact_age = contact_age;
+  score_inputs.ally_in_need = inputs.ally_in_need;
+  score_inputs.ally_health_fraction = inputs.ally_health_fraction;
+  score_inputs.ally_distance = inputs.ally_distance;
+  score_inputs.squad_engaged = inputs.squad_engaged;
+  score_inputs.member_may_flank = inputs.member_may_flank;
+  score_inputs.local_enemy_ratio =
+      std::min(99.0, static_cast<double>(allies + 1) /
+                         static_cast<double>(enemies + 1));
+  score_inputs.target_routed = inputs.target_routed;
+  score_inputs.unit_speed = unit.stats.speed;
+  score_inputs.pursuit_within_bounds = inputs.pursuit_within_bounds;
+  score_inputs.has_squad = inputs.has_squad;
+  score_inputs.squad_cohesion = inputs.squad_cohesion;
+  // Pursuit disengagement (M10): past the time or distance bound a routed
+  // enemy stops driving movement — for scoring it is as if no enemy were
+  // visible (an adjacent one can still be attacked), and the unit's
+  // memory of it is suppressed this tick.
+  const bool pursuit_expired =
+      tactics_active_ && score_inputs.target_routed &&
+      !score_inputs.pursuit_within_bounds;
+  if (pursuit_expired) {
+    if (!score_inputs.enemy_in_attack_range) {
+      score_inputs.has_visible_enemy = false;
+      score_inputs.enemy_in_attack_range = false;
+    }
+    has_fresh_contact = false;
+  }
+
+  scores = score_actions(score_inputs,
+                         tactics_active_ ? effective_tactics_ : nullptr);
+  const Action previous = static_cast<Action>(unit.last_action);
+  // The order term (M6), captured for --ai-debug even when zero.
+  std::array<double, kActionCount> order_bonus = inputs.order_bonus;
+  const double obedience = inputs.obedience;
+  Action chosen;
+  // Broken units (M5) do not score: they flee, cannot Advance, Approach or
+  // attack, and the commit time does not apply (they stay routed until the
+  // recovery conditions are met in update_morale). A unit whose morale is
+  // below the breaking value flees immediately, even on the same tick it
+  // crossed the threshold; the routed flag records the break for the
+  // hysteresis and statistics machinery.
+  if (inputs.broken) {
+    scores.fill(-1.0);
+    chosen = Action::Flee;
+    action_commit_[index] = 0;
+  } else {
+    if (morale_enabled_) {
+      // Morale-state score modifiers (docs/morale.md): Worried/Shaken lower
+      // attack and approach and raise retreat; Confident does the opposite.
+      apply_morale_modifiers(
+          scores, static_cast<MoraleState>(unit.morale_state),
+          effective_morale_->ai);
+    }
+    // The commander's order as a bounded score term (M6): obedience *
+    // order weight on the actions the order favors, only where the action
+    // is available, then clamped to [0, 1]. Never an override — it nudges
+    // scores, availability rules stay untouched.
+    // m11b: a delivered player order applies the same term to a
+    // leaderless squad (no commander to propagate — delivered directly
+    // at reduced obedience), and MoveTo adds a small keep-marching bias
+    // on Hold while enemies are visible. Guarded exactly like the
+    // serial code: only members carrying an effective order score it.
+    const bool player_order_scored = inputs.player_order_scored;
+    if (inputs.order_active) {
+      const Squad& squad = squads_[unit_squad_[index]];
+      if (squad.player_order_active) {
+        // m12 audit: docs/squads.md promises "AttackMove leaves
+        // engagement scoring untouched" (and MoveTo marches past
+        // enemies). The Order::Advance mapping boosts Approach, which
+        // at weight_scale 4.0 saturates at 1.0 and outranked Attack:
+        // ordered armies crowded the enemy without ever attacking
+        // (measured kill ratios 0.026 / 0.003 in the m11 study).
+        //
+        // There is a second amplifier: the M10 regroup term clamps
+        // Advance as clamp(-1 + 0, 0, 1) = 0.0 while enemies are
+        // visible (an unavailable action lifted to a pseudo-available
+        // 0.0 — harmless without orders, where 0.0 never wins). The
+        // order bonus adds to any score >= 0, so even a march-only
+        // bonus would score Advance 0.88 over Approach 0.70 and the
+        // army would march past the enemy without closing to melee.
+        //
+        // So: MoveTo keeps the march bonus (Advance + Search — that
+        // is what makes it march past enemies; in melee range base
+        // Attack ~0.9 still outranks the saturated Advance 0.88, so a
+        // MoveTo column defends itself) and loses the Approach boost
+        // (it must not chase). AttackMove zeroes the whole bonus: the
+        // ordered point still steers the Advance move, and Attack and
+        // Approach keep their base scores, so an attack-moving army
+        // fights normally on contact.
+        if (squad.player_order_type == PlayerOrderType::MoveTo) {
+          order_bonus[static_cast<std::size_t>(Action::Approach)] = 0.0;
+        } else if (squad.player_order_type ==
+                   PlayerOrderType::AttackMove) {
+          order_bonus[static_cast<std::size_t>(Action::Approach)] = 0.0;
+          order_bonus[static_cast<std::size_t>(Action::Advance)] = 0.0;
+          order_bonus[static_cast<std::size_t>(Action::Search)] = 0.0;
+        }
+        for (double& bonus : order_bonus) {
+          bonus *= commanders_->player_orders.weight_scale;
+        }
+      }
+      if (config_.ai_avail_v2 && squad.player_order_active &&
+          squad.player_order_type == PlayerOrderType::MoveTo &&
+          scores[static_cast<std::size_t>(Action::Advance)] < 0.0) {
+        // m13 item 2: the regroup clamp that used to lift an
+        // unavailable Advance to a pseudo-available 0.0 is gone under
+        // --ai-avail v2, but MoveTo's documented "marches past
+        // enemies" needs the march available while enemies are
+        // visible — the same 0.0 base, now explicit and scoped to
+        // delivered MoveTo orders only (melee still wins: base Attack
+        // ~0.9 outranks the saturated Advance bonus of ~0.88).
+        scores[static_cast<std::size_t>(Action::Advance)] = 0.0;
+      }
+      for (std::size_t action = 0; action < kActionCount; ++action) {
+        if (scores[action] >= 0.0) {
+          scores[action] =
+              std::clamp(scores[action] + order_bonus[action], 0.0, 1.0);
+        }
+      }
+      if (squad.player_order_active &&
+          squad.player_order_type == PlayerOrderType::MoveTo &&
+          scores[static_cast<std::size_t>(Action::Hold)] >= 0.0) {
+        scores[static_cast<std::size_t>(Action::Hold)] = std::clamp(
+            scores[static_cast<std::size_t>(Action::Hold)] +
+                obedience * commanders_->player_orders.moveto_hold_bias,
+            0.0, 1.0);
       }
     }
     if (action_commit_[index] > 0 && previous != Action::None &&
@@ -1690,15 +1925,16 @@ Action Simulation::decide_unit_action(std::size_t index,
       // units may Help the same ally in one tick; a full cap falls
       // through to the next-best action (unit index order makes the
       // cap deterministic).
-      if (config_.ai_avail_v2 && chosen == Action::Help && ally_in_need) {
-        if (help_target_count_[ally_goal] >=
+      if (config_.ai_avail_v2 && chosen == Action::Help &&
+          inputs.ally_in_need) {
+        if (help_target_count_[inputs.ally_goal] >=
             static_cast<std::uint32_t>(std::max(
                 0, effective_tactics_->help.max_helpers_per_ally))) {
           scores[static_cast<std::size_t>(Action::Help)] = -1.0;
           chosen = choose_action(scores, previous, config_.action_stickiness,
                                  player_order_scored);
         } else {
-          ++help_target_count_[ally_goal];
+          ++help_target_count_[inputs.ally_goal];
         }
       }
       if (tactics_active_) {
@@ -1718,7 +1954,8 @@ Action Simulation::decide_unit_action(std::size_t index,
       // counter is capped at pursuit.max_ticks (never a runaway chase).
       // A different target, or a fighting (non-pursuit) action, freezes
       // or resets the state.
-      const bool pursuing = chosen == Action::Approach && inputs.target_routed;
+      const bool pursuing =
+          chosen == Action::Approach && score_inputs.target_routed;
       if (pursuing) {
         const std::uint32_t target_id =
             world_.units[static_cast<std::size_t>(best)].id;
@@ -1745,11 +1982,12 @@ Action Simulation::decide_unit_action(std::size_t index,
         tactic_goal_x_[index] = search_goal_x;
         tactic_goal_y_[index] = search_goal_y;
         tactic_goal_set_[index] = 1;
-      } else if (chosen == Action::Help && ally_in_need) {
-        tactic_goal_x_[index] = world_.units[ally_goal].x;
-        tactic_goal_y_[index] = world_.units[ally_goal].y;
+      } else if (chosen == Action::Help && inputs.ally_in_need) {
+        tactic_goal_x_[index] = world_.units[inputs.ally_goal].x;
+        tactic_goal_y_[index] = world_.units[inputs.ally_goal].y;
         tactic_goal_set_[index] = 1;
-      } else if (chosen == Action::Flank && enemies > 0 && has_squad) {
+      } else if (chosen == Action::Flank && enemies > 0 &&
+                 inputs.has_squad) {
         const Squad& squad = squads_[static_cast<std::size_t>(
             unit_squad_[index])];
         double axis_x = perception.enemy_centroid_x - squad.centroid_x;
@@ -1778,7 +2016,6 @@ Action Simulation::decide_unit_action(std::size_t index,
   // this unit sees an enemy (tick numbers are 1-based to match the report).
   if (ai_debug_.unit_id == unit.id && ai_debug_.unit_id != 0 &&
       !ai_debug_.captured) {
-    const std::uint64_t tick_number = world_.tick_count + 1;
     const bool matches =
         ai_debug_.explicit_tick
             ? tick_number == ai_debug_.tick
@@ -1811,8 +2048,8 @@ Action Simulation::decide_unit_action(std::size_t index,
       ai_debug_.order_bonus = order_bonus;
       ai_debug_.pursuit_ticks = world_.units[index].pursuit_ticks;
       ai_debug_.has_fresh_contact = has_fresh_contact;
-      ai_debug_.ally_in_need = ally_in_need;
-      ai_debug_.member_may_flank = member_may_flank;
+      ai_debug_.ally_in_need = inputs.ally_in_need;
+      ai_debug_.member_may_flank = inputs.member_may_flank;
     }
   }
   return chosen;

@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <sys/resource.h>
@@ -541,7 +542,23 @@ int run_with_replay(const cli::Arguments& args,
     }
   }
 
+  // m13 item 4: resolve --threads. 0 = one worker per hardware core
+  // (at least 1; hardware_concurrency is only a hint and may return 0).
+  // 1 (default) runs every phase inline — byte-identical to the
+  // pre-threads binary. Output is identical for every thread count.
+  std::uint32_t thread_count = args.threads;
+  if (thread_count == 0) {
+    const unsigned hardware = std::thread::hardware_concurrency();
+    thread_count = hardware == 0 ? 1u : static_cast<std::uint32_t>(hardware);
+    std::cout << "threads:              " << thread_count
+              << " (hardware concurrency)\n";
+  }
+  config.thread_count = thread_count;
+
   sim::Simulation simulation(config);
+  // m13 item 4: --profile-phases — clock reads only; the battle is
+  // byte-identical with profiling on or off.
+  simulation.enable_phase_profiling(args.profile_phases);
   // m11b: applies one scripted order (also used by the record/replay
   // loops). "all" addresses every squad of the faction at issue time.
   const auto apply_script_order =
@@ -1596,8 +1613,36 @@ int run_with_replay(const cli::Arguments& args,
   report << "Execution time:      " << seconds << " s\n"
          << "Ticks per second:    " << ticks_per_second << "\n"
          << "Avg ms per tick:     " << ms_per_tick << "\n"
-         << "Peak memory:         " << peak_rss_mib() << " MiB\n"
-         << "JSON export:         " << export_report << "\n";
+         << "Peak memory:         " << peak_rss_mib() << " MiB\n";
+
+  // m13 item 4: --profile-phases. Mean per-tick wall time per pipeline
+  // phase (perception = the parallel input pass; decision = the ordered
+  // scoring/commit pass; resolution = flow fields/cooldowns/movement/
+  // combat/deaths; commit = morale/squads/termination/sampling) plus
+  // the totals. The mean-of-per-tick numbers can legitimately sum to
+  // slightly less than the total mean (per-tick sum vs sum of per-tick
+  // means averages identically here; both are simple sums divided by
+  // the same tick count).
+  if (args.profile_phases) {
+    const sim::Simulation::PhaseTimings& phases =
+        simulation.phase_timings();
+    const double ticks =
+        static_cast<double>(std::max<std::uint64_t>(phases.ticks, 1));
+    const auto mean_ms = [ticks](std::uint64_t nanoseconds) {
+      return static_cast<double>(nanoseconds) / ticks / 1e6;
+    };
+    report << "Phase profile:       (mean ms per tick, "
+           << phases.ticks << " ticks, " << thread_count
+           << (thread_count == 1 ? " thread)\n" : " threads)\n")
+           << "  perception:        " << mean_ms(phases.perception_ns)
+           << "\n"
+           << "  decision:          " << mean_ms(phases.decision_ns) << "\n"
+           << "  resolution:        " << mean_ms(phases.resolution_ns)
+           << "\n"
+           << "  commit:            " << mean_ms(phases.commit_ns) << "\n"
+           << "  total:             " << mean_ms(phases.total_ns) << "\n";
+  }
+  report << "JSON export:         " << export_report << "\n";
 
   std::cout << report.str();
   return 0;

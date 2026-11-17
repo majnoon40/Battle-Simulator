@@ -133,3 +133,55 @@ is verified.
   `logs/m2-det-*.log` and `logs/m3-*`). Verified for seeds 42, 123, 0 and
   18446744073709551615, for the mixed-type scenario, and for 5,000- and
   20,000-unit battles in both neighbor modes.
+
+## Threading (m13 item 4, `--threads`)
+
+Multithreading never changes a single byte of output. The contract:
+
+- **`--threads 1` (default)** runs every phase inline on the simulation
+  thread — the pre-threads code path, byte-identical to the binary
+  before the pool existed. `--threads 0` picks one worker per hardware
+  core; `--threads N >= 2` picks N.
+- **Only the read-only computation phases run on the pool** — the
+  perception/input pass of the decision phase (and the legacy
+  nearest-enemy scans). Everything each chunk computes is a pure
+  function of state that is stable for the whole phase (the spatial
+  grid, unit positions, squads, the faction estimates at tick start).
+- **Fixed chunks, independent of the thread count.** The unit range is
+  split into chunks of 256 slots (`Simulation::kDecisionChunkUnits`).
+  Chunk boundaries depend only on the unit count, so every thread count
+  computes the same chunks over the same slots. Workers claim chunks
+  dynamically (a slow chunk cannot stall the phase); scheduling cannot
+  change results because chunks are disjoint.
+- **Each worker writes only its own preallocated slots** — a unit's
+  tactical memory, its contactless streak and its `DecisionInputs`
+  record. Radius-query scratch buffers are per worker. There are no
+  allocations and no locks in the chunk bodies; no floating-point
+  reduction ever crosses chunk boundaries.
+- **Everything order-dependent stays single-threaded in unit-index
+  order** (the "pass B" of `decide_targets`): the faction contact
+  estimate decay (the first seeker to reach a stale estimate drops it —
+  flagged in the parallel pass, replayed in index order), the per-ally
+  Help cap (a greedy in-order allocation), event recording (SeekStart,
+  PursuitStart, FirstContact, FlankStart, HelpStart — the recorder is
+  append-only and stays ordered), the action commit timers, pursuit
+  bookkeeping, tactic goals and the debug capture.
+- **No thread-dependent floating-point arithmetic**: every double a
+  unit's decision consumes is computed inside that unit's own chunk from
+  the same inputs (the perception aggregation loop iterates the
+  radius-query buffer in the grid's fixed cell order, per worker
+  unchanged).
+- **No timing-dependent decisions**: the pool's dynamic scheduling
+  affects only which worker runs which chunk, never what is computed.
+
+Verified by `tests/test_threads.cpp` (byte-identical state hashes at
+every 25-tick checkpoint, exports, results and replay verification
+across 1/2/3/4/8 threads on four scenarios plus a library battle that
+exercises squads, player orders, the Help cap, contact seeking and
+interventions; grid == brute under threads; `--profile-phases` changes
+nothing) and by the ThreadSanitizer CI job over the pool, the
+multithreading determinism tests and the simulation/squad/morale
+mechanics. `tests/test_thread_pool.cpp` pins the pool contract itself:
+exact chunk partitions with uneven tails, exclusive slots, scheduling
+independence across worker counts, repeated execution, exception
+capture-and-rethrow with the pool staying usable, and clean shutdown.

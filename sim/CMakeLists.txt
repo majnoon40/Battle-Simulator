@@ -23,4 +23,4 @@ add_library(sim STATIC
 add_library(sim::sim ALIAS sim)
 target_include_directories(sim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(sim PUBLIC cxx_std_20)
-target_link_libraries(sim PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(sim PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
