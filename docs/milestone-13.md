@@ -37,7 +37,7 @@ flank (squads 0-2 north flank at t60, then AttackMove into the rear at
 t400) / hold (all squads at t100) / retreat (all squads at t150) — 200
 paired seeds x 2 orientations (the ordered faction is Red in both, so
 side-averaging removes the spawn-band asymmetry), squads scenario, 1500
-ticks (script: `scripts/m13_orders_study.py`; raw rows:
+ticks (script: `tools/analysis/m13_orders_study.py`; raw rows:
 `download/m13/orders_study_200seeds.json`).
 
 | arm | win share [95% CI] | mean end tick | kill ratio |
@@ -58,7 +58,7 @@ plus the termination gap they expose.
 
 ### Hold diagnosis (why the kill ratio is ~0.05, with evidence)
 
-Probe: `scripts/m13_hold_probe.cpp` replicates the hold arm (squads
+Probe: `tools/analysis/m13_hold_probe.cpp` replicates the hold arm (squads
 scenario, all Red squads Hold at t100) and measures per tick, per unit,
 whether an enemy is inside attack range and what the unit chose.
 
@@ -366,3 +366,63 @@ infantry, or enough ranged damage to break a charge before contact) —
 deliberately not done here: unit stats feed every byte-identity
 baseline and every measured number in the milestone docs, so a stat
 change is a milestone-scale re-baselining, not an item-3 patch.
+
+## Item 3b — adversarial audit: 13 findings, all fixed
+
+A post-merge adversarial audit of the non-combat code produced 13
+findings; all are fixed on this branch, each with regression tests.
+No sim behavior changed for any valid input: the fixes only reject
+inputs that were never valid but previously slipped through as garbage
+values, and the state-hash change is byte-identical on every supported
+platform (proof below).
+
+| # | finding | fix | tests |
+| --- | --- | --- | --- |
+| 1 | CLI numeric options `--trace-interval`, `--csv-interval`, `--seek`, `--intervene` parsed with raw `strtol`/`strtoull`: `25junk` accepted, `-1` wrapped to a huge value, overflow silently ignored | all four go through the same strict digits-only parser as `--seed`/`--units` (full consumption, errno, per-flag range; errors name the flag and echo the value) | `TraceIntervalRejectsMalformedValues`, `CsvIntervalRejectsMalformedValues`, `SeekRejectsMalformedAndNegativeValues`, `InterveneRejectsMalformedValues` |
+| 2 | replay `order` x/y accepted `inf`/`nan` (std::stod parses them) and `0x10` (hex float) | decimal-only grammar + full-consumption + isfinite in `parse_double`; the retreat branch now errors on present-but-invalid points instead of silently dropping them | `NonFiniteOrderPointsAreRejected` (11 non-finite spellings x both coordinates + hex + trailing junk) |
+| 3 | JSON order-script squad ids truncated through unchecked `get<uint32_t>` (4294967296 -> 0) | read as uint64, range-checked against UINT32_MAX before the cast | `ScriptParserSquadIdsFitUint32` (0, max, max+1, much larger, negative, fractional, string) |
+| 4 | scenario squad-plan `count`/`size` truncated the same way | uint32-max check before the cast, consistent with the army-count parser; `map.cell_size` now also requires finite | `SquadPlanCountAndSizeFitUint32` |
+| 5 | state hash serialized in native byte order | canonical encoding: little-endian integers (by shifts) and IEEE-754 double bit patterns — documented in docs/reports.md; **proved byte-identical** by building the pre-change `state_hash.cpp` from git history against the same library and comparing digests (tick 0 and tick 25 of the pinned test battle match), so every recorded replay still verifies | `StateHashKnownAnswers` (two pinned digests) |
+| 6 | `validate_unit_stats` passed +inf on health/speed/damage/range and never checked accuracy/damage_variance/cooldown_jitter/leadership_radius | every floating-point statistic must be finite with its documented range, mirroring the unit-type file parser (the public `validate_config` is safe independently of JSON) | `NonFiniteUnitStatsAreRejected` (9 fields x {+inf, -inf, NaN} + range cases) |
+| 7 | `parse_replay`/`parse_order_script` mutated the caller's output line by line — a failed parse left partial state in a reused object | both parse into temporaries and commit atomically; contracts documented in `cli/replay.hpp` (replacement for replays, append + stable tick-merge for scripts, output untouched on failure) | `FailedParseLeavesReplayDataUnchanged`, `ScriptParserCommitsAtomically` |
+| 8 | duplicate unreachable `--combat` branch in `parse_args` | removed (the combined `--ai-avail/--end/--combat` handler is the live one) | `CombatFlagParsesThroughCombinedBranch` |
+| 9 | TickAccumulator converted the accumulated double to int before any range check (UB for huge/inf values), no constructor validation | cap comparison happens in double space before the conversion (and reproduces the old `limited` semantics exactly at the boundary), non-finite deltas add nothing, a non-finite accumulation drops the backlog instead of pinning every later frame, constructor parameters fall back to the documented defaults | 6 accumulator tests (huge delta, non-finite deltas, overflow reset, constructor fallbacks, boundary semantics) |
+| 10 | battlefield width/height accepted +inf | finite + strictly positive | `NonFiniteBattlefieldDimensionsAreRejected` |
+| 11 | terrain `cell_size` accepted +inf; `move_cost`/`sight_modifier`/`defense_modifier` not finite-checked | cell_size finite + positive in `build_terrain_grid` (the public entry that takes a raw double); the type-table fields reject non-finite values | `NonFiniteCellSizeIsRejected` (NaN, +inf, -inf, 0, negative) |
+| 12 | CSV / report Markdown / report JSON / events / trace writes never checked the stream after writing — a full disk exited 0 with a truncated file | every output flushes and checks (events/trace after the run, exports after writing, `write_replay` flush+close); failures exit 1 with the path; failure injection via `/dev/full` (writes fail at flush — exactly the case the old code missed) | `OutputFailureTest.WriteFailuresFailTheRun` (6 output kinds) + `WritablePathsStillSucceed` |
+| 13 | PNG writer computed `int stride = width * 3` (overflow UB for extreme widths) and ignored `fclose` (buffered writes fail only at close) | dimension cap `width <= INT_MAX/3` before any stride math, buffer-size check, fwrite AND fclose checked | `InvalidImagesAreRejected`, `WriteFailuresAreReported` (incl. `/dev/full`) |
+
+Reliability extras from the focused non-combat review (each with a
+regression test):
+
+- `--render-frames` with a 23-digit tick: `std::stoull` threw
+  `out_of_range` out of `main` and aborted the CLI; now a clean exit-1
+  error (`RenderFramesOverflowIsRejected`).
+- UI-script integer fields were read with unchecked `get<int>` —
+  `{"width": 1e300}` was undefined behavior, `2.5` silently truncated;
+  now every integer goes through a range-checked reader
+  (`UiScriptNumbersAreRangeChecked`).
+- A compact PNG map claiming 100000x100000 pixels made stb allocate
+  the ~30 GB decode before the 4096x4096 cap ran; the IHDR is now
+  pre-checked before decoding (`OversizedPngIsRefusedBeforeDecoding`).
+- `data/morale.json` termination count fields
+  (`routed_threshold_min_units`, `stalemate_max_engagements`)
+  truncated above UINT32_MAX through an unchecked cast —
+  4294967296 silently became 0; now rejected
+  (`TerminationBlockParsesAndDefaults` extension).
+- `Rng::next_uint32(0)` divided by zero (no callers, defensive guard).
+- The `--intervene` re-parse in `main.cpp` used raw `strtoul` on the
+  canonicalized strings; now strict (defense in depth).
+- `--record` without an explicit `--scenario` wrote an empty scenario
+  line (the raw flag value instead of the resolved path), so every
+  default-scenario recording failed `--verify` with "no scenario
+  line"; the resolved path is recorded now
+  (`RecordWithoutScenarioFlagVerifies`; both v2 and v1 combat
+  recordings round-trip record -> verify).
+
+Compatibility: the acceptance studies, byte-identity baselines and
+every recorded replay are untouched — the full pre-audit suite still
+passes plus the new regression tests, the shipped scenario and data
+files load unchanged, and recorded-replay verification round-trips
+(the known-answer digests pin it). The only visible changes are
+rejections of inputs that were never valid.

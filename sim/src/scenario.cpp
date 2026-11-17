@@ -293,11 +293,29 @@ Scenario parse_scenario_document(const OrderedJson& root) {
       if (!count.is_number_integer() || count.get<std::int64_t>() < 1) {
         fail(where + ": 'count' must be a whole number >= 1");
       }
+      // m13 audit finding 4: validate against the destination range
+      // before converting — the plan fields are uint32_t and the
+      // previous unchecked static_cast truncated anything above 2^32-1
+      // (4294967296 became 0). Same rule as the army `count` parser.
+      if (count.get<std::int64_t>() >
+          static_cast<std::int64_t>(
+              std::numeric_limits<std::uint32_t>::max())) {
+        fail(where + ": 'count' must not exceed " +
+             std::to_string(
+                 std::numeric_limits<std::uint32_t>::max()));
+      }
       ScenarioSquads parsed;
       parsed.count = static_cast<std::uint32_t>(count.get<std::int64_t>());
       if (const auto size = plan.find("size"); size != plan.end()) {
         if (!size->is_number_integer() || size->get<std::int64_t>() < 1) {
           fail(where + ": 'size' must be a whole number >= 1");
+        }
+        if (size->get<std::int64_t>() >
+            static_cast<std::int64_t>(
+                std::numeric_limits<std::uint32_t>::max())) {
+          fail(where + ": 'size' must not exceed " +
+               std::to_string(
+                   std::numeric_limits<std::uint32_t>::max()));
         }
         parsed.size = static_cast<std::uint32_t>(size->get<std::int64_t>());
       }
@@ -329,8 +347,11 @@ Scenario parse_scenario_document(const OrderedJson& root) {
       fail("scenario field 'map.cell_size' must be a number > 0");
     }
     parsed.cell_size = map["cell_size"].get<double>();
-    if (!(parsed.cell_size > 0.0)) {
-      fail("scenario field 'map.cell_size' must be a number > 0");
+    // Finite and positive (a NaN compares false to everything; +inf
+    // passed the bare > 0 check and made the derived battlefield size
+    // infinite).
+    if (!std::isfinite(parsed.cell_size) || !(parsed.cell_size > 0.0)) {
+      fail("scenario field 'map.cell_size' must be a finite number > 0");
     }
     scenario.map = parsed;
   }

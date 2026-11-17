@@ -471,6 +471,120 @@ TEST(CliArgsTest, TraceIntervalBoundsAreEnforced) {
   EXPECT_FALSE(parse({"battle_cli", "--trace-interval", "100001"}).ok);
 }
 
+// m13 audit finding 1: every numeric option must parse strictly —
+// trailing characters, signs, empty strings and overflow are rejected,
+// and the error names the offending argument.
+TEST(CliArgsTest, TraceIntervalRejectsMalformedValues) {
+  for (const char* bad :
+       {"25junk", "10abc", "150garbage", "", "-1", "-5", "1e3", " 25",
+        "25 ", "0x10", "+25", "1.5"}) {
+    const cli::ParseOutcome outcome = parse(
+        {"battle_cli", "--trace", "t.jsonl", "--trace-interval", bad});
+    EXPECT_FALSE(outcome.ok) << "value: '" << bad << "'";
+  }
+  // The error identifies the offending argument and echoes the value.
+  const cli::ParseOutcome named = parse(
+      {"battle_cli", "--trace", "t.jsonl", "--trace-interval", "25junk"});
+  ASSERT_FALSE(named.ok);
+  EXPECT_NE(named.error.find("--trace-interval"), std::string::npos)
+      << "error was: " << named.error;
+  EXPECT_NE(named.error.find("25junk"), std::string::npos)
+      << "error was: " << named.error;
+  // Boundary values: 1 and 100000 are the valid ends.
+  EXPECT_TRUE(parse(
+      {"battle_cli", "--trace", "t.jsonl", "--trace-interval", "1"}).ok);
+  EXPECT_TRUE(parse(
+      {"battle_cli", "--trace", "t.jsonl", "--trace-interval", "100000"}).ok);
+}
+
+TEST(CliArgsTest, CsvIntervalRejectsMalformedValues) {
+  for (const char* bad :
+       {"25junk", "10abc", "", "-1", "1e3", " 25", "+25", "1.5"}) {
+    const cli::ParseOutcome outcome =
+        parse({"battle_cli", "--export-csv", "c.csv", "--csv-interval", bad});
+    EXPECT_FALSE(outcome.ok) << "value: '" << bad << "'";
+  }
+  const cli::ParseOutcome named =
+      parse({"battle_cli", "--export-csv", "c.csv", "--csv-interval", "10abc"});
+  ASSERT_FALSE(named.ok);
+  EXPECT_NE(named.error.find("--csv-interval"), std::string::npos)
+      << "error was: " << named.error;
+  EXPECT_TRUE(parse(
+      {"battle_cli", "--export-csv", "c.csv", "--csv-interval", "1"}).ok);
+  EXPECT_TRUE(parse(
+      {"battle_cli", "--export-csv", "c.csv", "--csv-interval", "100000"}).ok);
+}
+
+TEST(CliArgsTest, SeekRejectsMalformedAndNegativeValues) {
+  // "-1" used to wrap through strtoull into a huge seek tick.
+  for (const char* bad :
+       {"-1", "0", "25junk", "10abc", "", "1e3", " 5", "+5", "1.5",
+        "18446744073709551616",  // 2^64: one past uint64 max
+        "999999999999999999999999999999999"}) {
+    const cli::ParseOutcome outcome =
+        parse({"battle_cli", "--replay", "r.replay", "--seek", bad});
+    EXPECT_FALSE(outcome.ok) << "value: '" << bad << "'";
+  }
+  const cli::ParseOutcome named =
+      parse({"battle_cli", "--replay", "r.replay", "--seek", "25junk"});
+  ASSERT_FALSE(named.ok);
+  EXPECT_NE(named.error.find("--seek"), std::string::npos)
+      << "error was: " << named.error;
+  // The full uint64 range is accepted (minus zero).
+  const cli::ParseOutcome max = parse(
+      {"battle_cli", "--replay", "r.replay", "--seek",
+       "18446744073709551615"});
+  ASSERT_TRUE(max.ok);
+  EXPECT_EQ(max.args.replay_seek, 18446744073709551615ULL);
+}
+
+TEST(CliArgsTest, InterveneRejectsMalformedValues) {
+  for (const char* bad :
+       {"kill:25junk:10", "kill:10abc:5", "kill:", "kill:0:10", "kill:5:0",
+        "kill:-1:10", "kill:5:-1", "kill:5:10junk", "kill:1e3:5",
+        "kill:4294967296:10",  // unit id above uint32 max
+        "kill:5:18446744073709551616",  // tick above uint64 max
+        "kill: 5:10", "kill:5: 10", "kill:+5:10"}) {
+    const cli::ParseOutcome outcome =
+        parse({"battle_cli", "--record", "r.replay", "--intervene", bad});
+    EXPECT_FALSE(outcome.ok) << "value: '" << bad << "'";
+  }
+  // The error identifies the offending part.
+  const cli::ParseOutcome named =
+      parse({"battle_cli", "--record", "r.replay", "--intervene",
+             "kill:25junk:10"});
+  ASSERT_FALSE(named.ok);
+  EXPECT_NE(named.error.find("--intervene"), std::string::npos)
+      << "error was: " << named.error;
+  // Boundaries: uint32-max unit id and uint64-max tick are valid.
+  const cli::ParseOutcome edge = parse(
+      {"battle_cli", "--record", "r.replay", "--intervene",
+       "kill:4294967295:18446744073709551615"});
+  ASSERT_TRUE(edge.ok);
+  ASSERT_EQ(edge.args.interventions.size(), 1u);
+  EXPECT_EQ(edge.args.interventions[0],
+            "kill:4294967295:18446744073709551615");
+}
+
+// m13 audit finding 8: the duplicated --combat branch (unreachable after
+// the combined --ai-avail/--end/--combat handler) was removed; the flag
+// itself must parse exactly as before.
+TEST(CliArgsTest, CombatFlagParsesThroughCombinedBranch) {
+  EXPECT_TRUE(parse({"battle_cli", "--combat", "v2"}).args.combat_v2);
+  EXPECT_TRUE(parse({"battle_cli", "--combat", "on"}).args.combat_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--combat", "v1"}).args.combat_v2);
+  EXPECT_FALSE(parse({"battle_cli", "--combat", "off"}).args.combat_v2);
+  EXPECT_TRUE(parse({"battle_cli"}).args.combat_v2);  // default v2
+  const cli::ParseOutcome bad = parse({"battle_cli", "--combat", "v3"});
+  EXPECT_FALSE(bad.ok);
+  EXPECT_NE(bad.error.find("--combat"), std::string::npos)
+      << "error was: " << bad.error;
+  // The usage text still documents it.
+  std::ostringstream out;
+  cli::print_usage(out);
+  EXPECT_NE(out.str().find("--combat"), std::string::npos);
+}
+
 TEST(SideSwapTest, SwapsExplicitObjectivesExactlyOnce) {
   // The M10 bug: the swap loop ran per faction, so the Red iteration
   // swapped the objectives and the Blue iteration swapped them right

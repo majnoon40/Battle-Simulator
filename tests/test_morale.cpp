@@ -1033,6 +1033,65 @@ TEST(MoraleConfigTest, TerminationBlockParsesAndDefaults) {
     threw = true;
   }
   EXPECT_TRUE(threw) << "fraction > 1 was accepted";
+
+  // m13 reliability review: count fields are validated against the
+  // uint32 destination range — 4294967296 used to truncate to 0 through
+  // the unchecked cast (and 0 min units would disable the threshold).
+  const auto expect_termination_reject = [&](const char* block) {
+    bool rejected = false;
+    try {
+      static_cast<void>(sim::parse_morale(std::string(R"json({
+      "start": {"base": 40.0, "bravery_scale": 40.0},
+      "states": {"confident_min": 75.0, "steady_min": 50.0,
+                 "worried_min": 30.0, "shaken_min": 12.0},
+      "loss": {"ally_death": 10.0, "ally_rout": 3.0,
+               "routed_ally_presence_per_tick": 0.3,
+               "outnumbered_per_tick": 0.4,
+               "damage_per_health_fraction": 25.0,
+               "isolation_per_tick": 0.6, "caution_amplifier": 0.5,
+               "bravery_shield": 0.5, "min_scale": 0.2},
+      "gain": {"kill": 4.0, "superiority_per_tick": 0.15,
+               "allies_present_per_tick": 0.05, "safe_per_tick": 0.35},
+      "thresholds": {"outnumbered_below": 0.4, "superiority_above": 0.75},
+      "recovery": {"morale_threshold": 35.0, "safe_ticks": 120},
+      "ai": {"confident_bonus": 0.05, "worried_penalty": 0.10,
+             "shaken_penalty": 0.25},
+      "max_loss_per_tick": 10.0, "max_gain_per_tick": 2.5,
+      "rout_timeout_ticks": 30,
+      "termination": )json") + block + "}"));
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    EXPECT_TRUE(rejected) << "termination block was accepted: " << block;
+  };
+  expect_termination_reject(
+      R"({"routed_threshold_fraction": 0.05, "routed_threshold_min_units": 4294967296, "routed_threshold_ticks": 60})");
+  expect_termination_reject(
+      R"({"routed_threshold_fraction": 0.05, "routed_threshold_min_units": 5, "routed_threshold_ticks": 60, "stalemate_max_engagements": 4294967296})");
+  // The uint32 maximum itself is fine.
+  EXPECT_EQ(sim::parse_morale(std::string(R"json({
+      "start": {"base": 40.0, "bravery_scale": 40.0},
+      "states": {"confident_min": 75.0, "steady_min": 50.0,
+                 "worried_min": 30.0, "shaken_min": 12.0},
+      "loss": {"ally_death": 10.0, "ally_rout": 3.0,
+               "routed_ally_presence_per_tick": 0.3,
+               "outnumbered_per_tick": 0.4,
+               "damage_per_health_fraction": 25.0,
+               "isolation_per_tick": 0.6, "caution_amplifier": 0.5,
+               "bravery_shield": 0.5, "min_scale": 0.2},
+      "gain": {"kill": 4.0, "superiority_per_tick": 0.15,
+               "allies_present_per_tick": 0.05, "safe_per_tick": 0.35},
+      "thresholds": {"outnumbered_below": 0.4, "superiority_above": 0.75},
+      "recovery": {"morale_threshold": 35.0, "safe_ticks": 120},
+      "ai": {"confident_bonus": 0.05, "worried_penalty": 0.10,
+             "shaken_penalty": 0.25},
+      "max_loss_per_tick": 10.0, "max_gain_per_tick": 2.5,
+      "rout_timeout_ticks": 30,
+      "termination": {"routed_threshold_fraction": 0.05,
+                      "routed_threshold_min_units": 4294967295,
+                      "routed_threshold_ticks": 60}
+    })json")).termination.routed_threshold_min_units,
+       4294967295u);
 }
 
 TEST(TerminationV2Test, QuietWindowAfterContactEndsAsStalemate) {

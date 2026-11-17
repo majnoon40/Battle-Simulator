@@ -1,8 +1,10 @@
 #include "cli/replay.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -20,17 +22,66 @@ namespace cli {
 
 namespace {
 
+// Decimal-only grammar: an optional sign, digits with an optional
+// fractional part, and an optional decimal exponent. This keeps out the
+// other spellings std::stod would happily consume — hex floats ("0x10"
+// parses as 16), "inf", "nan" — before the value is even converted.
+[[nodiscard]] bool looks_like_decimal(const std::string& text) {
+  std::size_t i = 0;
+  if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+    ++i;
+  }
+  bool digits = false;
+  while (i < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[i]))) {
+    ++i;
+    digits = true;
+  }
+  if (i < text.size() && text[i] == '.') {
+    ++i;
+    while (i < text.size() &&
+           std::isdigit(static_cast<unsigned char>(text[i]))) {
+      ++i;
+      digits = true;
+    }
+  }
+  if (!digits) {
+    return false;
+  }
+  if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+    ++i;
+    if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+      ++i;
+    }
+    bool exponent_digits = false;
+    while (i < text.size() &&
+           std::isdigit(static_cast<unsigned char>(text[i]))) {
+      ++i;
+      exponent_digits = true;
+    }
+    if (!exponent_digits) {
+      return false;
+    }
+  }
+  return i == text.size();
+}
+
+// Complete, finite decimal parse: std::stod alone accepts "inf", "nan",
+// hex floats and (on some platforms) overflowed exponents, so the
+// grammar check, the full-input check and a finiteness check are all
+// required. Every floating-point replay field (order x/y) goes through
+// here.
 [[nodiscard]] bool parse_double(const std::string& text, double& out) {
-  if (text.empty()) {
+  if (text.empty() || !looks_like_decimal(text)) {
     return false;
   }
   std::size_t used = 0;
   try {
     out = std::stod(text, &used);
   } catch (...) {
-    return false;
+    return false;  // out_of_range (e.g. 1e999) or invalid_argument
   }
-  return used == text.size();
+  return used == text.size() && std::isfinite(out);
 }
 
 }  // namespace
@@ -57,6 +108,10 @@ bool parse_order_script(const std::string& path,
     error = "order script must be a JSON array of order objects";
     return false;
   }
+  // m13 audit finding 7: parse into a temporary and commit to `out` only
+  // after the whole file validates — a failed parse must not leave
+  // partially parsed orders in a reused output object.
+  std::vector<OrderIntervention> parsed_orders;
   for (const nlohmann::json& entry : root) {
     if (!entry.is_object() || !entry.contains("tick") ||
         !entry.contains("faction") || !entry.contains("squads") ||
@@ -99,7 +154,16 @@ bool parse_order_script(const std::string& path,
           error = "order script: squad ids must be unsigned integers";
           return false;
         }
-        order.squads.push_back(squad.get<std::uint32_t>());
+        // Validate against the destination range before converting:
+        // nlohmann's get<uint32_t> is an unchecked static_cast, so an id
+        // above 2^32-1 would silently truncate (or wrap to 0).
+        const std::uint64_t id = squad.get<std::uint64_t>();
+        if (id > 0xFFFFFFFFULL) {
+          error = "order script: squad id " + std::to_string(id) +
+                  " is out of range (max 4294967295)";
+          return false;
+        }
+        order.squads.push_back(static_cast<std::uint32_t>(id));
       }
     } else {
       error = "order script: squads must be \"all\" or an id array";
@@ -153,9 +217,12 @@ bool parse_order_script(const std::string& path,
       // (0, 0) is the "no point" sentinel in the issue API.
       order.has_point = false;
     }
-    out.push_back(std::move(order));
+    parsed_orders.push_back(std::move(order));
   }
-  // Ascending tick, stable file order within a tick.
+  // Commit: append the validated orders, then keep the whole vector
+  // sorted by ascending tick (stable — file order within a tick).
+  out.insert(out.end(), std::make_move_iterator(parsed_orders.begin()),
+             std::make_move_iterator(parsed_orders.end()));
   std::stable_sort(out.begin(), out.end(),
                    [](const OrderIntervention& a, const OrderIntervention& b) {
                      return a.tick < b.tick;
@@ -210,6 +277,10 @@ bool parse_replay(const std::string& path, ReplayData& out,
     error = "not a battle replay file (missing 'BATTLESIM REPLAY 1' magic)";
     return false;
   }
+  // m13 audit finding 7: parse into a temporary and replace `out` only
+  // after the whole file validates — a failed parse must not expose
+  // partially parsed state in a reused output object.
+  ReplayData parsed;
   bool have_seed = false;
   bool have_ticks = false;
   bool have_scenario = false;
@@ -225,20 +296,20 @@ bool parse_replay(const std::string& path, ReplayData& out,
     const std::string rest =
         space == std::string::npos ? "" : line.substr(space + 1);
     if (key == "version") {
-      out.version = rest;
+      parsed.version = rest;
     } else if (key == "scenario") {
-      out.scenario = rest;
+      parsed.scenario = rest;
       have_scenario = true;
     } else if (key == "mod") {
-      out.mod = rest;
+      parsed.mod = rest;
     } else if (key == "seed") {
-      if (!parse_u64(rest, out.seed)) {
+      if (!parse_u64(rest, parsed.seed)) {
         error = "bad seed line: '" + line + "'";
         return false;
       }
       have_seed = true;
     } else if (key == "ticks") {
-      if (!parse_u64(rest, out.ticks) || out.ticks == 0) {
+      if (!parse_u64(rest, parsed.ticks) || parsed.ticks == 0) {
         error = "bad ticks line: '" + line + "'";
         return false;
       }
@@ -255,45 +326,45 @@ bool parse_replay(const std::string& path, ReplayData& out,
         const std::string name = pair.substr(0, eq);
         const std::string value = pair.substr(eq + 1);
         if (name == "variance") {
-          out.variance = value;
+          parsed.variance = value;
         } else if (name == "contact_seek") {
-          out.contact_seek = value;
+          parsed.contact_seek = value;
         } else if (name == "neighbor") {
-          out.neighbor = value;
+          parsed.neighbor = value;
         } else if (name == "squads") {
-          out.squads = value;
+          parsed.squads = value;
         } else if (name == "swap_sides") {
-          out.swap_sides = value;
+          parsed.swap_sides = value;
         } else if (name == "nav") {
           if (value != "v1" && value != "v2") {
             error = "bad nav flag value '" + value + "' in replay";
             return false;
           }
-          out.nav = value;
+          parsed.nav = value;
         } else if (name == "ai_avail") {
           if (value != "v1" && value != "v2") {
             error = "bad ai_avail flag value '" + value + "' in replay";
             return false;
           }
-          out.ai_avail = value;
+          parsed.ai_avail = value;
         } else if (name == "end") {
           if (value != "v1" && value != "v2") {
             error = "bad end flag value '" + value + "' in replay";
             return false;
           }
-          out.end = value;
+          parsed.end = value;
         } else if (name == "combat") {
           if (value != "v1" && value != "v2") {
             error = "bad combat flag value '" + value + "' in replay";
             return false;
           }
-          out.combat = value;
+          parsed.combat = value;
         } else if (name == "orders") {
           if (value != "on" && value != "off") {
             error = "bad orders flag value '" + value + "' in replay";
             return false;
           }
-          out.orders = value;
+          parsed.orders = value;
         } else {
           error = "unknown flag '" + name + "' in replay";
           return false;
@@ -320,7 +391,7 @@ bool parse_replay(const std::string& path, ReplayData& out,
       intervention.unit = static_cast<std::uint32_t>(unit);
       intervention.tick = tick;
       last_intervention_tick = intervention.tick;
-      out.interventions.push_back(intervention);
+      parsed.interventions.push_back(intervention);
     } else if (key == "order") {
       // m11b: order <tick> <red|blue> <squads|all> <type> [args]
       //   moveto/attackmove: x y   |   retreat: [x y]
@@ -386,17 +457,24 @@ bool parse_replay(const std::string& path, ReplayData& out,
         }
         order.has_point = true;
       } else if (order.type == sim::PlayerOrderType::Retreat) {
+        // The point is optional, but tokens that are present must be a
+        // valid pair — "retreat nan 10" used to fail the parse_double
+        // check silently and degrade into a point-less retreat.
         std::string x_text;
         std::string y_text;
-        if ((words >> x_text >> y_text) && parse_double(x_text, order.x) &&
-            parse_double(y_text, order.y)) {
+        if (words >> x_text) {
+          if (!(words >> y_text) || !parse_double(x_text, order.x) ||
+              !parse_double(y_text, order.y)) {
+            error = "bad order line (retreat needs x y): '" + line + "'";
+            return false;
+          }
           if (order.x != 0.0 || order.y != 0.0) {
             order.has_point = true;
           }
         }
       }
       last_order_tick = order.tick;
-      out.order_interventions.push_back(std::move(order));
+      parsed.order_interventions.push_back(std::move(order));
     } else if (key == "hash") {
       std::istringstream words(rest);
       std::string tick_text;
@@ -411,17 +489,17 @@ bool parse_replay(const std::string& path, ReplayData& out,
         return false;
       }
       last_hash_tick = tick;
-      out.hashes.emplace_back(tick, hash);
+      parsed.hashes.emplace_back(tick, hash);
     } else {
       error = "unknown replay line: '" + line + "'";
       return false;
     }
   }
-  if (out.version.empty()) {
+  if (parsed.version.empty()) {
     error = "replay file has no version line";
     return false;
   }
-  if (!have_scenario || out.scenario.empty()) {
+  if (!have_scenario || parsed.scenario.empty()) {
     error = "replay file has no scenario line";
     return false;
   }
@@ -433,6 +511,8 @@ bool parse_replay(const std::string& path, ReplayData& out,
     error = "replay file has no ticks line";
     return false;
   }
+  // Commit: the file fully validated, replace the output atomically.
+  out = std::move(parsed);
   return true;
 }
 
@@ -479,7 +559,13 @@ bool write_replay(const std::string& path, const ReplayData& data) {
   for (const auto& [tick, hash] : data.hashes) {
     file << "hash " << tick << " " << hash << "\n";
   }
-  return static_cast<bool>(file);
+  // m13 audit finding 12: flush and close explicitly so a failed write
+  // (full disk, quota, closed stream) is reported instead of silently
+  // producing a truncated replay that later fails verification.
+  file.flush();
+  const bool ok = file.good();
+  file.close();
+  return ok && !file.fail();
 }
 
 }  // namespace cli

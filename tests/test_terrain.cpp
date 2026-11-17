@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -307,6 +308,31 @@ TEST(TerrainGridTest, BuildValidation) {
   EXPECT_NE(build(2, 2, 0.0, ok), "");           // cell size
   EXPECT_NE(build(2, 2, 10.0, {0, 1, 2, 99}), "");  // index out of range
   EXPECT_EQ(build(2, 2, 10.0, ok), "");          // valid
+}
+
+// m13 audit finding 11: cell_size must be finite and positive — +inf
+// passed the bare "> 0" check, and every world coordinate derived from
+// the grid became non-finite. build_terrain_grid is a public entry
+// point taking a raw double, so it validates independently of JSON.
+TEST(TerrainGridTest, NonFiniteCellSizeIsRejected) {
+  const sim::TerrainTypeTable table = test_table();
+  const std::vector<std::uint16_t> cells(4, 0);
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const double bad : {inf, -inf, nan, 0.0, -1.0}) {
+    try {
+      static_cast<void>(sim::build_terrain_grid("x", 2, 2, bad, cells,
+                                                &table));
+      FAIL() << "cell_size " << bad << " was accepted";
+    } catch (const std::invalid_argument& error) {
+      EXPECT_NE(std::string(error.what()).find("cell_size"),
+                std::string::npos)
+          << "error was: " << error.what();
+    }
+  }
+  // A finite positive size still builds.
+  EXPECT_NO_THROW(static_cast<void>(
+      sim::build_terrain_grid("x", 2, 2, 10.0, cells, &table)));
 }
 
 // ---------------------------------------------------------------------------
@@ -799,6 +825,38 @@ TEST(MapLoadingTest, PngRoundTripAndErrors) {
     }
   }
   EXPECT_TRUE(road_seen);
+}
+
+// m13 reliability review: a compact PNG whose IHDR claims huge
+// dimensions must be refused before stbi allocates the decode (a
+// kilobyte-sized file claiming 100000x100000 would ask for ~30 GB).
+TEST(MapLoadingTest, OversizedPngIsRefusedBeforeDecoding) {
+  const sim::TerrainTypeTable table = test_table();
+  // Hand-built minimal PNG: signature + IHDR claiming 100000x100000
+  // (bit depth 8, truecolor) + a zero CRC — the pre-check reads only
+  // the header and never validates the rest.
+  const unsigned char bytes[] = {
+      0x89, 'P',  'N',  'G',  '\r', '\n', 0x1A, '\n',  // signature
+      0,    0,    0,    13,                            // IHDR length
+      'I',  'H',  'D',  'R',                            // "IHDR"
+      0,    1,    0x86, 0xA0,                          // width 100000
+      0,    1,    0x86, 0xA0,                          // height 100000
+      8,    2,    0,    0,    0,                        // depth/type/...
+      0,    0,    0,    0,                              // CRC (unchecked)
+  };
+  const std::string path = "/tmp/m13_oversized_map.png";
+  {
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+  }
+  try {
+    static_cast<void>(cli::load_map(path, 5.0, table));
+    FAIL() << "oversized PNG accepted";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("4096x4096"),
+              std::string::npos)
+        << "error was: " << error.what();
+  }
 }
 
 TEST(MapLoadingTest, JsonGridMaps) {

@@ -2,6 +2,18 @@
 // Appends every piece of mutable state field-by-field (no struct
 // memcpy, so padding bytes can never leak in) and folds the bytes with
 // two independent FNV-1a 64 seeds (a 128-bit digest in practice).
+//
+// Canonical byte encoding (m13 audit finding 5): every integer is
+// serialized explicitly little-endian and every double as its exact
+// IEEE-754 bit pattern, little-endian — never in the host's native
+// order. On every supported platform (x86-64, ARM64 in little-endian
+// mode) these are the native representations, so all existing hash
+// values — replay checkpoints, committed baselines, recorded replays —
+// are byte-for-byte unchanged; a hypothetical big-endian host now
+// produces the same digest instead of silently diverging (and failing
+// cross-verification). The format is part of the replay compatibility
+// guarantee: changing any encoding below changes every recorded
+// replay's verification and is a versioned change.
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -12,15 +24,38 @@
 namespace sim {
 namespace {
 
-void put(std::string& out, const void* bytes, std::size_t n) {
-  out.append(static_cast<const char*>(bytes), n);
+// Little-endian integer encoders: the low byte first, by explicit
+// shifts (no reinterpretation of the object representation).
+void u8(std::string& out, std::uint8_t v) {
+  out.push_back(static_cast<char>(v));
 }
-void u8(std::string& out, std::uint8_t v) { put(out, &v, 1); }
-void u16(std::string& out, std::uint16_t v) { put(out, &v, 2); }
-void u32(std::string& out, std::uint32_t v) { put(out, &v, 4); }
-void u64(std::string& out, std::uint64_t v) { put(out, &v, 8); }
-void i32(std::string& out, int v) { put(out, &v, 4); }
-void f64(std::string& out, double v) { put(out, &v, 8); }
+void u16(std::string& out, std::uint16_t v) {
+  u8(out, static_cast<std::uint8_t>(v & 0xFF));
+  u8(out, static_cast<std::uint8_t>((v >> 8) & 0xFF));
+}
+void u32(std::string& out, std::uint32_t v) {
+  u16(out, static_cast<std::uint16_t>(v & 0xFFFF));
+  u16(out, static_cast<std::uint16_t>((v >> 16) & 0xFFFF));
+}
+void u64(std::string& out, std::uint64_t v) {
+  u32(out, static_cast<std::uint32_t>(v & 0xFFFFFFFFULL));
+  u32(out, static_cast<std::uint32_t>((v >> 32) & 0xFFFFFFFFULL));
+}
+// Two's-complement little-endian via the unsigned conversion (defined
+// behavior in C++20).
+void i32(std::string& out, int v) {
+  u32(out, static_cast<std::uint32_t>(v));
+}
+// The exact IEEE-754 bit pattern of the double, little-endian. The bit
+// pattern (not a decimal round-trip) keeps -0.0, subnormals and every
+// value the deterministic simulation produces perfectly distinct.
+void f64(std::string& out, double v) {
+  static_assert(sizeof(std::uint64_t) == sizeof(double),
+                "the canonical double encoding needs 64-bit doubles");
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  u64(out, bits);
+}
 void boolean(std::string& out, bool v) { u8(out, v ? 1 : 0); }
 
 void stats_bytes(std::string& out, const UnitStats& s) {

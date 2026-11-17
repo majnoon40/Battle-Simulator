@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -301,6 +302,98 @@ TEST(ConfigValidationTest, InvalidConfigurationsAreRejected) {
   sim::SimulationConfig bad_cooldown = base;
   bad_cooldown.blue_stats.attack_cooldown_ticks = 0;
   EXPECT_THROW(sim::Simulation{bad_cooldown}, std::invalid_argument);
+}
+
+// m13 audit finding 6: every floating-point unit statistic must be
+// finite — +inf passed every one-sided > 0 / >= 0 comparison, and
+// accuracy / damage_variance / cooldown_jitter were not checked here at
+// all. The public validate_config must be safe independently of JSON
+// parsing.
+TEST(ConfigValidationTest, NonFiniteUnitStatsAreRejected) {
+  sim::SimulationConfig base;
+  base.total_units = 10;
+  base.max_ticks = 100;
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto check = [&](const char* field, double value,
+                         const auto& setter) {
+    sim::SimulationConfig config = base;
+    setter(config, value);
+    try {
+      sim::validate_config(config);
+      FAIL() << field << " = " << value << " was accepted";
+    } catch (const std::invalid_argument& error) {
+      EXPECT_NE(std::string(error.what()).find(field), std::string::npos)
+          << "error was: " << error.what();
+    }
+  };
+  // Every statistic rejects +inf, -inf and NaN (red side; blue_stats is
+  // validated by the same helper).
+  for (const double bad : {inf, -inf, nan}) {
+    check("max_health", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.max_health = v;
+    });
+    check("speed", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.speed = v;
+    });
+    check("damage", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.damage = v;
+    });
+    check("attack_range", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.attack_range = v;
+    });
+    check("sight_radius", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.sight_radius = v;
+    });
+    check("leadership_radius", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.leadership_radius = v;
+    });
+    check("accuracy", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.accuracy = v;
+    });
+    check("damage_variance", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.damage_variance = v;
+    });
+    check("cooldown_jitter", bad, [](sim::SimulationConfig& c, double v) {
+      c.red_stats.cooldown_jitter = v;
+    });
+  }
+  // The fraction fields also enforce their documented ranges.
+  check("accuracy", 1.5, [](sim::SimulationConfig& c, double v) {
+    c.blue_stats.accuracy = v;
+  });
+  check("damage_variance", -0.1, [](sim::SimulationConfig& c, double v) {
+    c.blue_stats.damage_variance = v;
+  });
+  check("cooldown_jitter", 2.0, [](sim::SimulationConfig& c, double v) {
+    c.blue_stats.cooldown_jitter = v;
+  });
+  check("leadership_radius", -1.0, [](sim::SimulationConfig& c, double v) {
+    c.blue_stats.leadership_radius = v;
+  });
+}
+
+// m13 audit finding 10: battlefield dimensions must be finite and
+// strictly positive (a NaN failed the comparisons, but +inf passed
+// "> 0" and made every derived coordinate non-finite).
+TEST(ConfigValidationTest, NonFiniteBattlefieldDimensionsAreRejected) {
+  sim::SimulationConfig base;
+  base.total_units = 10;
+  base.max_ticks = 100;
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const double bad : {inf, -inf, nan, 0.0, -5.0}) {
+    sim::SimulationConfig config = base;
+    config.battlefield_width = bad;
+    EXPECT_THROW(sim::validate_config(config), std::invalid_argument)
+        << "width " << bad;
+    sim::SimulationConfig other = base;
+    other.battlefield_height = bad;
+    EXPECT_THROW(sim::validate_config(other), std::invalid_argument)
+        << "height " << bad;
+  }
+  // A finite, positive battlefield is fine.
+  EXPECT_NO_THROW(sim::validate_config(base));
 }
 
 }  // namespace
