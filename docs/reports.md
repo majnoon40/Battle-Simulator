@@ -69,6 +69,18 @@ the battle's future (tick, RNG state, all per-unit fields, perceptions,
 squad state, faction counters, estimates, stuck bookkeeping) —
 `sim/src/state_hash.cpp`.
 
+The serialization is **canonical, not native**: every integer is encoded
+explicitly little-endian (u8/u16/u32/u64 by shifts) and every `double`
+as its exact IEEE-754 bit pattern, little-endian — never the host's
+byte order. On all supported platforms (x86-64, ARM64 in little-endian
+mode) these coincide with the native representation, so every replay
+recorded before the encoding was made explicit still verifies; a
+hypothetical big-endian host would now produce the same digests instead
+of silently diverging. Known-answer digests are pinned by
+`tests/test_replay.cpp` (`StateHashKnownAnswers`); changing any
+encoding changes every recorded replay's verification and is a
+versioned compatibility break.
+
 `--replay FILE --verify` re-runs the battle from the replay's recorded
 setup, re-applies its interventions at the recorded ticks, and compares
 every checkpoint hash; on mismatch it prints the first mismatching tick

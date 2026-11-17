@@ -370,13 +370,16 @@ ParseOutcome parse_args(int argc, char** argv) {
       if (value == nullptr) {
         return outcome;
       }
-      const long interval = std::strtol(value, nullptr, 10);
-      if (interval < 1 || interval > 100000) {
+      const ParsedNumber parsed =
+          parse_unsigned(value, "--trace-interval", 100000);
+      if (!parsed.ok || parsed.value < 1) {
         outcome.ok = false;
-        outcome.error = "--trace-interval must be in [1, 100000]";
+        outcome.error = parsed.ok
+                            ? "--trace-interval must be in [1, 100000]"
+                            : parsed.error;
         return outcome;
       }
-      args.trace_interval = static_cast<std::uint32_t>(interval);
+      args.trace_interval = static_cast<std::uint32_t>(parsed.value);
       continue;
     }
     if (flag == "--export-csv") {
@@ -393,13 +396,16 @@ ParseOutcome parse_args(int argc, char** argv) {
       if (value == nullptr) {
         return outcome;
       }
-      const long interval = std::strtol(value, nullptr, 10);
-      if (interval < 1 || interval > 100000) {
+      const ParsedNumber parsed =
+          parse_unsigned(value, "--csv-interval", 100000);
+      if (!parsed.ok || parsed.value < 1) {
         outcome.ok = false;
-        outcome.error = "--csv-interval must be in [1, 100000]";
+        outcome.error = parsed.ok
+                            ? "--csv-interval must be in [1, 100000]"
+                            : parsed.error;
         return outcome;
       }
-      args.csv_interval = static_cast<std::uint32_t>(interval);
+      args.csv_interval = static_cast<std::uint32_t>(parsed.value);
       continue;
     }
     if (flag == "--report") {
@@ -447,14 +453,15 @@ ParseOutcome parse_args(int argc, char** argv) {
       if (value == nullptr) {
         return outcome;
       }
-      const unsigned long long tick =
-          std::strtoull(value, nullptr, 10);
-      if (tick == 0) {
+      const ParsedNumber parsed = parse_unsigned(
+          value, "--seek", std::numeric_limits<std::uint64_t>::max());
+      if (!parsed.ok || parsed.value == 0) {
         outcome.ok = false;
-        outcome.error = "--seek expects a tick >= 1";
+        outcome.error = parsed.ok ? "--seek expects a tick >= 1"
+                                  : parsed.error;
         return outcome;
       }
-      args.replay_seek = static_cast<std::uint64_t>(tick);
+      args.replay_seek = parsed.value;
       continue;
     }
     if (flag == "--intervene") {
@@ -478,17 +485,25 @@ ParseOutcome parse_args(int argc, char** argv) {
       }
       const std::string unit_text = spec.substr(5, first - 5);
       const std::string tick_text = spec.substr(first + 1);
-      const unsigned long long unit =
-          std::strtoull(unit_text.c_str(), nullptr, 10);
-      const unsigned long long tick =
-          std::strtoull(tick_text.c_str(), nullptr, 10);
-      if (unit == 0 || tick == 0 || unit_text.empty() || tick_text.empty()) {
+      // Strict unsigned parsing for both parts: trailing characters,
+      // signs, empty fields and out-of-range values are all rejected
+      // (strtoull would wrap "-1" to a huge number and silently stop at
+      // "25junk"). The unit id must fit the uint32_t the intervention
+      // carries.
+      const ParsedNumber unit = parse_unsigned(
+          unit_text, "--intervene unit id", 0xFFFFFFFFULL);
+      const ParsedNumber tick = parse_unsigned(
+          tick_text, "--intervene tick",
+          std::numeric_limits<std::uint64_t>::max());
+      if (!unit.ok || !tick.ok || unit.value == 0 || tick.value == 0) {
         outcome.ok = false;
-        outcome.error = "--intervene needs a unit id and a tick >= 1";
+        outcome.error = !unit.ok || !tick.ok
+                            ? (unit.ok ? tick.error : unit.error)
+                            : "--intervene needs a unit id and a tick >= 1";
         return outcome;
       }
-      args.interventions.push_back("kill:" + std::to_string(unit) + ":" +
-                                   std::to_string(tick));
+      args.interventions.push_back("kill:" + std::to_string(unit.value) + ":" +
+                                   std::to_string(tick.value));
       continue;
     }
     if (flag == "--contact-seek") {
@@ -546,25 +561,6 @@ ParseOutcome parse_args(int argc, char** argv) {
         args.end_v2 = v2;
       } else {
         args.combat_v2 = v2;
-      }
-      continue;
-    }
-    if (flag == "--combat") {
-      const char* value = require_value("--combat");
-      if (value == nullptr) {
-        return outcome;
-      }
-      const std::string mode = value;
-      if (mode == "v2" || mode == "on") {
-        args.combat_v2 = true;
-      } else if (mode == "v1" || mode == "off") {
-        args.combat_v2 = false;
-      } else {
-        outcome.ok = false;
-        outcome.error =
-            "--combat expects 'v2' (default), 'v1', 'on' or 'off', got '" +
-            mode + "'";
-        return outcome;
       }
       continue;
     }

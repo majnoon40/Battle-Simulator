@@ -1,5 +1,6 @@
 #include "sim/terrain.hpp"
 
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -56,8 +57,12 @@ TerrainGrid build_terrain_grid(std::string map_id, std::uint32_t width,
   if (width > 4096 || height > 4096) {
     reject("terrain map '" + map_id + "': size above the 4096x4096 limit");
   }
-  if (!(cell_size > 0.0)) {
-    reject("terrain map '" + map_id + "': cell_size must be > 0");
+  // m13 audit finding 11: cell_size must be finite and positive — +inf
+  // passed the bare > 0 check and every world coordinate derived from
+  // the grid became non-finite.
+  if (!std::isfinite(cell_size) || !(cell_size > 0.0)) {
+    reject("terrain map '" + map_id +
+           "': cell_size must be a finite number > 0");
   }
   if (cell_types.size() != static_cast<std::size_t>(width) * height) {
     reject("terrain map '" + map_id + "': expected " +
@@ -121,6 +126,9 @@ TerrainTypeTable parse_terrain_types(const std::string& text) {
       reject(where + ": missing or non-number 'move_cost'");
     }
     type.move_cost = entry["move_cost"].get<double>();
+    if (!std::isfinite(type.move_cost)) {
+      reject(where + ": 'move_cost' must be a finite number");
+    }
     if (entry.contains("passable")) {
       if (!entry["passable"].is_boolean()) {
         reject(where + ": 'passable' must be a boolean");
@@ -132,11 +140,17 @@ TerrainTypeTable parse_terrain_types(const std::string& text) {
       reject(where + ": missing or non-number 'sight_modifier'");
     }
     type.sight_modifier = entry["sight_modifier"].get<double>();
+    if (!std::isfinite(type.sight_modifier)) {
+      reject(where + ": 'sight_modifier' must be a finite number");
+    }
     if (!entry.contains("defense_modifier") ||
         !entry["defense_modifier"].is_number()) {
       reject(where + ": missing or non-number 'defense_modifier'");
     }
     type.defense_modifier = entry["defense_modifier"].get<double>();
+    if (!std::isfinite(type.defense_modifier)) {
+      reject(where + ": 'defense_modifier' must be a finite number");
+    }
     if (type.passable) {
       if (!(type.move_cost > 0.0)) {
         reject(where + ": passable types need move_cost > 0");

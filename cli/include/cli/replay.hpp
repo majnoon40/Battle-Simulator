@@ -69,7 +69,15 @@ struct ReplayData {
 //  "order": "moveto"|"attackmove"|"hold"|"retreat"|"regroup"|"formation",
 //  "x": n, "y": n, "formation": "id"} objects. moveto/attackmove require
 // x and y; retreat takes them optionally; formation requires formation.
-// On failure returns false and fills `error`.
+//
+// Contract (m13 audit finding 7): append semantics — on success the
+// parsed orders are appended to `out` and the whole vector is re-sorted
+// by ascending tick (stable, so file order survives within a tick even
+// when `out` was non-empty). On failure `out` is left completely
+// unchanged: the file is parsed into a temporary and committed only
+// after it fully validates, so a reused output object never keeps
+// stale or partially parsed entries. On failure returns false and
+// fills `error`.
 [[nodiscard]] bool parse_order_script(const std::string& path,
                                       std::vector<OrderIntervention>& out,
                                       std::string& error);
@@ -77,6 +85,11 @@ struct ReplayData {
 // Parses a replay file. On failure returns false and fills `error`
 // with a clear message (unknown magic, missing fields, bad values,
 // non-ascending checkpoints...).
+//
+// Contract (m13 audit finding 7): replacement semantics — on success
+// `out` is fully replaced by the parsed replay; on failure `out` is
+// left completely unchanged (no partially parsed state is exposed,
+// so callers may reuse one ReplayData across several parse attempts).
 [[nodiscard]] bool parse_replay(const std::string& path, ReplayData& out,
                                 std::string& error);
 

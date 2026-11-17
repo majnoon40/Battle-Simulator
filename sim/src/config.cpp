@@ -33,27 +33,52 @@ const char* to_string(AiMode mode) noexcept {
 
 namespace {
 
+// m13 audit finding 6: every floating-point statistic must be finite —
+// the bare range comparisons passed +inf (inf > 0) and NaN slips were
+// only caught where a two-sided comparison happened to reject them.
+// This mirrors the unit-type file parser's rules (finite, plus the
+// documented range per field) so the public validate_config is safe
+// independently of JSON parsing.
 void validate_unit_stats(const UnitStats& stats, const char* name) {
-  if (!(stats.max_health > 0.0)) {
-    throw std::invalid_argument(std::string(name) + ".max_health must be > 0");
+  const auto reject = [&](const char* field, const char* rule) {
+    throw std::invalid_argument(std::string(name) + "." + field +
+                                " must be " + rule);
+  };
+  if (!std::isfinite(stats.max_health) || !(stats.max_health > 0.0)) {
+    reject("max_health", "a finite number > 0");
   }
-  if (!(stats.speed >= 0.0)) {
-    throw std::invalid_argument(std::string(name) + ".speed must be >= 0");
+  if (!std::isfinite(stats.speed) || !(stats.speed >= 0.0)) {
+    reject("speed", "a finite number >= 0");
   }
-  if (!(stats.damage >= 0.0)) {
-    throw std::invalid_argument(std::string(name) + ".damage must be >= 0");
+  if (!std::isfinite(stats.damage) || !(stats.damage >= 0.0)) {
+    reject("damage", "a finite number >= 0");
   }
-  if (!(stats.attack_range >= 0.0)) {
-    throw std::invalid_argument(std::string(name) +
-                                ".attack_range must be >= 0");
+  if (!std::isfinite(stats.attack_range) || !(stats.attack_range >= 0.0)) {
+    reject("attack_range", "a finite number >= 0");
   }
   if (stats.attack_cooldown_ticks < 1) {
-    throw std::invalid_argument(std::string(name) +
-                                ".attack_cooldown_ticks must be >= 1");
+    reject("attack_cooldown_ticks", ">= 1");
   }
-  if (!(stats.sight_radius > 0.0) || !std::isfinite(stats.sight_radius)) {
-    throw std::invalid_argument(std::string(name) +
-                                ".sight_radius must be a finite number > 0");
+  if (!std::isfinite(stats.sight_radius) || !(stats.sight_radius > 0.0)) {
+    reject("sight_radius", "a finite number > 0");
+  }
+  if (!std::isfinite(stats.leadership_radius) ||
+      !(stats.leadership_radius >= 0.0)) {
+    reject("leadership_radius", "a finite number >= 0");
+  }
+  if (!std::isfinite(stats.accuracy) || !(stats.accuracy >= 0.0) ||
+      !(stats.accuracy <= 1.0)) {
+    reject("accuracy", "a finite number in [0, 1]");
+  }
+  if (!std::isfinite(stats.damage_variance) ||
+      !(stats.damage_variance >= 0.0) ||
+      !(stats.damage_variance <= 1.0)) {
+    reject("damage_variance", "a finite number in [0, 1]");
+  }
+  if (!std::isfinite(stats.cooldown_jitter) ||
+      !(stats.cooldown_jitter >= 0.0) ||
+      !(stats.cooldown_jitter <= 1.0)) {
+    reject("cooldown_jitter", "a finite number in [0, 1]");
   }
 }
 
@@ -127,11 +152,18 @@ void validate_config(const SimulationConfig& config) {
   if (config.max_ticks < 1) {
     throw std::invalid_argument("max_ticks must be >= 1");
   }
-  if (!(config.battlefield_width > 0.0)) {
-    throw std::invalid_argument("battlefield_width must be > 0");
+  // m13 audit finding 10: battlefield dimensions must be finite and
+  // strictly positive — the bare > 0 checks passed +inf (and everything
+  // derived from an infinite battlefield would be non-finite too).
+  if (!std::isfinite(config.battlefield_width) ||
+      !(config.battlefield_width > 0.0)) {
+    throw std::invalid_argument(
+        "battlefield_width must be a finite number > 0");
   }
-  if (!(config.battlefield_height > 0.0)) {
-    throw std::invalid_argument("battlefield_height must be > 0");
+  if (!std::isfinite(config.battlefield_height) ||
+      !(config.battlefield_height > 0.0)) {
+    throw std::invalid_argument(
+        "battlefield_height must be a finite number > 0");
   }
   if (!(config.spawn_band_fraction > 0.0) ||
       !(config.spawn_band_fraction <= 0.5)) {

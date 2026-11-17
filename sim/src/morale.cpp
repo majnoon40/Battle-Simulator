@@ -283,11 +283,20 @@ MoraleConfig parse_config(const nlohmann::json& root) {
       fail("termination.routed_threshold_fraction must be in [0, 1]");
     }
     config.termination.routed_threshold_fraction = fraction;
+    // m13 reliability review: validate against the uint32 destination
+    // range before converting (whole_number_at_least checks only the
+    // minimum; 4294967296 used to truncate to 0 through the cast).
+    const double min_units = whole_number_at_least(
+        required_field(termination, "termination",
+                       "routed_threshold_min_units"),
+        1, "termination", "routed_threshold_min_units");
+    if (min_units >
+        static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+      fail("morale config: 'termination.routed_threshold_min_units' must "
+           "not exceed 4294967295");
+    }
     config.termination.routed_threshold_min_units =
-        static_cast<std::uint32_t>(whole_number_at_least(
-            required_field(termination, "termination",
-                           "routed_threshold_min_units"),
-            1, "termination", "routed_threshold_min_units"));
+        static_cast<std::uint32_t>(min_units);
     config.termination.routed_threshold_ticks =
         static_cast<std::uint64_t>(whole_number_at_least(
             required_field(termination, "termination",
@@ -303,10 +312,16 @@ MoraleConfig parse_config(const nlohmann::json& root) {
       }
     }
     if (termination.contains("stalemate_max_engagements")) {
+      const double max_engagements = whole_number_at_least(
+          termination.at("stalemate_max_engagements"), 0, "termination",
+          "stalemate_max_engagements");
+      if (max_engagements >
+          static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+        fail("morale config: 'termination.stalemate_max_engagements' must "
+             "not exceed 4294967295");
+      }
       config.termination.stalemate_max_engagements =
-          static_cast<std::uint32_t>(whole_number_at_least(
-              termination.at("stalemate_max_engagements"), 0,
-              "termination", "stalemate_max_engagements"));
+          static_cast<std::uint32_t>(max_engagements);
     }
   }
 

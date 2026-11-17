@@ -1,12 +1,15 @@
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <locale>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -166,6 +169,50 @@ sim::CommanderConfig load_commanders(const std::string& path) {
                              "': " + error.what());
   }
 }
+
+// m13 reliability review: strict unsigned parsing for the canonical
+// "kill:UNIT:TICK" intervention strings (they are built by parse_args
+// from validated numbers, but the re-parse must not rely on that
+// invariant — strtoul would wrap "-1" and stop silently at "25junk").
+namespace {
+
+bool parse_u64_strict(const std::string& text, std::uint64_t& out) {
+  if (text.empty() ||
+      text.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  errno = 0;
+  char* end = nullptr;
+  const unsigned long long value = std::strtoull(text.c_str(), &end, 10);
+  if (errno == ERANGE || end == nullptr || *end != '\0') {
+    return false;
+  }
+  out = static_cast<std::uint64_t>(value);
+  return true;
+}
+
+std::optional<cli::Intervention> parse_intervention(const std::string& spec) {
+  if (spec.rfind("kill:", 0) != 0) {
+    return std::nullopt;
+  }
+  const std::size_t first = spec.find(':', 5);
+  if (first == std::string::npos) {
+    return std::nullopt;
+  }
+  std::uint64_t unit = 0;
+  std::uint64_t tick = 0;
+  if (!parse_u64_strict(spec.substr(5, first - 5), unit) ||
+      !parse_u64_strict(spec.substr(first + 1), tick) || unit == 0 ||
+      tick == 0 || unit > 0xFFFFFFFFULL) {
+    return std::nullopt;
+  }
+  cli::Intervention intervention;
+  intervention.unit = static_cast<std::uint32_t>(unit);
+  intervention.tick = tick;
+  return intervention;
+}
+
+}  // namespace
 
 int run_with_replay(const cli::Arguments& args,
                     cli::ReplayData replay_data) {
@@ -563,14 +610,42 @@ int run_with_replay(const cli::Arguments& args,
                    "events\n";
       return 1;
     }
-    const int ui_width = script["width"].get<int>();
-    const int ui_height = script["height"].get<int>();
-    if (ui_width < 200 || ui_height < 150 || ui_width > 4096 ||
-        ui_height > 4096) {
+    // m13 reliability review: every integer field is read through a
+    // range-checked integer reader. nlohmann's get<int> is an unchecked
+    // static_cast — a JSON double like 1e300 (or a 64-bit integer
+    // outside int range) was undefined behavior; non-integers now fall
+    // back (optional fields) or produce a clear error (required ones).
+    const auto json_int = [](const nlohmann::json& node, const char* key,
+                             long long& out) {
+      if (!node.contains(key) || !node[key].is_number_integer()) {
+        return false;
+      }
+      const long long value = node[key].get<long long>();
+      if (value < -1000000000LL || value > 1000000000LL) {
+        return false;  // outside any sane UI number; never converts badly
+      }
+      out = value;
+      return true;
+    };
+    const auto script_int = [&](const char* key, long long& out) {
+      return json_int(script, key, out);
+    };
+    long long ui_width_ll = 0;
+    long long ui_height_ll = 0;
+    if (!script_int("width", ui_width_ll) ||
+        !script_int("height", ui_height_ll)) {
+      std::cerr << "error: UI script width and height must be whole "
+                   "numbers\n";
+      return 1;
+    }
+    if (ui_width_ll < 200 || ui_height_ll < 150 || ui_width_ll > 4096 ||
+        ui_height_ll > 4096) {
       std::cerr << "error: UI script size must be in [200x150, "
                    "4096x4096]\n";
       return 1;
     }
+    const int ui_width = static_cast<int>(ui_width_ll);
+    const int ui_height = static_cast<int>(ui_height_ll);
     const std::uint64_t ui_tick = script_uint("tick", 0);
     const std::string out_pattern = script["out"].get<std::string>();
 
@@ -603,12 +678,21 @@ int run_with_replay(const cli::Arguments& args,
         return 1;
       }
       ScriptedEvent item;
-      item.frame = entry["frame"].get<int>();
+      long long frame = -1;
+      if (!json_int(entry, "frame", frame) || frame < 0) {
+        std::cerr << "error: every UI script event needs a non-negative "
+                     "whole-number frame\n";
+        return 1;
+      }
+      item.frame = static_cast<int>(frame);
       frame_count = std::max(frame_count, item.frame + 1);
       const std::string type = entry["type"].get<std::string>();
+      // Optional integer fields keep their fallback for missing,
+      // non-integer or out-of-range values (no unchecked conversions).
       const auto number = [&](const char* key, int fallback) {
-        return entry.contains(key) && entry[key].is_number()
-                   ? entry[key].get<int>()
+        long long value = 0;
+        return json_int(entry, key, value)
+                   ? static_cast<int>(value)
                    : fallback;
       };
       if (type == "key") {
@@ -791,7 +875,15 @@ int run_with_replay(const cli::Arguments& args,
                     << item << "'\n";
           return 1;
         }
-        render_targets.push_back(std::stoull(item));
+        // Digits-only, but a 20+ digit tick overflows uint64: stoull
+        // throws out_of_range, which used to escape and abort the CLI.
+        try {
+          render_targets.push_back(std::stoull(item));
+        } catch (const std::exception&) {
+          std::cerr << "error: --render-frames tick '" << item
+                    << "' is out of range\n";
+          return 1;
+        }
         if (comma == std::string::npos) {
           break;
         }
@@ -924,13 +1016,13 @@ int run_with_replay(const cli::Arguments& args,
       interventions = replay_data.interventions;
     } else {
       for (const std::string& spec : args.interventions) {
-        const std::size_t first = spec.find(':', 5);
-        cli::Intervention intervention;
-        intervention.unit = static_cast<std::uint32_t>(
-            std::strtoul(spec.substr(5, first - 5).c_str(), nullptr, 10));
-        intervention.tick =
-            std::strtoull(spec.substr(first + 1).c_str(), nullptr, 10);
-        interventions.push_back(intervention);
+        const std::optional<cli::Intervention> intervention =
+            parse_intervention(spec);
+        if (!intervention) {
+          std::cerr << "error: invalid --intervene spec '" << spec << "'\n";
+          return 1;
+        }
+        interventions.push_back(*intervention);
       }
       std::sort(interventions.begin(), interventions.end(),
                 [](const cli::Intervention& a, const cli::Intervention& b) {
@@ -995,7 +1087,11 @@ int run_with_replay(const cli::Arguments& args,
     }
     if (args.record_on) {
       replay_data.version = sim::kSimVersion;
-      replay_data.scenario = args.scenario_path;
+      // Record the resolved scenario path (explicit flag, bare name or
+      // the default), never the raw flag value — `--record` without
+      // `--scenario` used to write an empty scenario line, and every
+      // such recording then failed --verify with "no scenario line".
+      replay_data.scenario = scenario_path;
       replay_data.mod = args.mod_dir.empty() ? "-" : args.mod_dir;
       replay_data.seed = args.seed;
       replay_data.ticks = args.ticks;
@@ -1011,13 +1107,13 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.orders = args.orders_on ? "on" : "off";
       replay_data.order_interventions = script_orders;
       for (const std::string& spec : args.interventions) {
-        const std::size_t first = spec.find(':', 5);
-        cli::Intervention intervention;
-        intervention.unit = static_cast<std::uint32_t>(
-            std::strtoul(spec.substr(5, first - 5).c_str(), nullptr, 10));
-        intervention.tick =
-            std::strtoull(spec.substr(first + 1).c_str(), nullptr, 10);
-        replay_data.interventions.push_back(intervention);
+        const std::optional<cli::Intervention> intervention =
+            parse_intervention(spec);
+        if (!intervention) {
+          std::cerr << "error: invalid --intervene spec '" << spec << "'\n";
+          return 1;
+        }
+        replay_data.interventions.push_back(*intervention);
       }
       if (!cli::write_replay(args.record_path, replay_data)) {
         std::cerr << "error: cannot write replay file '" << args.record_path
@@ -1071,6 +1167,17 @@ int run_with_replay(const cli::Arguments& args,
         trace_file << cli::trace_line(simulation);
       }
     }
+    // m13 audit finding 12: a trace line that failed to write (full
+    // disk) must fail the run — the old code exited 0 with a truncated
+    // trace.
+    if (args.trace_on) {
+      trace_file.flush();
+      if (!trace_file) {
+        std::cerr << "error: failed while writing trace file '"
+                  << args.trace_path << "'\n";
+        return 1;
+      }
+    }
     result = simulation.result();
   } else {
     result = simulation.run();
@@ -1107,12 +1214,26 @@ int run_with_replay(const cli::Arguments& args,
     }
     file << json;
     file << '\n';
+    file.flush();
     if (!file) {
       std::cerr << "error: failed while writing JSON export file '"
                 << args.export_path << "'\n";
       return 1;
     }
     export_report = args.export_path;
+  }
+
+  // m13 audit finding 12: the event recorder wrote through events_file
+  // during the run — a write failure (full disk, quota) must fail the
+  // run with a nonzero exit instead of silently producing a truncated
+  // events file.
+  if (args.events_on && !render_mode) {
+    events_file.flush();
+    if (!events_file) {
+      std::cerr << "error: failed while writing events file '"
+                << args.events_path << "'\n";
+      return 1;
+    }
   }
 
   // M10 Part 2a deliverables (full-run mode only).
@@ -1125,6 +1246,12 @@ int run_with_replay(const cli::Arguments& args,
       return 1;
     }
     csv_file << cli::generate_timeline_csv(simulation, types);
+    csv_file.flush();
+    if (!csv_file) {
+      std::cerr << "error: failed while writing CSV timeline file '"
+                << args.csv_path << "'\n";
+      return 1;
+    }
   }
   if (args.report_on && !render_mode) {
     const cli::ReportMeta meta{args.scenario_path, args.seed};
@@ -1137,6 +1264,12 @@ int run_with_replay(const cli::Arguments& args,
     }
     md_file << cli::generate_report_markdown(simulation, &recorder, types,
                                              meta);
+    md_file.flush();
+    if (!md_file) {
+      std::cerr << "error: failed while writing report file '"
+                << args.report_path << "'\n";
+      return 1;
+    }
     std::filesystem::path json_path(args.report_path);
     json_path.replace_extension(".json");
     std::ofstream json_file(json_path, std::ios::binary |
@@ -1144,6 +1277,12 @@ int run_with_replay(const cli::Arguments& args,
     if (json_file) {
       json_file << cli::generate_report_json(simulation, &recorder, types,
                                              meta);
+      json_file.flush();
+      if (!json_file) {
+        std::cerr << "error: failed while writing report JSON file '"
+                  << json_path.string() << "'\n";
+        return 1;
+      }
     } else {
       std::cerr << "error: cannot open report JSON file '"
                 << json_path.string() << "' for writing\n";

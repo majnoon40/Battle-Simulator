@@ -822,6 +822,89 @@ TEST(PlayerOrderTest, ScriptParserHardensTypesAndPoints) {
             "x and y must be numbers");
 }
 
+// m13 audit finding 3: JSON squad ids are validated against the uint32
+// destination range before conversion — nlohmann's get<uint32_t> is an
+// unchecked static_cast, so ids above 2^32-1 used to truncate (or wrap
+// to 0).
+TEST(PlayerOrderTest, ScriptParserSquadIdsFitUint32) {
+  const fs::path path = "/tmp/m13_squad_id_test.json";
+  const auto parse_script = [&](const char* squads_json,
+                                std::vector<cli::OrderIntervention>& out,
+                                std::string& error) {
+    const std::string text = std::string(R"([{"tick": 5, "faction": "red",
+      "squads": )") + squads_json + R"(, "order": "hold"}])";
+    { std::ofstream file(path); file << text; }
+    return cli::parse_order_script(path.string(), out, error);
+  };
+  // Zero and the maximum valid id parse.
+  std::vector<cli::OrderIntervention> orders;
+  std::string error;
+  ASSERT_TRUE(parse_script("[0]", orders, error)) << error;
+  ASSERT_EQ(orders.size(), std::size_t{1});
+  EXPECT_EQ(orders[0].squads, (std::vector<std::uint32_t>{0}));
+  orders.clear();
+  ASSERT_TRUE(parse_script("[4294967295]", orders, error)) << error;
+  ASSERT_EQ(orders.size(), std::size_t{1});
+  EXPECT_EQ(orders[0].squads, (std::vector<std::uint32_t>{4294967295u}));
+  // Maximum plus one, and much larger values, are rejected instead of
+  // truncating.
+  for (const char* bad : {"[4294967296]", "[9999999999]",
+                          "[18446744073709551615]", "[-1]", "[1.5]",
+                          "[\"3\"]"}) {
+    orders.clear();
+    std::string bad_error;
+    EXPECT_FALSE(parse_script(bad, orders, bad_error)) << "squads " << bad;
+    EXPECT_TRUE(orders.empty()) << "no partial output for " << bad;
+    EXPECT_NE(bad_error.find("squad"), std::string::npos) << bad_error;
+  }
+}
+
+// m13 audit finding 7: the script parser has documented append semantics
+// (append + stable tick sort, merging with existing entries) but a
+// failed parse must leave the output vector completely unchanged — no
+// stale entries, no partially parsed orders.
+TEST(PlayerOrderTest, ScriptParserCommitsAtomically) {
+  const fs::path path = "/tmp/m13_script_commit_test.json";
+  // A pre-existing order in the output vector (a reused object).
+  std::vector<cli::OrderIntervention> out;
+  cli::OrderIntervention existing;
+  existing.tick = 50;
+  existing.red = true;
+  existing.squads_all = true;
+  existing.type = sim::PlayerOrderType::Hold;
+  out.push_back(existing);
+
+  // A script with a valid entry followed by an invalid one: the whole
+  // file must fail and `out` must still hold exactly the old order.
+  {
+    std::ofstream file(path);
+    file << R"([
+      {"tick": 10, "faction": "red", "squads": "all", "order": "hold"},
+      {"tick": 20, "faction": "red", "squads": "all", "order": "sideways"}
+    ])";
+  }
+  std::string error;
+  EXPECT_FALSE(cli::parse_order_script(path.string(), out, error));
+  ASSERT_EQ(out.size(), std::size_t{1});
+  EXPECT_EQ(out[0].tick, 50u);
+
+  // A fully valid script appends and the merged vector is sorted by
+  // ascending tick (the pre-existing entry slots in at its tick).
+  {
+    std::ofstream file(path);
+    file << R"([
+      {"tick": 30, "faction": "blue", "squads": "all", "order": "hold"},
+      {"tick": 10, "faction": "red", "squads": [1], "order": "hold"}
+    ])";
+  }
+  ASSERT_TRUE(cli::parse_order_script(path.string(), out, error)) << error;
+  ASSERT_EQ(out.size(), std::size_t{3});
+  EXPECT_EQ(out[0].tick, 10u);
+  EXPECT_EQ(out[1].tick, 30u);
+  EXPECT_EQ(out[2].tick, 50u);  // the pre-existing order, still last
+  EXPECT_TRUE(out[2].squads_all && out[2].red);
+}
+
 TEST(PlayerOrderTest, ReplayFileCarriesOrdersRoundTrip) {
   cli::ReplayData data;
   data.version = sim::kSimVersion;

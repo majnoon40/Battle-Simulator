@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -191,6 +192,104 @@ TEST(AccumulatorTest, SpeedCyclingHelpers) {
   // Odd values snap to the next step.
   EXPECT_EQ(game::TickAccumulator::speed_up(3), 4);
   EXPECT_EQ(game::TickAccumulator::speed_down(3), 2);
+}
+
+// m13 audit finding 9: the accumulated double must never reach an int
+// conversion unchecked, non-finite inputs must be safe, and constructor
+// parameters are validated.
+TEST(AccumulatorTest, HugeFrameDeltaIsCappedNotOverflowed) {
+  game::TickAccumulator accumulator(30.0, 256);
+  bool limited = false;
+  // A delta whose tick product is ~3e300: far outside int range. The old
+  // code converted it to int (undefined behavior); the cap must apply in
+  // double space first.
+  const int ticks = accumulator.advance(1e300 / 30.0, limited);
+  EXPECT_EQ(ticks, 256);
+  EXPECT_TRUE(limited);
+  // The backlog stays (still behind), and later frames keep draining at
+  // the cap without any conversion of the huge carry.
+  limited = false;
+  EXPECT_EQ(accumulator.advance(1.0 / 60.0, limited), 256);
+  EXPECT_TRUE(limited);
+}
+
+TEST(AccumulatorTest, NonFiniteFrameDeltasAreIgnored) {
+  game::TickAccumulator accumulator(30.0, 256);
+  bool limited = true;
+  EXPECT_EQ(accumulator.advance(std::numeric_limits<double>::quiet_NaN(),
+                                limited), 0);
+  EXPECT_FALSE(limited);
+  EXPECT_EQ(accumulator.advance(std::numeric_limits<double>::infinity(),
+                                limited), 0);
+  EXPECT_FALSE(limited);
+  EXPECT_EQ(accumulator.advance(-std::numeric_limits<double>::infinity(),
+                                limited), 0);
+  EXPECT_FALSE(limited);
+  // The accumulator still works normally afterwards (nothing poisoned).
+  EXPECT_EQ(accumulator.advance(1.0 / 30.0, limited), 1);
+  EXPECT_FALSE(limited);
+}
+
+TEST(AccumulatorTest, OverflowingAccumulationDropsTheBacklog) {
+  // Finite deltas whose accumulated product overflows to +inf: the frame
+  // gets the cap and the poisoned backlog is dropped (carry resets), so
+  // one absurd frame cannot pin every later frame at the cap.
+  game::TickAccumulator accumulator(1e308, 256);
+  bool limited = false;
+  EXPECT_EQ(accumulator.advance(1e308, limited), 256);
+  EXPECT_TRUE(limited);
+  EXPECT_DOUBLE_EQ(accumulator.carry(), 0.0);  // inf backlog dropped
+  // The clock stays usable: a small delta at this (absurd) rate produces
+  // a normal fractional carry, not a stuck-at-cap state.
+  limited = true;
+  EXPECT_EQ(accumulator.advance(0.5 / 1e308, limited), 0);
+  EXPECT_FALSE(limited);
+  EXPECT_NEAR(accumulator.carry(), 0.5, 1e-6);
+}
+
+TEST(AccumulatorTest, InvalidConstructorParametersFallBack) {
+  // Non-finite / non-positive base_tps and caps below 1 fall back to the
+  // defaults (30 tps, 256) instead of freezing or producing garbage.
+  game::TickAccumulator nan_tps(std::numeric_limits<double>::quiet_NaN(), 256);
+  bool limited = false;
+  EXPECT_EQ(nan_tps.advance(1.0, limited), 30);
+  EXPECT_FALSE(limited);
+  game::TickAccumulator negative_tps(-30.0, 256);
+  EXPECT_EQ(negative_tps.advance(1.0, limited), 30);
+  game::TickAccumulator inf_tps(std::numeric_limits<double>::infinity(),
+                                256);
+  EXPECT_EQ(inf_tps.advance(1.0, limited), 30);
+  game::TickAccumulator zero_cap(30.0, 0);
+  EXPECT_EQ(zero_cap.advance(10.0, limited), 256);
+  EXPECT_TRUE(limited);
+  game::TickAccumulator negative_cap(30.0, -5);
+  EXPECT_EQ(negative_cap.advance(10.0, limited), 256);
+  EXPECT_TRUE(limited);
+}
+
+TEST(AccumulatorTest, CapBoundaryKeepsLimitedSemantics) {
+  // 128 ticks per second with a 256-tick cap: two seconds of frames
+  // probe the exact boundary semantics.
+  game::TickAccumulator accumulator(128.0, 256);
+  bool limited = true;
+  // Exactly the cap: the truncated count equals the cap, nothing was
+  // discarded, not limited.
+  EXPECT_EQ(accumulator.advance(2.0, limited), 256);
+  EXPECT_FALSE(limited);
+  EXPECT_DOUBLE_EQ(accumulator.carry(), 0.0);
+  accumulator.reset();
+  limited = true;
+  // 256.5 ticks wanted: the truncated count (256) is within the cap, so
+  // not limited; the half tick is carried.
+  EXPECT_EQ(accumulator.advance(2.0 + 0.5 / 128.0, limited), 256);
+  EXPECT_FALSE(limited);
+  EXPECT_NEAR(accumulator.carry(), 0.5, 1e-9);
+  accumulator.reset();
+  limited = true;
+  // 300 ticks wanted: the cap discarded 44 -> limited, remainder kept.
+  EXPECT_EQ(accumulator.advance(300.0 / 128.0, limited), 256);
+  EXPECT_TRUE(limited);
+  EXPECT_NEAR(accumulator.carry(), 44.0, 1e-9);
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +542,61 @@ TEST(RasterPngTest, SameFrameTwiceIsByteIdentical) {
   std::remove(path.c_str());
   ASSERT_EQ(read, png_a.size());
   EXPECT_EQ(read_back, png_a);
+}
+
+// m13 audit finding 13: image dimensions are validated before the
+// stride calculation (width * 3 used to overflow int for extreme
+// widths — undefined behavior before the buffer check could run),
+// mismatched buffers are rejected, and encode/write failures return
+// false instead of reporting success.
+TEST(RasterPngTest, InvalidImagesAreRejected) {
+  render::Image image;
+  // Zero and negative dimensions.
+  image.width = 0;
+  image.height = 10;
+  image.pixels.assign(30, 0);
+  EXPECT_TRUE(render::encode_png(image).empty());
+  image.width = -5;
+  EXPECT_TRUE(render::encode_png(image).empty());
+  image.width = 10;
+  image.height = 0;
+  image.pixels.clear();
+  EXPECT_TRUE(render::encode_png(image).empty());
+  image.height = -3;
+  image.pixels.assign(30, 0);
+  EXPECT_TRUE(render::encode_png(image).empty());
+  // Buffer size mismatch (4x4 needs 48 bytes).
+  image.width = 4;
+  image.height = 4;
+  image.pixels.assign(10, 0);
+  EXPECT_TRUE(render::encode_png(image).empty());
+  EXPECT_FALSE(render::write_png(image, "/tmp/m13_png_bad.png"));
+  // A width above INT_MAX/3 would overflow the int stride; the guard
+  // rejects it before any width * 3 computation (the matching ~2 GiB
+  // buffer is deliberately not allocated in this test).
+  image.width = 715827883;  // INT_MAX / 3 + 1
+  image.height = 1;
+  image.pixels.assign(3, 0);
+  EXPECT_TRUE(render::encode_png(image).empty());
+  // A small valid image still encodes.
+  image.width = 100;
+  image.height = 1;
+  image.pixels.assign(300, 0xAA);
+  EXPECT_FALSE(render::encode_png(image).empty());
+}
+
+TEST(RasterPngTest, WriteFailuresAreReported) {
+  render::Image image;
+  image.width = 4;
+  image.height = 4;
+  image.pixels.assign(48, 0x80);
+  // Unopenable path (parent directory does not exist).
+  EXPECT_FALSE(render::write_png(image, "/nonexistent-dir-xyz/m13.png"));
+  // A failing device: /dev/full accepts fopen but fails writes with
+  // ENOSPC — for a small PNG the failure typically surfaces only in
+  // fclose's flush of the stdio buffer, so both fwrite and fclose are
+  // checked. The old code ignored fclose and reported success.
+  EXPECT_FALSE(render::write_png(image, "/dev/full"));
 }
 
 // ---------------------------------------------------------------------------

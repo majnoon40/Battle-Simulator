@@ -19,7 +19,11 @@ double Rng::next_double() noexcept {
 
 std::uint32_t Rng::next_uint32(std::uint32_t bound) noexcept {
   // Draw from the high 32 bits and reject the tail of the range that would
-  // otherwise bias a modulo reduction.
+  // otherwise bias a modulo reduction. A bound of 0 has no result to
+  // return; the modulo (and the limit computation) would divide by zero.
+  if (bound == 0) {
+    return 0;
+  }
   const std::uint64_t limit =
       (1ULL << 32) - ((1ULL << 32) % bound);
   std::uint64_t r = 0;

@@ -1,5 +1,6 @@
 #include "cli/map_load.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <sstream>
 #include <stdexcept>
@@ -32,6 +33,44 @@ std::string read_file_bytes(const std::string& path) {
 
 sim::TerrainGrid load_png(const std::string& path, double cell_size,
                           const sim::TerrainTypeTable& table) {
+  // m13 reliability review: pre-check the IHDR before stbi_load. A
+  // compact PNG can claim huge dimensions, and stbi would allocate the
+  // full decode (width * height * 3 bytes — gigabytes from a
+  // kilobyte-sized file) before build_terrain_grid's 4096x4096 cap
+  // ever ran. The header is read directly: 8-byte signature, then the
+  // first chunk (length, "IHDR", big-endian width, height).
+  {
+    std::FILE* probe = std::fopen(path.c_str(), "rb");
+    if (probe == nullptr) {
+      throw std::runtime_error("cannot open map file '" + path + "'");
+    }
+    unsigned char header[24] = {};
+    const std::size_t got = std::fread(header, 1, sizeof(header), probe);
+    std::fclose(probe);
+    const unsigned char signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n',
+                                        0x1A, '\n'};
+    bool oversized = false;
+    if (got >= 24 && std::equal(signature, signature + 8, header) &&
+        header[12] == 'I' && header[13] == 'H' && header[14] == 'D' &&
+        header[15] == 'R') {
+      const unsigned long png_width = (static_cast<unsigned long>(header[16]) << 24) |
+                                      (static_cast<unsigned long>(header[17]) << 16) |
+                                      (static_cast<unsigned long>(header[18]) << 8) |
+                                      static_cast<unsigned long>(header[19]);
+      const unsigned long png_height = (static_cast<unsigned long>(header[20]) << 24) |
+                                       (static_cast<unsigned long>(header[21]) << 16) |
+                                       (static_cast<unsigned long>(header[22]) << 8) |
+                                       static_cast<unsigned long>(header[23]);
+      oversized = png_width == 0 || png_height == 0 || png_width > 4096 ||
+                  png_height > 4096;
+    }
+    if (oversized) {
+      throw std::runtime_error(
+          "map '" + path +
+          "': PNG dimensions exceed the 4096x4096 limit (refused before "
+          "decoding)");
+    }
+  }
   int width = 0;
   int height = 0;
   int channels = 0;

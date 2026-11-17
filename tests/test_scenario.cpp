@@ -117,6 +117,51 @@ TEST(ScenarioTest, UnitCapIsRejected) {
                 "exceeds the unit cap");
 }
 
+// m13 audit finding 4: squad plan `count` and `size` are validated
+// against the uint32 destination range before conversion — the old
+// unchecked static_cast truncated 4294967296 to 0.
+TEST(ScenarioTest, SquadPlanCountAndSizeFitUint32) {
+  const auto with_squads = [](const char* squads) {
+    return std::string(
+               R"({"battlefield": {"width": 100.0, "height": 100.0},)"
+               R"( "spawn_band_fraction": 0.15,)"
+               R"( "armies": {"red": {"infantry": 10}, "blue": {"infantry": 10}},)"
+               R"( "squads": )") +
+           squads + "}";
+  };
+  // Boundaries: 1 and uint32-max parse (semantic checks happen later,
+  // when the plan meets the composition).
+  {
+    const sim::Scenario scenario = sim::parse_scenario(with_squads(
+        R"({"red": {"count": 4294967295, "size": 4294967295}})"));
+    ASSERT_TRUE(scenario.squads[0].has_value());
+    EXPECT_EQ(scenario.squads[0]->count, 4294967295u);
+    EXPECT_EQ(scenario.squads[0]->size, 4294967295u);
+  }
+  {
+    const sim::Scenario scenario =
+        sim::parse_scenario(with_squads(R"({"red": {"count": 1}})"));
+    ASSERT_TRUE(scenario.squads[0].has_value());
+    EXPECT_EQ(scenario.squads[0]->count, 1u);
+    EXPECT_EQ(scenario.squads[0]->size, 25u);  // documented default
+  }
+  // Maximum plus one, and larger, are rejected for count...
+  expect_reject(with_squads(R"({"red": {"count": 4294967296}})"),
+                "'count' must not exceed 4294967295");
+  expect_reject(with_squads(R"({"red": {"count": 9999999999}})"),
+                "'count' must not exceed 4294967295");
+  // ...and for size, consistently. (A uint64-max literal is stored as
+  // unsigned by nlohmann; reading it as int64 wraps to -1, so it fails
+  // the >= 1 check — the same convention as the army-count parser.)
+  expect_reject(with_squads(R"({"red": {"count": 1, "size": 4294967296}})"),
+                "'size' must not exceed 4294967295");
+  expect_reject(with_squads(R"({"red": {"count": 1, "size": 5000000000}})"),
+                "'size' must not exceed 4294967295");
+  expect_reject(
+      with_squads(R"({"red": {"count": 18446744073709551615}})"),
+      "whole number >= 1");
+}
+
 TEST(ScenarioTest, UnknownFieldsAreRejected) {
   // A typo'd key is reported as unknown (not as a missing battlefield).
   expect_reject(R"({"battlefeild": {"width": 100.0, "height": 100.0}, "spawn_band_fraction": 0.15, "armies": {"red": {"infantry": 1}, "blue": {"infantry": 1}}})",

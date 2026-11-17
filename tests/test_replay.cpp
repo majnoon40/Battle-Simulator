@@ -135,6 +135,35 @@ TEST(ReplayTest, ReRunProducesIdenticalHashes) {
   }
 }
 
+// m13 audit finding 5: known-answer pins for the canonical state hash.
+// The encoding is defined as little-endian integers and IEEE-754 double
+// bit patterns (never native byte order), so these digests are the same
+// on every supported platform. The values were cross-checked against
+// the pre-canonicalization code (native-order serialization, built from
+// the git history and linked against the same library): the digests
+// match byte-for-byte, proving the canonicalization changed no hash
+// value — every recorded replay still verifies. Pinning them guards the
+// encoding against any future change (which would be a versioned
+// replay-compatibility break).
+TEST(ReplayTest, StateHashKnownAnswers) {
+  const sim::UnitTypeTable types = infantry_types();
+  // A fresh battle (before the first tick).
+  {
+    std::vector<sim::Unit> units;
+    const sim::SimulationConfig config = melee_config(types, 5, units);
+    const sim::Simulation simulation(config, units);
+    EXPECT_EQ(simulation.state_hash(),
+              "9d7bfbf96c4486fd290ee9f5dc40e4a4");
+  }
+  // The first checkpoint of the standard checkpoint run (tick 25).
+  {
+    const auto checkpoints = run_with_checkpoints(types, 5);
+    ASSERT_GE(checkpoints.size(), std::size_t{2});
+    EXPECT_EQ(checkpoints[0].first, std::uint64_t{25});
+    EXPECT_EQ(checkpoints[0].second, "1a3f5e099ce45892369a0a222fa90113");
+  }
+}
+
 TEST(ReplayTest, HashDetectsDivergence) {
   const sim::UnitTypeTable types = infantry_types();
   const auto plain = run_with_checkpoints(types, 5);
@@ -257,9 +286,123 @@ TEST(ReplayTest, MalformedFilesAreRejected) {  cli::ReplayData parsed;
         "non-ascending");
 }
 
+// m13 audit finding 2: every floating-point replay field must be a
+// complete, finite decimal — std::stod happily parses "inf", "nan" and
+// (via exceptions, previously uncaught-by-design) overflowed exponents.
+TEST(ReplayTest, NonFiniteOrderPointsAreRejected) {
+  const auto check = [](const std::string& order_line) {
+    const std::string content =
+        "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+        "\nscenario default\nmod -\nseed 42\nticks 100\n" + order_line +
+        "\n";
+    { std::ofstream file("/tmp/m13-nan.replay"); file << content; }
+    cli::ReplayData parsed;
+    std::string error;
+    EXPECT_FALSE(cli::parse_replay("/tmp/m13-nan.replay", parsed, error))
+        << "order line: '" << order_line << "'";
+  };
+  // Every non-finite spelling, in either coordinate, for moveto.
+  for (const std::string& bad : {"inf", "-inf", "nan", "NaN", "-NaN",
+                                 "infinity", "-infinity", "INF", "NAN",
+                                 "1e999", "-1e999", "1e309"}) {
+    check("order 10 red all moveto " + bad + " 10");
+    check("order 10 red all moveto 10 " + bad);
+  }
+  // Retreat's optional point is validated the same way.
+  check("order 10 red all retreat nan 10");
+  check("order 10 red all retreat 10 inf");
+  // Malformed numerics (trailing characters, hex floats) still fail.
+  check("order 10 red all moveto 25junk 10");
+  check("order 10 red all moveto 0x10 10");
+  check("order 10 red all moveto 1.5e 10");
+  // Finite values still parse (the strictness rejects nothing valid).
+  {
+    const std::string content =
+        "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+        "\nscenario default\nmod -\nseed 42\nticks 100\n"
+        "order 10 red all moveto -12.5 1e3\n";
+    { std::ofstream file("/tmp/m13-nan.replay"); file << content; }
+    cli::ReplayData parsed;
+    std::string error;
+    ASSERT_TRUE(cli::parse_replay("/tmp/m13-nan.replay", parsed, error))
+        << error;
+    ASSERT_EQ(parsed.order_interventions.size(), std::size_t{1});
+    EXPECT_DOUBLE_EQ(parsed.order_interventions[0].x, -12.5);
+    EXPECT_DOUBLE_EQ(parsed.order_interventions[0].y, 1000.0);
+    EXPECT_TRUE(parsed.order_interventions[0].has_point);
+  }
+}
+
+// m13 audit finding 7: parse_replay has replacement semantics and a
+// failed parse must leave a reused output object completely unchanged
+// (the old code mutated it line by line, exposing partial state).
+TEST(ReplayTest, FailedParseLeavesReplayDataUnchanged) {
+  // Sentinel state in a reused object.
+  cli::ReplayData reused;
+  reused.version = "sentinel";
+  reused.scenario = "sentinel-scenario";
+  reused.seed = 777;
+  reused.ticks = 555;
+  reused.interventions.push_back(cli::Intervention{9, 9});
+  reused.hashes.emplace_back(25, "aabbccddeeff00112233445566778899");
+
+  // A file that parses several valid lines and then hits an error: the
+  // version/scenario/seed lines and one order all validate before the
+  // bad hash line fails.
+  const std::string content =
+      "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+      "\nscenario default\nmod -\nseed 42\nticks 100\n"
+      "order 10 red all moveto 5 5\n"
+      "hash 25 notthirtytwochars\n";
+  { std::ofstream file("/tmp/m13-reuse.replay"); file << content; }
+  std::string error;
+  EXPECT_FALSE(cli::parse_replay("/tmp/m13-reuse.replay", reused, error));
+  EXPECT_NE(error.find("bad hash line"), std::string::npos) << error;
+  // Nothing changed: no partial state leaked in.
+  EXPECT_EQ(reused.version, "sentinel");
+  EXPECT_EQ(reused.scenario, "sentinel-scenario");
+  EXPECT_EQ(reused.seed, 777u);
+  EXPECT_EQ(reused.ticks, 555u);
+  ASSERT_EQ(reused.interventions.size(), std::size_t{1});
+  EXPECT_EQ(reused.interventions[0].unit, 9u);
+  EXPECT_TRUE(reused.order_interventions.empty());
+  ASSERT_EQ(reused.hashes.size(), std::size_t{1});
+  EXPECT_EQ(reused.hashes[0].first, 25u);
+
+  // A successful parse fully replaces the object (not merges into it).
+  const std::string good =
+      "BATTLESIM REPLAY 1\nversion " + std::string(sim::kSimVersion) +
+      "\nscenario other\nmod -\nseed 1\nticks 7\n"
+      "hash 25 aabbccddeeff00112233445566778899\n";
+  { std::ofstream file("/tmp/m13-reuse.replay"); file << good; }
+  ASSERT_TRUE(cli::parse_replay("/tmp/m13-reuse.replay", reused, error))
+      << error;
+  EXPECT_EQ(reused.version, sim::kSimVersion);
+  EXPECT_EQ(reused.scenario, "other");
+  EXPECT_EQ(reused.seed, 1u);
+  EXPECT_EQ(reused.ticks, 7u);
+  EXPECT_TRUE(reused.interventions.empty());
+  ASSERT_EQ(reused.hashes.size(), std::size_t{1});
+}
+
 // ---------------------------------------------------------------------------
 // CLI level: the acceptance scenarios.
 // ---------------------------------------------------------------------------
+
+// m13 reliability review: recording without an explicit --scenario used
+// to write an empty scenario line (the raw flag value instead of the
+// resolved path), so every default-scenario recording failed --verify
+// with "no scenario line".
+TEST(ReplayCliTest, RecordWithoutScenarioFlagVerifies) {
+  std::string output;
+  ASSERT_EQ(run_cli("--seed 42 --ticks 120 --record /tmp/m13_default.replay",
+                    output),
+            0)
+      << output;
+  EXPECT_EQ(run_cli("--replay /tmp/m13_default.replay --verify", output), 0)
+      << output;
+  EXPECT_NE(output.find("replay verified"), std::string::npos) << output;
+}
 
 TEST(ReplayCliTest, RecordThenVerifyOnThreeScenarios) {
   struct Case {
