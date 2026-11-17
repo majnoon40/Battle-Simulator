@@ -125,3 +125,61 @@ sandbox lacks the X11/GL dev headers (raylib's configure fails with
 "RandR headers not found; install libxrandr development package"), so
 `game/src/main.cpp` was never compiled or run. See the M7 report for the
 exact list of things to check by hand.
+
+## The sandbox screens in the window (M13 item 1)
+
+The window now runs the m11c/m11d UI screens. The wiring is thin and one
+directional: raylib input becomes `ui::Event`s, the pure reducers
+(`ui::reduce`, `reduce_app`) own every state change, and the window renders
+the DrawList the reducers' state produces. The window-level policy lives
+in `render/ui/shell.cpp` (pure, tested headlessly — `tests/test_shell.cpp`):
+
+- the pointer over drawn UI panels belongs to the UI (no unit picking or
+  wheel zoom through panels); right-drag always pans the map;
+- arrow keys pan the map on the battle screen unless the focused widget
+  consumes them (a slider takes Left/Right, an open select takes Up/Down);
+  on menu screens they belong to the UI;
+- the battle screen's Pause/Play/speed buttons and view checkboxes fold
+  into the viewer state every frame; the zoom slider maps symmetric in
+  log space around the fit zoom (x16 at the right end, /16 at the left)
+  and the wheel zoom follows back into the slider (exact inverse);
+- the scenario picker's Start reloads the battle (`data/scenarios/<name>
+  .json`); the app starts on the menu and the CLI `--scenario` battle
+  renders as the backdrop until a scenario is picked.
+
+Known window gaps (planned for the M13 5a battle view): the battle screen
+has no Back button yet (the m11d App reducer has no battle->menu
+navigation; Escape closes selects only), and a window resize rebuilds the
+screens without preserving widget values.
+
+### What only a human can verify
+
+`game/src/main.cpp` is compiled by the CI `game-build` job but was never
+run in the development sandbox (no X11/GL). When you first run the window
+(`cmake -S . -B build -DBUILD_GAME=ON && cmake --build build --target
+battle_game && ./build/battle_game`), check:
+
+1. The window opens 1280x720 with the AUTOBATTLE menu box centered on the
+   plain background; text is legible at the default theme size.
+2. Mouse hover highlights buttons/checkboxes; Tab moves a visible focus
+   ring; Enter activates the focused button; the select dropdown opens
+   downward and highlights the selected row.
+3. Menu navigation: New battle and Scenarios both open the picker; Start
+   reloads the battle (the HUD's scenario name changes) and Back returns
+   to the menu; Quit closes the window.
+4. Battle screen: the control panel sits on the left, the status bar at
+   the bottom; Pause/Play freeze and resume the sim, the speed buttons set
+   1x/2x/4x (cross-check with +/- and the HUD speed); the terrain, grid,
+   squad-links and HUD checkboxes toggle the same things as the T/G/L/H
+   hotkeys.
+5. Zoom: the slider zooms about the screen center (x16 at the right end);
+   wheel zoom over the map follows back into the slider position; wheel
+   over a UI panel does not zoom; the wheel direction feels natural
+   (scroll up = zoom in — the raylib sign mapping was written against the
+   docs, not verified).
+6. Input gating: left-click over the map picks units (inspector), over
+   the panels it does not; right-drag pans everywhere; WASD pans, arrows
+   pan until a slider (Left/Right) or an open select (Up/Down) has focus.
+7. The battle keeps running at 60 ticks/s at 1x with the UI drawn (the
+   UI adds only a handful of rects/text per frame); resizing the window
+   relayouts the screens.
