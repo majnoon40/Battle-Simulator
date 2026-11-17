@@ -1,0 +1,42 @@
+{
+  "facing": {
+    "flank_degrees": 60.0,
+    "rear_degrees": 120.0,
+    "flank_multiplier": 1.25,
+    "rear_multiplier": 1.5,
+    "rear_morale_loss": 2.0
+  },
+  "charge": {
+    "min_speed": 4.0,
+    "window_ticks": 10,
+    "min_distance": 20.0,
+    "multiplier": 1.5,
+    "held_reduction": 0.5,
+    "dense_line_radius": 3.0,
+    "dense_line_allies": 3
+  },
+  "fatigue": {
+    "move_gain_per_tick": 0.002,
+    "fight_gain_per_attack": 0.025,
+    "recover_per_tick": 0.0033333333333333335,
+    "exhausted_level": 1.0,
+    "speed_factor": 0.7,
+    "damage_factor": 0.85,
+    "accuracy_factor": 0.85
+  },
+  "experience": {
+    "gain_per_kill": 0.05,
+    "gain_per_engaged_tick": 0.0005,
+    "accuracy_bonus_max": 0.1,
+    "morale_resist_max": 0.1
+  },
+  "aura": {
+    "damage_bonus": 0.05,
+    "morale_reduction": 0.25
+  },
+  "stance": {
+    "cohesion_min": 0.6,
+    "damage_factor": 0.8,
+    "morale_resist": 0.2
+  }
+}

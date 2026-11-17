@@ -289,6 +289,24 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
     out << "- No timeline samples were recorded for this battle.\n";
   }
 
+  // Combat depth (m13 item 3; the counters are all zero under --combat
+  // v1 and the section is omitted).
+  const std::uint64_t combat_hits =
+      r.factions[0].combat.flank_hits + r.factions[0].combat.rear_hits +
+      r.factions[0].combat.charge_hits + r.factions[1].combat.flank_hits +
+      r.factions[1].combat.rear_hits + r.factions[1].combat.charge_hits;
+  if (combat_hits > 0) {
+    out << "\n## Combat depth\n\n";
+    for (std::size_t f = 0; f < 2; ++f) {
+      const sim::CombatStats& stats = r.factions[f].combat;
+      out << "- " << faction_name(f) << ": " << stats.flank_hits
+          << " flank hits, " << stats.rear_hits << " rear hits, "
+          << stats.charge_hits << " charge hits, "
+          << stats.stance_hits_taken << " hits absorbed in stance\n";
+    }
+    out << "\n";
+  }
+
   // Routing.
   out << "\n## Routing\n\n";
   for (std::size_t f = 0; f < 2; ++f) {

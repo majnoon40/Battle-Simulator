@@ -70,8 +70,8 @@ TEST(AvailEndV1Test, BaselinesReproduceMainByteForByte) {
     const std::string out =
         "/tmp/m13_baseline_" + std::string(baseline.name) + ".json";
     const std::string arguments =
-        std::string(baseline.arguments) + " --ai-avail v1 --end v1" +
-        " --export-json " + out;
+        std::string(baseline.arguments) +
+        " --ai-avail v1 --end v1 --combat v1 --export-json " + out;
     ASSERT_EQ(run_cli(arguments), 0) << baseline.name;
     const std::string produced = read_bytes(out);
     ASSERT_FALSE(produced.empty()) << baseline.name << ": empty export";
@@ -97,7 +97,7 @@ TEST(AvailEndV1Test, OrdersBaselineReproducesMainByteForByte) {
   const std::string arguments =
       "--scenario data/scenarios/squads.json --seed 42 --ticks 1500"
       " --orders on --script /tmp/m13_orders_script.json"
-      " --ai-avail v1 --end v1 --export-json " +
+      " --ai-avail v1 --end v1 --combat v1 --export-json " +
       out;
   ASSERT_EQ(run_cli(arguments), 0);
   const std::string produced = read_bytes(out);

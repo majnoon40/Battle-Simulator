@@ -175,3 +175,194 @@ scenario baselines + an orders battle reproduce main byte-for-byte
 under v1; v1- and v2-flagged records verify on the swapped Nile map.
 Two M5-era fixtures pin `end_v2 = false` (they test the v1 rout rules
 with armies below the v2 floor); the M7 no-map pins run with v1 flags.
+
+### Item 2 review — termination v2, one 100-seed look back
+
+The rule, exactly: the STALEMATE check records the combined attacker
+count (alive units of both factions whose chosen action this tick is
+Attack) every tick after the battle's first enemy sighting, and ends
+the battle as STALEMATE when the last `stalemate_ticks` (600) real
+ticks — the window only fills after first contact and is only judged
+once full — sum to less than `stalemate_max_engagements` (5) x the
+window length, i.e. an *average* below 5 attackers per tick. The winner
+is decided by alive count exactly like the tick limit (equal survivors
+is a draw). All values live in the optional `termination` block of
+`data/morale.json` (`stalemate_ticks`, `stalemate_max_engagements`).
+Both v2 reasons are named in exports (`termination.reason`), reports
+and re-run by replay verification; the flags ride in the replay setup.
+Full semantics: docs/morale.md "Termination v2".
+
+Termination reasons, 100 seeds per row, v1 = `--ai-avail v1 --end v1`
+(the 13.0 rules) vs v2 = defaults:
+
+| Scenario | v1 reasons (n=100) | v2 reasons (n=100) | mean end v1 -> v2 |
+| --- | --- | --- | --- |
+| default 250v250 | 81 faction_routed, 19 tick_limit | 38 faction_routed, 15 routed_threshold, 47 stalemate | 1061.6 -> 571.6 |
+| viewer-demo | 99 faction_routed, 1 tick_limit | 80 faction_routed, 19 routed_threshold, 1 stalemate | 379.8 -> 341.4 |
+| earth-nile-delta | 55 faction_routed, 45 tick_limit | 100 routed_threshold | 1788.4 -> 359.2 |
+| earth-nile-delta +swap | 98 tick_limit, 2 faction_routed | 81 stalemate, 17 routed_threshold, 2 tick_limit | 2953.4 -> 1450.8 |
+
+False-positive check — how often the rule fires while kills were still
+happening: for every v2 row that ended STALEMATE, the deaths in the
+last 200 ticks before the end (from the CSV timeline): default 47
+stalemates with a *median of 2* deaths per 200 ticks (min 0, max 18);
+nile+swap 81 stalemates with median 5 (min 0, max 26); viewer-demo's
+single stalemate had 1. By any threshold that separates a trickle from
+a fight (the same battles run hundreds to thousands of deaths per 200
+ticks while alive), the rule fired **only in trickle endgames** — the
+zero-false-positive reading of "kill rate above a small threshold"
+holds for any threshold at or above ~1 death per 10 ticks, an order of
+magnitude above everything observed (max 26 per 200 ticks = 1.3 per 10
+ticks, in a 2000-unit battle). The rule is engagement-based, not
+kill-based, by design: a handful of attackers picking off stragglers is
+a dead battle. No tightening needed; the parameters stay as shipped.
+
+Paired orders-study win-share differences (same seeds, both
+orientations, 400 pairs per arm, `--combat v1` = the 13.0 combat the
+review covers): **AttackMove +0.080 [+0.033, +0.127]** (63 arm-wins /
+31 control-wins / 306 ties) and **flank +0.058 [+0.007, +0.108]** (65 /
+42 / 293). Both CIs exclude zero: both orders are significantly
+beneficial, confirming the item 0 finding under the paired design.
+
+## Item 3 — combat depth (branch m13-combat)
+
+`--combat v2|v1` (default v2; kSimVersion 13.1; v1 is the 13.0 combat
+byte-for-byte — baselines in `data/baselines/m13_combat_v1/`,
+cross-checked against the m13_avail_v1 set; combat depth never runs in
+legacy mode). Six mechanics, every value in the validated
+`data/combat.json`; no new RNG — v2 is as deterministic as v1 (same
+seed, same bytes; grid == brute and replay verification unchanged).
+Semantics and values: docs/ai.md "Combat depth".
+
+- **Facing** — heading = last movement direction (spawned toward the
+  objective). Arcs at the target: frontal x1, flank (60-120 degrees from
+  the target's front) x1.25, rear x1.5 + 2 morale per rear hit.
+- **Charge** — type speed >= 4.0 that ran >= 20 units toward the target
+  over the last 10 ticks: x1.5, then the run window resets; a target on
+  Hold, in the stance, or in a dense line (3+ allies within 3) takes the
+  bonus x0.5. Coincident pairs (approach ends on the target) project the
+  run on the summed window displacement.
+- **Fatigue** [0,1] — 1/500 per full-speed tick, 1/40 per swing, 1/300
+  recovery per idle tick; at 1.0: speed x0.7, damage and accuracy x0.85.
+- **Experience** [0,1] — 0.05/kill, 1/2000/attack; up to +0.10 accuracy
+  and 0.10 morale-loss resist.
+- **Commander aura** — same-faction units inside a commander's
+  leadership_radius: +5% damage, -25% morale losses.
+- **Defensive stance** — a Hold-ordered squad (or a unit choosing Hold)
+  with cohesion > 0.6: incoming x0.8, +0.20 morale-loss resist, the
+  charge reduction; combined resist (experience + stance + aura) caps at
+  0.9. Keying on the order, not the momentary action, was the round-1
+  mechanism fix: holders flip to Attack when engaged (81-86% of engaged
+  unit-ticks), so an action-keyed stance absorbed 3 hits in a probe
+  battle where the order-keyed one absorbs 350-980.
+
+Exports: format 9 adds per-unit `facing`/`fatigue`/`experience` and
+per-faction `flank_hits`/`rear_hits`/`charge_hits`/`stance_hits_taken`;
+the text report gains a "Combat depth" section; the replay setup carries
+`combat=v1|v2`. Tests: 389 total (+13: arc math at exact angles,
+rear-only-from-behind, charge trigger/reset/Hold-reduction, fatigue
+bounds + speed factor + idle recovery, exact experience gains, aura
+radius, order-keyed stance, format-9 shape, determinism, grid==brute,
+replay flag round-trip, v1 baselines, config parser). Era tests pin
+`--combat v1` (format-ladder rungs, M4/M6/M7/13.0 reproductions); the
+DeathFixture (M6 succession) pins v1 because the order-keyed stance
+legitimately changes v2 battle damage.
+
+### The 5000-unit benchmark (honest miss on this box)
+
+`--units 5000 --seed 42` (2500 v 2500 infantry, defaults): **49.0-59.7
+t/s across seeds/runs** (median ~55) under combat v2, and **50.5 t/s
+under `--combat v1`** on the same seed — the combat-depth overhead is
+~3%, and the shortfall below the 60 t/s target is this 2-vCPU sandbox's
+baseline for the utility-AI decide phase + morale pass (the same battle
+runs 119.7 t/s with `--morale off`, 541.7 t/s in legacy AI mode; squads
+on/off changes nothing). The 60 t/s acceptance is not met on this
+machine by 13.0 either; item 4 (`--threads`) is the performance item
+and re-measures this battle.
+
+### The orders study under combat v2 (acceptance, final code)
+
+200 paired seeds x both orientations (400 battles per arm), squads
+scenario, orders at tick 100, under the final code (order-keyed stance):
+
+| arm | win share [Wilson 95%] | paired diff vs control | kill ratio | mean end |
+| --- | --- | --- | --- | --- |
+| control | 0.448 [0.400, 0.496] | — | 1.368 | 659.5 |
+| attackmove | 0.485 [0.436, 0.534] | **+0.037 [-0.013, +0.088]** (60/45/295) | 1.809 | 624.5 |
+| flank | 0.507 [0.459, 0.556] | **+0.060 [+0.009, +0.111]** (67/43/290) | 1.535 | 696.3 |
+| hold | 0.000 [0.000, 0.010] | -0.448 [-0.496, -0.399] (0/179/221) | 0.074 | 890.4 |
+| retreat | 0.000 [0.000, 0.010] | -0.448 (0/179/221 by construction of the control arm) | 0.029 | 593.8 |
+
+Acceptance reading: **no arm above 0.70** (max 0.507) — pass;
+**AttackMove and flank at or above control** — pass on the paired point
+estimates (+0.037 and +0.060, 60v45 and 67v43 paired wins); flank's CI
+excludes zero, attackmove's now touches it (under 13.0 combat the same
+study measured +0.080 [+0.033, +0.127] — the order-keyed stance also
+buffs AI-holding defenders in every arm, which erodes attackmove's
+edge); **hold at or above 0.25** — miss, see below. Note the stance
+change legitimately altered every arm's battles (only ~80/400 end ticks
+match the pre-fix runs — AI-issued Hold orders now carry the stance too;
+chaos amplifies), which is why the final numbers replace the round-1
+table wholesale.
+
+### The hold arm: three tuning rounds, and the structural evidence
+
+The acceptance target (hold win share >= 0.25, "a viable choice")
+could not be met, and the evidence says it is structural, not a value
+problem. Round 1 also fixed the mechanism: an action-keyed stance
+absorbed 3 of thousands of hits in a probe battle (holders flip to
+Attack when engaged); keying on the Hold order made the stance real
+(350-980 absorbed hits per battle) — but the holder still loses. The
+enemy never commits: in a probe battle the unordered side's action
+totals were ~88k search and ~56k approach ticks against ~2k attack
+ticks — a hovering, sniping ring. The blob grinds down 30-94 dead
+against 0-17, stops routing wholesale (the stance's morale resist
+works: 150-220 holders still active), the battle ends STALEMATE at
+~800-1100 ticks, and every win condition (rout, stalemate alive-count,
+tick limit) favors the side that keeps its distance.
+
+| round | stance damage / morale_resist | probe result (10 seeds) |
+| --- | --- | --- |
+| 1 (spec defaults) | 0.8 / 0.2 | 0/10 wins, holder 63.3 dead vs 6.7 |
+| 2 | 0.55 / 0.4 | 0/10 wins, holder 94.3 dead vs 14.0 |
+| 3 | 0.65 / 0.3 | 0/10 wins, holder 75.7 dead vs 10.3 |
+
+The trend is monotone and diagnostic: a stronger stance *prolongs* the
+grind and raises both sides' losses at a constant ~7:1 ratio — the
+holder cannot out-kill an enemy that chooses when to engage, and a
+defensive-only bonus (the prompt's spec: incoming damage, morale
+resistance, charge reduction — no offense) cannot flip an alive-count
+decision the disengaged enemy wins by default. Values reverted to the
+prompt's spec (0.8 / 0.2 / 0.6) since no setting moved the metric.
+What would plausibly fix it is design, not data: pursuit orders that
+punish hovering (the M6 pursuit anchor exists), or attacker fatigue
+biting harder on the sniping ring.
+
+### The unit matrix (pure-type armies, squads on)
+
+Pure-type armies (250 + 10 commanders per side, squads 10x25, the
+shipped scenario shape; 100 paired seeds x both orientations; type A is
+red unswapped and blue swapped — `--swap-sides` swaps the compositions
+with the bands, so the corrected attribution covers each type from both
+spawn bands):
+
+| matchup | type A win share |
+| --- | --- |
+| infantry vs archer | **0.995** (199/200) |
+| archer vs cavalry | **0.000** (0/200) |
+| cavalry vs infantry | **1.000** (200/200) |
+
+The mirror control (identical infantry armies, squads on) is symmetric:
+10/20 and 9/20 across orientations — no side bias. The acceptance
+criteria ("no type wins everything, each type beats >= 1") **fail on the
+shipped type stats**: cavalry wins everything, archer beats nobody. This
+predates combat depth — archers lose 0/20 to both melee types under
+`--combat v1` as well; the cause is `data/units.json`: archers (speed
+1.6, damage 9) are strictly outrun by infantry (2.0) and cavalry (4.5),
+so they cannot kite and lose every duel; cavalry additionally lands
+charges (x1.5) under v2, widening a gap that was already 100/0. Fixing
+the triangle is a units.json balance pass (archer speed at or above
+infantry, or enough ranged damage to break a charge before contact) —
+deliberately not done here: unit stats feed every byte-identity
+baseline and every measured number in the milestone docs, so a stat
+change is a milestone-scale re-baselining, not an item-3 patch.

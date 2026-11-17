@@ -120,6 +120,11 @@ struct Unit {
   // (0, 0) for units that never moved. Internal state only — never exported.
   double last_move_x = 0.0;
   double last_move_y = 0.0;
+
+  // m13 item 3 (--combat v2; all zero/unused under v1):
+  double facing = 0.0;      // heading in radians (last movement dir)
+  double fatigue = 0.0;     // [0, 1]: 1 = exhausted (slower, weaker)
+  double experience = 0.0;  // [0, 1]: kills + engagement time
   // Morale (M5, utility mode with morale enabled; zero/Steady otherwise).
   double morale = 0.0;  // [0, 100]
   std::uint8_t morale_state = 1;  // MoraleState; 1 == Steady (no modifiers)

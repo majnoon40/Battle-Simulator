@@ -84,6 +84,43 @@ faction wins (a mutual collapse is a draw). Elimination (all dead) and the
 tick limit are unchanged; a routed unit counts as a survivor but not as an
 active fighter.
 
+## Termination v2 (--end v2, the default since M13; v1 keeps only the
+rules above)
+
+Two additional end conditions, both configured in the optional
+`termination` block of `data/morale.json` (defaults in parentheses):
+
+- **ROUTED_THRESHOLD** — a faction whose active units (alive and not
+  routed) stay below `max(routed_threshold_min_units` (5)`,
+  `routed_threshold_fraction` (0.05) `x` its initial alive count`)` for
+  `routed_threshold_ticks` (60) consecutive ticks is routed: the other
+  faction wins; both below is a draw. The count resets to zero on any
+  tick at or above the threshold. This ends the mass-rout tail the
+  full-route timeout never catches (one side >90% routed but ~20
+  fighters standing, grinding to the tick limit).
+- **STALEMATE** — the zero-progress rule for the post-contact rout-lock
+  standoffs (two mostly-routed armies that never properly engage
+  again). Every tick after the battle's first enemy sighting, the
+  combined **attacker count** is recorded: alive units of both factions
+  whose chosen action this tick is Attack. The rule looks at a window of
+  the last `stalemate_ticks` (600) ticks — the window only starts
+  filling after first contact and is judged only once it holds
+  `stalemate_ticks` real ticks, so pre-contact marches never count and
+  a battle that fought recently is judged on real data. If the window's
+  **sum** is below `stalemate_max_engagements` (5) `x` the window
+  length — an *average* of fewer than 5 attackers per tick — the battle
+  ends STALEMATE with the winner decided by alive count, exactly like
+  the tick limit (equal survivors: a draw). An average, not a streak:
+  real fights run dozens of attackers per tick, while the rout-lock
+  trickle is 0-3 with sporadic bursts, and bursts must not be able to
+  keep a dead battle alive. Measured on the swapped Nile map (20 seeds,
+  3000 ticks): main ended 0/20 before the limit, the threshold rule
+  alone 11/20, this combination 20/20.
+
+Both reasons are named in the JSON export (`termination.reason`:
+`routed_threshold`, `stalemate`), the text report and re-run by
+`--replay --verify` (the flags ride in the replay setup).
+
 ## Utility AI interaction
 
 Action scores are modified by the state before the choice:

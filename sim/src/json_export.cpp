@@ -86,7 +86,7 @@ nlohmann::json personality_json(const Personality& personality,
 
 nlohmann::json unit_json(const Unit& unit, const UnitTypeTable* types,
                          const PersonalityTable& personalities, bool morale,
-                         const UnitSquadInfo* squad) {
+                         const UnitSquadInfo* squad, bool combat_v2) {
   nlohmann::json json;
   json["alive"] = unit.alive;
   json["faction"] = to_string(unit.faction);
@@ -99,6 +99,11 @@ nlohmann::json unit_json(const Unit& unit, const UnitTypeTable* types,
     json["morale"] = stable(unit.morale);
     json["routed"] = unit.routed;
     json["state"] = to_string(static_cast<MoraleState>(unit.morale_state));
+  }
+  if (combat_v2) {
+    json["facing"] = stable(unit.facing);
+    json["fatigue"] = stable(unit.fatigue);
+    json["experience"] = stable(unit.experience);
   }
   json["personality"] =
       personality_json(unit.personality, personalities, squad != nullptr);
@@ -154,6 +159,7 @@ std::string export_state_json(const Simulation& simulation) {
   const bool squads = simulation.squads_active();
   // M10: tactics on widens action_counts to the eight actions.
   const bool tactics = simulation.tactics_active();
+  const bool combat_v2 = simulation.combat_v2();  // m13 item 3
   // Format 6 (M8, terrain): adds config.map (id and size) and
   // statistics.terrain_kills (kills by the terrain type of the victim's
   // cell). Map-less battles serialize in the exact format-3/4/5 shape of
@@ -163,18 +169,23 @@ std::string export_state_json(const Simulation& simulation) {
   // Format 7 (M10, tactics on): action_counts gains search/help/flank.
   // Format 8 (m11b, player orders issued): per-faction player_orders
   // statistics (issued/delivered/rejected/dropped, mean delivery delay
-  // and obedience). Battles without orders serialize in the exact
-  // format-3..7 shape of their milestone runs, byte-for-byte.
+  // and obedience). Format 9 (m13 item 3, --combat v2) adds the per-unit
+  // facing/fatigue/experience and per-faction combat counters. Battles
+  // with combat v1 serialize in the exact format-3..8 shape of their
+  // milestone runs, byte-for-byte.
   const bool player_orders =
       simulation.player_order_report(sim::Faction::Red).issued > 0 ||
       simulation.player_order_report(sim::Faction::Blue).issued > 0;
   root["format_version"] =
-      player_orders
-          ? 8
-          : (tactics
-                 ? 7
-                 : (terrain != nullptr ? 6
-                                       : (squads ? 5 : (morale ? 4 : 3))));
+      combat_v2
+          ? 9
+          : (player_orders
+                 ? 8
+                 : (tactics
+                        ? 7
+                        : (terrain != nullptr
+                               ? 6
+                               : (squads ? 5 : (morale ? 4 : 3)))));
   root["seed"] = config.seed;
   root["ticks_elapsed"] = result.ticks_elapsed;
 
@@ -240,7 +251,8 @@ std::string export_state_json(const Simulation& simulation) {
     const UnitSquadInfo squad_info = simulation.unit_squad_info(index);
     units_json.push_back(unit_json(world.units[index], types,
                                    simulation.personality_table(), morale,
-                                   squads ? &squad_info : nullptr));
+                                   squads ? &squad_info : nullptr,
+                                   combat_v2));
   }
   root["units"] = std::move(units_json);
 
@@ -271,6 +283,14 @@ std::string export_state_json(const Simulation& simulation) {
       routing["recoveries"] = report.routing.recoveries;
       routing["total_routs"] = report.routing.total_routs;
       faction_json["routing"] = std::move(routing);
+    }
+    if (combat_v2) {
+      nlohmann::json combat;
+      combat["flank_hits"] = report.combat.flank_hits;
+      combat["rear_hits"] = report.combat.rear_hits;
+      combat["charge_hits"] = report.combat.charge_hits;
+      combat["stance_hits_taken"] = report.combat.stance_hits_taken;
+      faction_json["combat"] = std::move(combat);
     }
     if (squads) {
       nlohmann::json squad;

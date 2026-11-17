@@ -693,6 +693,7 @@ TEST(UtilityDeterminismTest, NeighborModeDoesNotAffectUtilityResults) {
 
 TEST(UtilityExportTest, ContainsPersonalityLastActionAndActionCounts) {
   sim::SimulationConfig config = utility_config();
+  config.combat_v2 = false;  // m13: keep the format-3 rung (no combat)
   config.max_ticks = 40;
   // In weapons range of each other from tick 1: Attack dominates every
   // personality at full health, so the battle produces attack actions.

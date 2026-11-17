@@ -420,6 +420,7 @@ TEST(VarianceTest, AccuracyAndDamageStayWithinBounds) {
     unit.stats = types.types[0].stats;  // the type's damage/cooldown/accuracy
   }
   sim::SimulationConfig config = tactics_config(types, 400);
+  config.combat_v2 = false;  // m13: combat multipliers are out of scope here
   sim::Simulation simulation(config, units);
   static_cast<void>(simulation.run());
   // 400 ticks, 2 attackers, one attack per tick each: ~800 attacks, half
@@ -443,6 +444,7 @@ TEST(VarianceTest, DamageSpreadWithinConfiguredFraction) {
     unit.stats = types.types[0].stats;
   }
   sim::SimulationConfig config = tactics_config(types, 300);
+  config.combat_v2 = false;  // m13: combat multipliers are out of scope here
   sim::Simulation simulation(config, units);
   static_cast<void>(simulation.run());
   const double red_lost = 1000000.0 - simulation.world().units[0].health;

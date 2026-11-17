@@ -219,19 +219,24 @@ and download URLs listed in
 Measured on main (M13 item 0 state check; full method and tables in
 [docs/milestone-13.md](docs/milestone-13.md)):
 
-- **Hold and Retreat on open ground lose almost always.** In the 200-paired-
-  seed orders study (both orientations) the ordered faction's win share is
-  0.003 for hold and 0.003 for retreat, with kill ratios 0.046 and 0.072
-  (attackmove: 0.560 [0.511, 0.608] and flank: 0.568 [0.519, 0.615] win
-  share — those two orders are significantly beneficial). The hold
-  diagnosis: holding units *do* fight back (81-86% of engaged unit-ticks
-  choose Attack), but a stationary, concentrated blob is focus-fired at its
-  perimeter, the deaths concentrate, and a rout wave rolls inward (193 of
-  216 alive units routed within 300 ticks of first contact in the probe
-  battle); routed units cannot fight and are run down. This is battle
-  dynamics, not an order bug — but the termination rule lets it grind (see
-  the next bullet), and combat depth (facing/flank/rear damage) is meant to
-  reward secure flanks and punish head-on stands less absolutely.
+- **Hold on open ground still loses (measured again under combat depth,
+  m13 item 3).** The m13 defensive stance (a Hold-ordered squad with
+  cohesion > 0.6 takes x0.8 incoming damage, +20% morale-loss resistance
+  and the charge reduction, `--combat v2`) now genuinely engages — 350-980
+  hits absorbed per probe battle (an action-keyed variant absorbed 3 of
+  thousands; the stance now follows the Hold *order*) — and the holder
+  stops routing wholesale: battles end as stalemates at ~800-1100 ticks
+  with 150-220 holders alive. But the holder still loses every one: the
+  unordered enemy never commits (action counts in a probe: ~88k search
+  and ~56k approach ticks vs ~2k attack ticks — a hovering, sniping
+  ring), so the blob grinds down 30-94 dead against 0-17 while every win
+  condition (rout, stalemate alive-count, tick limit) favors the side
+  that keeps its distance. Three data-tuning rounds over the stance
+  values (0.8/0.2, 0.55/0.4, 0.65/0.3 damage/resist) all produced 0/10
+  with a constant ~7:1 loss ratio — stronger stances only prolong the
+  grind. AttackMove (0.580 win share, paired +0.080 vs control) and
+  flank (0.528, +0.058) remain significantly beneficial; retreat stays a
+  losing order (0.000). Full evidence: docs/milestone-13.md item 3.
 - **A mass-routed side does not end the battle.** The routed-faction end
   condition waits for a full route; battles where one side is >90% routed
   but ~20 units stay active run to the tick limit (the study's hold arm

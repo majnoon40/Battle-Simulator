@@ -525,7 +525,7 @@ ParseOutcome parse_args(int argc, char** argv) {
       }
       continue;
     }
-    if (flag == "--ai-avail" || flag == "--end") {
+    if (flag == "--ai-avail" || flag == "--end" || flag == "--combat") {
       const char* value = require_value(flag.c_str());
       if (value == nullptr) {
         return outcome;
@@ -542,8 +542,29 @@ ParseOutcome parse_args(int argc, char** argv) {
       }
       if (flag == "--ai-avail") {
         args.ai_avail_v2 = v2;
-      } else {
+      } else if (flag == "--end") {
         args.end_v2 = v2;
+      } else {
+        args.combat_v2 = v2;
+      }
+      continue;
+    }
+    if (flag == "--combat") {
+      const char* value = require_value("--combat");
+      if (value == nullptr) {
+        return outcome;
+      }
+      const std::string mode = value;
+      if (mode == "v2" || mode == "on") {
+        args.combat_v2 = true;
+      } else if (mode == "v1" || mode == "off") {
+        args.combat_v2 = false;
+      } else {
+        outcome.ok = false;
+        outcome.error =
+            "--combat expects 'v2' (default), 'v1', 'on' or 'off', got '" +
+            mode + "'";
+        return outcome;
       }
       continue;
     }
@@ -972,6 +993,15 @@ void print_usage(std::ostream& out) {
       << "                         max(5, 5% of initial) for 60 ticks\n"
       << "                         (data/morale.json); v1 keeps the\n"
       << "                         milestone-12 end rules\n"
+      << "  --combat <v1|v2>        Combat depth generation (m13): v2\n"
+      << "                         (default) adds facing (flank x1.25 /\n"
+      << "                         rear x1.5 damage + rear morale loss),\n"
+      << "                         cavalry charges, fatigue, experience,\n"
+      << "                         commander auras and the defensive\n"
+      << "                         stance of high-cohesion Hold squads\n"
+      << "                         (data/combat.json); v1 is the exact\n"
+      << "                         milestone-12 combat. Never runs in\n"
+      << "                         legacy mode\n"
       << "  --orders <on|off>       Player orders (m11b): on (default)\n"
       << "                         enables issue_order; off makes every\n"
       << "                         order inert (and rejects --script)\n"

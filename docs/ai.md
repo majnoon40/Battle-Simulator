@@ -272,3 +272,59 @@ with it (unit factions are untouched). `tools/analysis/balance.cpp`
 runs a scenario for N seeds in both orientations and reports the
 per-orientation split, the side-averaged win rate and the orientation
 effect.
+
+## Combat depth (m13 item 3, --combat v2|v1; default v2)
+
+Combat depth adds six mechanics, all values data-driven in
+`data/combat.json` (validated; the file is required for utility-mode
+runs, like tactics.json). `--combat v1` is the exact milestone-12 combat
+byte-for-byte, and combat depth never runs in legacy mode. No RNG is
+added — every mechanic is a pure function of unit state, so determinism,
+`--threads` (when it lands) and replay verification are unchanged.
+
+- **Facing**: a unit's heading is its last movement direction (spawned
+  facing its objective; a standing unit keeps its heading). An attack's
+  arc is measured at the target: within `facing.flank_degrees` (60) of
+  the target's front it is frontal (x1), up to `facing.rear_degrees`
+  (120) a flank hit (x`flank_multiplier` 1.25), beyond that a rear hit
+  (x`rear_multiplier` 1.5) that also costs the target
+  `facing.rear_morale_loss` (2) morale per hit.
+- **Charge**: a unit whose type speed is at least `charge.min_speed`
+  (4.0 — the shipped cavalry is 4.5) and that covered at least
+  `charge.min_distance` (20) toward its target over the last
+  `charge.window_ticks` (10) ticks deals x`charge.multiplier` (1.5) on
+  the hit, then its run window resets. A target on Hold, in the
+  defensive stance, or in a dense line (`charge.dense_line_allies`
+  allies within `charge.dense_line_radius`) takes the bonus x
+  `charge.held_reduction` (0.5) instead — x1.25 with the defaults.
+- **Fatigue** [0, 1]: grows by `fatigue.move_gain_per_tick` on
+  full-speed moves and `fatigue.fight_gain_per_attack` per swing,
+  recovers by `fatigue.recover_per_tick` when idle (a fighting unit
+  neither gains nor recovers). At `fatigue.exhausted_level` (1.0) the
+  unit moves at x`speed_factor` (0.7) and deals/hits at
+  x`damage_factor`/`accuracy_factor` (0.85).
+- **Experience** [0, 1]: grows by `experience.gain_per_kill` (0.05) per
+  kill and `experience.gain_per_engaged_tick` per attack, and grants up
+  to +`accuracy_bonus_max` (0.10) accuracy and
+  `morale_resist_max` (0.10) morale-loss resistance.
+- **Commander aura**: same-faction units inside a commander's
+  `leadership_radius` (a type stat) get +`aura.damage_bonus` (0.05)
+  damage and x(1 - `aura.morale_reduction` 0.25) morale losses.
+- **Defensive stance**: a unit whose squad holds the Hold order (or
+  that is itself choosing Hold) and whose squad's cohesion is above
+  `stance.cohesion_min` (0.6) takes incoming damage x
+  `stance.damage_factor` (0.8) and gets `stance.morale_resist` (0.20)
+  morale-loss resistance (stacked with experience and auras, the
+  combined resist is capped at 0.9). Keying on the *order* matters:
+  holders fight back when engaged (their chosen action flips to
+  Attack), and the stance must survive that — an action-keyed stance
+  absorbed 3 of thousands of incoming hits in a probe battle, the
+  order-keyed one 350-980.
+
+Morale-loss resistances scale the *loss* terms of `morale_delta`
+(gains are untouched; under v1 the resist is exactly 0 and the v1 delta
+is bit-identical). The export gains `facing`, `fatigue` and
+`experience` per unit and `flank_hits` / `rear_hits` / `charge_hits` /
+`stance_hits_taken` per faction (format 9; v1 exports keep their
+pre-13.1 shape byte-for-byte), the text report gains a "Combat depth"
+section, and the replay setup carries `combat=v1|v2`.

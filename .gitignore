@@ -26,3 +26,4 @@ tools/mapgen/cache/
 # game/core/ source directory)
 /core
 /core.*
+measurements/
