@@ -132,8 +132,15 @@ ActionScores score_actions(const ScoreInputs& inputs,
               pursuit_bonus(true, inputs.unit_speed, *tactics), 0.0, 1.0);
     }
     // Regroup term: a bonus on Advance at low squad cohesion with no
-    // enemy visible.
-    if (inputs.has_squad) {
+    // enemy visible. m13 item 2 (--ai-avail v2): never lift an
+    // unavailable Advance — clamp(-1 + 0, 0, 1) used to turn the
+    // engaged placeholder into a pseudo-available 0.0, which the m11b
+    // order bonus then amplified into "ordered armies never close to
+    // melee" (the m12 audit's root cause). v1 keeps the exact M10
+    // clamp for byte-identical replays.
+    if (inputs.has_squad &&
+        (!inputs.availability_v2 ||
+         scores[static_cast<std::size_t>(Action::Advance)] >= 0.0)) {
       scores[static_cast<std::size_t>(Action::Advance)] = std::clamp(
           scores[static_cast<std::size_t>(Action::Advance)] +
               regroup_bonus(inputs.squad_cohesion, inputs.has_visible_enemy,

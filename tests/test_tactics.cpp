@@ -869,3 +869,165 @@ TEST(SquadIntelTest, ContactsAreSharedWithDelay) {
   EXPECT_TRUE(searched) << "shared contact never triggered Search; "
                            "actions: " << actions;
 }
+
+// ---------------------------------------------------------------------------
+// m13 item 2: availability v2 — the regroup lift, the Help cap and
+// estimate decay.
+
+TEST(AvailabilityV2Test, RegroupNeverLiftsAnUnavailableAdvance) {
+  // With tactics on and a visible enemy, Advance is unavailable (-1).
+  // The M10 regroup term clamped it to a pseudo-available 0.0 (the m12
+  // audit root cause: 0.0 + the m11b order bonus outranked Approach, so
+  // ordered armies never closed to melee). availability_v2 keeps it
+  // excluded; v1 keeps the exact M10 clamp.
+  sim::ScoreInputs inputs;
+  inputs.has_visible_enemy = true;
+  inputs.has_squad = true;
+  inputs.squad_cohesion = 0.0;  // worst cohesion: maximum regroup pull
+  const sim::TacticsConfig tactics{};
+  inputs.availability_v2 = false;
+  const sim::ActionScores v1 = sim::score_actions(inputs, &tactics);
+  EXPECT_DOUBLE_EQ(v1[static_cast<std::size_t>(sim::Action::Advance)],
+                   0.0);
+  inputs.availability_v2 = true;
+  const sim::ActionScores v2 = sim::score_actions(inputs, &tactics);
+  EXPECT_DOUBLE_EQ(v2[static_cast<std::size_t>(sim::Action::Advance)],
+                   -1.0);
+  // With no enemy visible Advance is genuinely available and the regroup
+  // bonus applies identically in both versions.
+  inputs.has_visible_enemy = false;
+  inputs.availability_v2 = false;
+  const sim::ActionScores v1_open = sim::score_actions(inputs, &tactics);
+  inputs.availability_v2 = true;
+  const sim::ActionScores v2_open = sim::score_actions(inputs, &tactics);
+  EXPECT_GT(v1_open[static_cast<std::size_t>(sim::Action::Advance)], 0.5);
+  EXPECT_DOUBLE_EQ(v1_open[static_cast<std::size_t>(sim::Action::Advance)],
+                   v2_open[static_cast<std::size_t>(sim::Action::Advance)]);
+}
+
+TEST(HelpTest, CapBoundsHelpersPerAllyPerTick) {
+  const sim::UnitTypeTable types = infantry_types();
+  sim::TacticsConfig tactics = quick_tactics();
+  tactics.help.max_helpers_per_ally = 2;
+  // One badly wounded ally surrounded by five cautious would-be helpers
+  // (the FiresForWoundedAlly personalities): under v2 at most two may
+  // choose Help in one tick (unit index order decides which); v1 has no
+  // cap.
+  std::vector<sim::Personality> personalities = {
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+  };
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 500.0, 500.0, 5.0),  // wounded ally
+      make_unit(2, sim::Faction::Red, 502.0, 500.0),
+      make_unit(3, sim::Faction::Red, 498.0, 500.0),
+      make_unit(4, sim::Faction::Red, 500.0, 502.0),
+      make_unit(5, sim::Faction::Red, 500.0, 498.0),
+      make_unit(6, sim::Faction::Red, 503.0, 502.0),
+  };
+  const auto count_helping = [](const sim::Simulation& battle) {
+    int helping = 0;
+    for (const sim::Unit& unit : battle.world().units) {
+      if (unit.last_action == static_cast<std::uint8_t>(sim::Action::Help)) {
+        ++helping;
+      }
+    }
+    return helping;
+  };
+  sim::SimulationConfig config = tactics_config(types, 3);
+  config.tactics = &tactics;
+  config.ai_avail_v2 = true;
+  sim::Simulation v2(config, units, personalities);
+  v2.tick();
+  EXPECT_GE(count_helping(v2), 1) << "the cap disabled Help entirely";
+  EXPECT_LE(count_helping(v2), 2) << "the per-ally cap was not enforced";
+  config.ai_avail_v2 = false;
+  sim::Simulation v1(config, units, personalities);
+  v1.tick();
+  EXPECT_GT(count_helping(v1), 2) << "v1 unexpectedly capped helpers";
+}
+
+TEST(HelpTest, RoutedAllyFarFromCombatIsNeverHelped) {
+  const sim::UnitTypeTable types = infantry_types();
+  sim::TacticsConfig tactics = quick_tactics();
+  // A routed, badly hurt ally with no enemy within
+  // routed_help_enemy_distance (30) of it is out of the fight: not a
+  // Help target under v2 (the lone enemy is 400 units away); v1 still
+  // helps it.
+  std::vector<sim::Personality> personalities = {
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.5, 0.5, 0.5, 0.5, sim::kCustomArchetype},
+  };
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 100.0, 100.0, 5.0),  // routed ally
+      make_unit(2, sim::Faction::Red, 104.0, 100.0),       // would help
+      make_unit(3, sim::Faction::Blue, 500.0, 500.0, 1000000.0),
+  };
+  units[0].routed = true;
+  units[0].morale = 5.0;
+  units[1].morale = 60.0;  // make_unit presets morale 0: would Flee
+  units[2].morale = 60.0;
+  sim::SimulationConfig config = tactics_config(types, 3);
+  config.tactics = &tactics;
+  // Morale on: the preset routed flag only persists with morale (with
+  // morale off the sim clears routing state — there is no routing).
+  config.morale_enabled = true;
+  config.ai_avail_v2 = true;
+  sim::Simulation v2(config, units, personalities);
+  v2.tick();
+  EXPECT_NE(static_cast<sim::Action>(v2.world().units[1].last_action),
+            sim::Action::Help);
+  config.ai_avail_v2 = false;
+  sim::Simulation v1(config, units, personalities);
+  v1.tick();
+  EXPECT_EQ(static_cast<sim::Action>(v1.world().units[1].last_action),
+            sim::Action::Help);
+}
+
+TEST(ContactSeekTest, ReachedEstimateWithNoEnemyDecays) {
+  const sim::UnitTypeTable types = infantry_types();
+  sim::TacticsConfig tactics = quick_tactics();
+  tactics.contact_seek.idle_ticks = 3;
+  tactics.contact_seek.estimate_max_age = 400;  // outlive the march
+  // The spotter reports the enemy, then the enemy dies unseen: the
+  // faction estimate goes stale. The parked observer seeks to the
+  // estimate, arrives (within its sight of the estimated position) and
+  // sees nothing — under v2 the estimate drops (tick returns to 0);
+  // under v1 it survives and the observer keeps milling about it.
+  // The observer starts 80 units east of the estimate: Search only
+  // heads for contacts fresher than memory.forget_ticks, so the
+  // estimate must be reachable inside that window (the seeker walks
+  // ~2 units/tick).
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 800.0, 500.0),             // seeker
+      make_unit(2, sim::Faction::Red, 700.0, 500.0, 1000000.0),  // spotter
+      make_unit(3, sim::Faction::Blue, 720.0, 500.0, 1000000.0), // enemy
+      make_unit(4, sim::Faction::Blue, 990.0, 990.0, 1000000.0), // survivor
+  };
+  sim::SimulationConfig config = tactics_config(types, 200);
+  config.tactics = &tactics;
+  config.ai_avail_v2 = true;
+  sim::Simulation v2(config, units);
+  v2.tick();
+  ASSERT_GT(v2.faction_estimate_tick(sim::Faction::Red), 0u);
+  ASSERT_TRUE(v2.intervene_kill(3));  // the estimate goes stale
+  for (int i = 0; i < 150 && !v2.finished(); ++i) {
+    v2.tick();
+  }
+  EXPECT_EQ(v2.faction_estimate_tick(sim::Faction::Red), 0u)
+      << "the stale estimate was not dropped on arrival";
+  config.ai_avail_v2 = false;
+  sim::Simulation v1(config, units);
+  v1.tick();
+  ASSERT_TRUE(v1.intervene_kill(3));
+  for (int i = 0; i < 150 && !v1.finished(); ++i) {
+    v1.tick();
+  }
+  EXPECT_GT(v1.faction_estimate_tick(sim::Faction::Red), 0u)
+      << "v1 should keep the stale estimate";
+}

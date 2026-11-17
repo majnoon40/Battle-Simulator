@@ -47,6 +47,11 @@ struct ReplayData {
   // m11a carry no nav flag; parse_replay defaults them to v1 so an old
   // file replays under the exact behavior it was recorded with.
   std::string nav = "v1";
+  // m13 item 2: availability / termination rule versions. 13.0+ replays
+  // always carry them; older files are refused by the version check
+  // before the flags matter, so "v2" defaults are safe.
+  std::string ai_avail = "v2";
+  std::string end = "v2";
   // m11b: the orders side of the flags line ("on" | "off"); files from
   // before m11b parse as "on" (orders disabled was not representable).
   std::string orders = "on";

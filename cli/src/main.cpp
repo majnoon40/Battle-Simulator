@@ -330,6 +330,8 @@ int run_with_replay(const cli::Arguments& args,
   }
   config.swap_sides = args.swap_sides;
   config.nav_v2 = args.nav_v2;
+  config.ai_avail_v2 = args.ai_avail_v2;
+  config.end_v2 = args.end_v2;
   config.orders_enabled = args.orders_on;
 
   // m11b: load and validate the order script (unless replaying — the
@@ -981,6 +983,8 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.squads = args.squads_on ? "on" : "off";
       replay_data.swap_sides = args.swap_sides ? "on" : "off";
       replay_data.nav = args.nav_v2 ? "v2" : "v1";
+      replay_data.ai_avail = args.ai_avail_v2 ? "v2" : "v1";
+      replay_data.end = args.end_v2 ? "v2" : "v1";
       replay_data.orders = args.orders_on ? "on" : "off";
       replay_data.order_interventions = script_orders;
       for (const std::string& spec : args.interventions) {
@@ -1486,6 +1490,8 @@ int main(int argc, char** argv) {
     effective.neighbor_mode_explicit = true;
     effective.swap_sides = replay_data.swap_sides == "on";
     effective.nav_v2 = replay_data.nav == "v2";
+    effective.ai_avail_v2 = replay_data.ai_avail == "v2";
+    effective.end_v2 = replay_data.end == "v2";
     effective.orders_on = replay_data.orders == "on";
   }
   return run_with_replay(effective, std::move(replay_data));

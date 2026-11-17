@@ -58,6 +58,9 @@ struct ScoreInputs {
   bool has_squad = false;
   double squad_cohesion = 1.0;
   double sight_radius = 40.0;  // normalizes the search contact distance
+  // m13 item 2 (--ai-avail v2): unavailable actions must stay excluded
+  // from selection — the regroup term never lifts an unavailable Advance.
+  bool availability_v2 = false;
 };
 
 // Scores the actions. Availability rules (documented in docs/ai.md):

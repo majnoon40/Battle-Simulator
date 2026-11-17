@@ -572,6 +572,29 @@ class Simulation {
   // Per unit: contact seek engaged on the previous decision (for the
   // seek_start event's false -> true transition).
   std::vector<std::uint8_t> was_seeking_{};
+
+  // m13 item 2 (--ai-avail v2): per-ally Help target counts this tick
+  // (reset at the top of the decide phase; decisions run in unit index
+  // order so the cap is deterministic) and a scratch buffer for the
+  // routed-ally-near-combat probe.
+  std::vector<std::uint32_t> help_target_count_{};
+  std::vector<std::uint32_t> help_probe_buffer_{};
+
+  // m13 item 2 (--end v2): consecutive ticks each faction's active count
+  // stayed below the routed threshold, and the initial alive counts the
+  // threshold scales from.
+  std::array<std::uint64_t, kFactionCount> below_threshold_ticks_{};
+  std::array<std::uint32_t, kFactionCount> initial_alive_{};
+
+  // m13 item 2 (--end v2, stalemate): a ring of the combined
+  // attacker count (alive units, both factions, choosing Attack) per
+  // tick, holding the last termination.stalemate_ticks ticks. Filled
+  // from first contact; judged only once full, so the window is always
+  // real data (a battle that fought 500 ticks and then went quiet is
+  // judged on the quiet part alone).
+  std::vector<std::uint32_t> attack_count_ring_{};
+  std::size_t stalemate_ring_pos_ = 0;
+  std::size_t stalemate_samples_ = 0;
   // Battle events (M10 Part 2a): owned by the caller (config_.events).
   EventRecorder* events_ = nullptr;
   // Timeline sampling (M10 Part 2a).

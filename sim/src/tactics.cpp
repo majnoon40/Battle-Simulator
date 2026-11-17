@@ -110,6 +110,24 @@ TacticsConfig parse_tactics(std::string_view json_text) {
     config.help.score_base = get_number(help, "score_base");
     config.help.health_weight = get_number(help, "health_weight");
     config.help.distance_weight = get_number(help, "distance_weight");
+    // m13 item 2: optional cap fields (defaults in the header).
+    if (help.contains("max_helpers_per_ally")) {
+      const double cap = get_number(help, "max_helpers_per_ally");
+      if (cap < 0.0 || cap > 1000.0) {
+        throw std::invalid_argument(
+            "tactics: help.max_helpers_per_ally must be in [0, 1000]");
+      }
+      config.help.max_helpers_per_ally = static_cast<int>(cap);
+    }
+    if (help.contains("routed_help_enemy_distance")) {
+      const double distance =
+          get_number(help, "routed_help_enemy_distance");
+      if (distance < 0.0) {
+        throw std::invalid_argument(
+            "tactics: help.routed_help_enemy_distance must be >= 0");
+      }
+      config.help.routed_help_enemy_distance = distance;
+    }
     if (!(config.help.radius > 0.0)) {
       throw std::invalid_argument("tactics: help.radius must be > 0");
     }

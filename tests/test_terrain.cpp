@@ -923,9 +923,12 @@ TEST(NoMapPinsTest, M7BaselinesReproduceByteForByte) {
       {"viewer-demo", "42", "viewer-demo-s42.json"},
   };
   for (const Pin& pin : pins) {
+    // m13: the M7 era is reproduced with the v1 rule flags (--ai-avail
+    // v1 --end v1); the v2 defaults change scoring edge cases and end
+    // conditions, so the default-flag run is no longer era-faithful.
     const std::string exported =
         export_via_cli(std::string("--scenario ") + pin.scenario +
-                       " --seed " + pin.seed);
+                       " --seed " + pin.seed + " --ai-avail v1 --end v1");
     const std::string baseline =
         read_text(baselines / pin.file);
     ASSERT_FALSE(baseline.empty()) << pin.file << " missing";

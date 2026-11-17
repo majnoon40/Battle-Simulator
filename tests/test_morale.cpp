@@ -487,6 +487,11 @@ TEST(RoutingTest, RecoveryNeedsSafeTimeAndThreshold) {
   // ticks, long before the 120-tick recovery.
   const auto run = [&](double preset_morale, int ticks, bool enemy_visible) {
     sim::SimulationConfig config = morale_config();
+    // m13: this fixture has 2 Red / 1 Blue active units — below the
+    // --end v2 threshold floor (5), so the battle would end as
+    // ROUTED_THRESHOLD long before the 120-tick recovery. The test
+    // pins the v1 end rules; the threshold rule has its own tests.
+    config.end_v2 = false;
     config.max_ticks = static_cast<std::uint64_t>(ticks) + 5;
     // The routed unit flees down the y = 350 lane; the Blue unit's advance
     // path ends at its objective (30, 200), far outside the 40-unit sight
@@ -524,6 +529,7 @@ TEST(RoutingTest, RecoveryNeedsSafeTimeAndThreshold) {
     sim::SimulationConfig config = morale_config();
     config.max_ticks = static_cast<std::uint64_t>(ticks) + 5;
     config.morale = &slow;
+    config.end_v2 = false;  // m13: 2v1 fixture — under the v2 floor
     std::vector<sim::Unit> units = {
         make_unit(1, sim::Faction::Red, 100.0, 350.0),
         make_unit(2, sim::Faction::Red, 60.0, 60.0),
@@ -605,7 +611,11 @@ TEST(RoutingTest, FactionRoutedEndsTheBattle) {
 
 TEST(RoutingTest, FactionDoesNotRoutWhileActiveUnitsRemain) {
   // Blue has one active unit besides two routed ones: no FACTION_ROUTED.
+  // m13: --end v1 — the fixture is 5 units total, below the threshold
+  // floor, so the v2 rule would (correctly) end it as ROUTED_THRESHOLD;
+  // this test pins the v1 rule it was written for.
   sim::SimulationConfig config = morale_config();
+  config.end_v2 = false;
   config.max_ticks = 500;
   std::vector<sim::Unit> units = {
       make_unit(1, sim::Faction::Red, 200.0, 200.0),
@@ -872,4 +882,202 @@ TEST(MoraleAllocationTest, SteadyStateTickLoopAllocatesNothing) {
   EXPECT_EQ(*counter, before) << "morale tick loop allocated "
                                << (*counter - before)
                                << " times in steady state";
+}
+
+// ---------------------------------------------------------------------------
+// m13 item 2: termination v2 (the routed threshold).
+
+TEST(TerminationV2Test, ThresholdEndsTheBattleAndPicksTheWinner) {
+  // 12v12, far apart (no contact within the window). Kill 8 Red: 4
+  // active < max(5, 5% of 12) = 5, so after 60 consecutive
+  // below-threshold ticks the battle ends ROUTED_THRESHOLD with Blue the
+  // winner. v1 runs on.
+  const auto build = [](bool end_v2) {
+    sim::SimulationConfig config = morale_config();
+    config.end_v2 = end_v2;
+    config.max_ticks = 400;
+    std::vector<sim::Unit> units;
+    for (int i = 0; i < 12; ++i) {
+      units.push_back(
+          make_unit(static_cast<std::uint32_t>(i + 1), sim::Faction::Red,
+                    100.0 + 3.0 * i, 100.0));
+    }
+    for (int i = 0; i < 12; ++i) {
+      units.push_back(make_unit(static_cast<std::uint32_t>(13 + i),
+                                sim::Faction::Blue, 900.0 + 3.0 * i,
+                                900.0));
+    }
+    return sim::Simulation(config, units);
+  };
+  sim::Simulation v2 = build(true);
+  v2.tick();
+  for (std::uint32_t id = 1; id <= 8; ++id) {
+    ASSERT_TRUE(v2.intervene_kill(id));
+  }
+  for (int i = 0; i < 70 && !v2.finished(); ++i) {
+    v2.tick();
+  }
+  ASSERT_TRUE(v2.finished());
+  const sim::BattleResult result = v2.run();
+  EXPECT_EQ(result.reason, sim::TerminationReason::RoutedThreshold);
+  ASSERT_TRUE(result.has_winner);
+  EXPECT_EQ(result.winner, sim::Faction::Blue);
+
+  sim::Simulation v1 = build(false);
+  v1.tick();
+  for (std::uint32_t id = 1; id <= 8; ++id) {
+    ASSERT_TRUE(v1.intervene_kill(id));
+  }
+  for (int i = 0; i < 70 && !v1.finished(); ++i) {
+    v1.tick();
+  }
+  EXPECT_FALSE(v1.finished()) << "v1 ended without the threshold rule";
+}
+
+TEST(TerminationV2Test, BothBelowThresholdIsADraw) {
+  // Kill 8 of each side: both factions sit at 4 active < 5 — after the
+  // window the battle ends ROUTED_THRESHOLD with no winner.
+  sim::SimulationConfig config = morale_config();
+  config.max_ticks = 400;
+  std::vector<sim::Unit> units;
+  for (int i = 0; i < 12; ++i) {
+    units.push_back(
+        make_unit(static_cast<std::uint32_t>(i + 1), sim::Faction::Red,
+                  100.0 + 3.0 * i, 100.0));
+  }
+  for (int i = 0; i < 12; ++i) {
+    units.push_back(make_unit(static_cast<std::uint32_t>(13 + i),
+                              sim::Faction::Blue, 900.0 + 3.0 * i, 900.0));
+  }
+  sim::Simulation simulation(config, units);
+  simulation.tick();
+  for (std::uint32_t id = 1; id <= 8; ++id) {
+    ASSERT_TRUE(simulation.intervene_kill(id));
+    ASSERT_TRUE(simulation.intervene_kill(id + 12));
+  }
+  for (int i = 0; i < 70 && !simulation.finished(); ++i) {
+    simulation.tick();
+  }
+  ASSERT_TRUE(simulation.finished());
+  const sim::BattleResult result = simulation.run();
+  EXPECT_EQ(result.reason, sim::TerminationReason::RoutedThreshold);
+  EXPECT_FALSE(result.has_winner);
+}
+
+TEST(MoraleConfigTest, TerminationBlockParsesAndDefaults) {
+  // The shipped file carries the spec values.
+  std::ifstream shipped_file(std::string(TEST_DATA_DIR) + "/morale.json");
+  std::stringstream shipped_buffer;
+  shipped_buffer << shipped_file.rdbuf();
+  const sim::MoraleConfig shipped =
+      sim::parse_morale(shipped_buffer.str());
+  EXPECT_DOUBLE_EQ(shipped.termination.routed_threshold_fraction, 0.05);
+  EXPECT_EQ(shipped.termination.routed_threshold_min_units, 5u);
+  EXPECT_EQ(shipped.termination.routed_threshold_ticks, 60u);
+  EXPECT_EQ(shipped.termination.stalemate_ticks, 600u);
+  EXPECT_EQ(shipped.termination.stalemate_max_engagements, 5u);
+  // A file without the block keeps the defaults.
+  const sim::MoraleConfig bare = sim::parse_morale(R"json({
+    "start": {"base": 40.0, "bravery_scale": 40.0},
+    "states": {"confident_min": 75.0, "steady_min": 50.0,
+               "worried_min": 30.0, "shaken_min": 12.0},
+    "loss": {"ally_death": 10.0, "ally_rout": 3.0,
+             "routed_ally_presence_per_tick": 0.3,
+             "outnumbered_per_tick": 0.4,
+             "damage_per_health_fraction": 25.0,
+             "isolation_per_tick": 0.6, "caution_amplifier": 0.5,
+             "bravery_shield": 0.5, "min_scale": 0.2},
+    "gain": {"kill": 4.0, "superiority_per_tick": 0.15,
+             "allies_present_per_tick": 0.05, "safe_per_tick": 0.35},
+    "thresholds": {"outnumbered_below": 0.4, "superiority_above": 0.75},
+    "recovery": {"morale_threshold": 35.0, "safe_ticks": 120},
+    "ai": {"confident_bonus": 0.05, "worried_penalty": 0.10,
+           "shaken_penalty": 0.25},
+    "max_loss_per_tick": 10.0, "max_gain_per_tick": 2.5,
+    "rout_timeout_ticks": 30
+  })json");
+  EXPECT_DOUBLE_EQ(bare.termination.routed_threshold_fraction, 0.05);
+  EXPECT_EQ(bare.termination.routed_threshold_min_units, 5u);
+  EXPECT_EQ(bare.termination.routed_threshold_ticks, 60u);
+  EXPECT_EQ(bare.termination.stalemate_ticks, 600u);
+  EXPECT_EQ(bare.termination.stalemate_max_engagements, 5u);
+  // A fraction outside [0, 1] is rejected.
+  bool threw = false;
+  try {
+    sim::parse_morale(R"json({
+      "start": {"base": 40.0, "bravery_scale": 40.0},
+      "states": {"confident_min": 75.0, "steady_min": 50.0,
+                 "worried_min": 30.0, "shaken_min": 12.0},
+      "loss": {"ally_death": 10.0, "ally_rout": 3.0,
+               "routed_ally_presence_per_tick": 0.3,
+               "outnumbered_per_tick": 0.4,
+               "damage_per_health_fraction": 25.0,
+               "isolation_per_tick": 0.6, "caution_amplifier": 0.5,
+               "bravery_shield": 0.5, "min_scale": 0.2},
+      "gain": {"kill": 4.0, "superiority_per_tick": 0.15,
+               "allies_present_per_tick": 0.05, "safe_per_tick": 0.35},
+      "thresholds": {"outnumbered_below": 0.4, "superiority_above": 0.75},
+      "recovery": {"morale_threshold": 35.0, "safe_ticks": 120},
+      "ai": {"confident_bonus": 0.05, "worried_penalty": 0.10,
+             "shaken_penalty": 0.25},
+      "max_loss_per_tick": 10.0, "max_gain_per_tick": 2.5,
+      "rout_timeout_ticks": 30,
+      "termination": {"routed_threshold_fraction": 1.5,
+                      "routed_threshold_min_units": 5,
+                      "routed_threshold_ticks": 60}
+    })json");
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  EXPECT_TRUE(threw) << "fraction > 1 was accepted";
+}
+
+TEST(TerminationV2Test, QuietWindowAfterContactEndsAsStalemate) {
+  // 7v6 speed-0 units within mutual sight but far outside attack
+  // range: contact happens, nobody can ever attack, and after the
+  // (shortened) quiet window the battle ends STALEMATE with Red the
+  // winner by alive count. The routed threshold never fires (both
+  // sides hold 6+ active). v1 runs on to the tick limit.
+  const sim::MoraleConfig morale = [&] {
+    sim::MoraleConfig config = sim::default_morale_config();
+    config.termination.stalemate_ticks = 30;
+    return config;
+  }();
+  const auto build = [&](bool end_v2) {
+    sim::SimulationConfig config = morale_config();
+    config.morale = &morale;
+    config.end_v2 = end_v2;
+    config.max_ticks = 120;
+    std::vector<sim::Unit> units;
+    for (int i = 0; i < 7; ++i) {
+      sim::Unit unit = make_unit(static_cast<std::uint32_t>(i + 1),
+                                 sim::Faction::Red, 100.0 + 3.0 * i, 100.0);
+      unit.stats.speed = 0.0;  // pinned: can never close to attack range
+      units.push_back(unit);
+    }
+    for (int i = 0; i < 6; ++i) {
+      sim::Unit unit = make_unit(static_cast<std::uint32_t>(8 + i),
+                                 sim::Faction::Blue, 130.0 + 3.0 * i, 130.0);
+      unit.stats.speed = 0.0;
+      units.push_back(unit);
+    }
+    return sim::Simulation(config, units);
+  };
+  sim::Simulation v2 = build(true);
+  for (int i = 0; i < 120 && !v2.finished(); ++i) {
+    v2.tick();
+  }
+  ASSERT_TRUE(v2.finished());
+  const sim::BattleResult result = v2.run();
+  EXPECT_EQ(result.reason, sim::TerminationReason::Stalemate);
+  ASSERT_TRUE(result.has_winner);
+  EXPECT_EQ(result.winner, sim::Faction::Red);
+
+  sim::Simulation v1 = build(false);
+  for (int i = 0; i < 120 && !v1.finished(); ++i) {
+    v1.tick();
+  }
+  ASSERT_TRUE(v1.finished());
+  EXPECT_EQ(v1.result().reason, sim::TerminationReason::TickLimit)
+      << "v1 ended by a rule it does not have";
 }

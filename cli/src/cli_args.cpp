@@ -525,6 +525,28 @@ ParseOutcome parse_args(int argc, char** argv) {
       }
       continue;
     }
+    if (flag == "--ai-avail" || flag == "--end") {
+      const char* value = require_value(flag.c_str());
+      if (value == nullptr) {
+        return outcome;
+      }
+      const std::string mode = value;
+      const bool v2 = mode == "v2" || mode == "on";
+      const bool v1 = mode == "v1" || mode == "off";
+      if (!v2 && !v1) {
+        outcome.ok = false;
+        outcome.error =
+            flag + " expects 'v2' (default), 'v1', 'on' or 'off', got '" +
+            mode + "'";
+        return outcome;
+      }
+      if (flag == "--ai-avail") {
+        args.ai_avail_v2 = v2;
+      } else {
+        args.end_v2 = v2;
+      }
+      continue;
+    }
     if (flag == "--orders") {
       const char* value = require_value("--orders");
       if (value == nullptr) {
@@ -938,6 +960,18 @@ void print_usage(std::ostream& out) {
       << "                         their slot and fixes the --swap-sides\n"
       << "                         explicit-objective swap; v1 is the\n"
       << "                         exact M10 navigation (byte-identical)\n"
+      << "  --ai-avail <v1|v2>      Action availability generation (m13):\n"
+      << "                         v2 (default) never lifts an unavailable\n"
+      << "                         action (the M10 regroup pseudo-\n"
+      << "                         availability of Advance), caps Help per\n"
+      << "                         ally and decays stale contact estimates;\n"
+      << "                         v1 is the exact milestone-12 scoring\n"
+      << "  --end <v1|v2>           Termination generation (m13): v2\n"
+      << "                         (default) also ends a battle when a\n"
+      << "                         faction's active units stay below\n"
+      << "                         max(5, 5% of initial) for 60 ticks\n"
+      << "                         (data/morale.json); v1 keeps the\n"
+      << "                         milestone-12 end rules\n"
       << "  --orders <on|off>       Player orders (m11b): on (default)\n"
       << "                         enables issue_order; off makes every\n"
       << "                         order inert (and rejects --script)\n"

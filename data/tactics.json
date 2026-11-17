@@ -15,7 +15,9 @@
     "strength_ratio_min": 0.8,
     "score_base": 0.5,
     "health_weight": 0.3,
-    "distance_weight": 0.2
+    "distance_weight": 0.2,
+    "max_helpers_per_ally": 2,
+    "routed_help_enemy_distance": 30.0
   },
   "flank": {
     "max_per_squad": 4,

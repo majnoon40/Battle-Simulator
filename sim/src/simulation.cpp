@@ -157,6 +157,23 @@ Simulation::Simulation(SimulationConfig config,
   contact_seek_active_ = tactics_active_ && config_.contact_seek_enabled;
   contactless_streak_.assign(world_.units.size(), 0);
   was_seeking_.assign(world_.units.size(), 0);
+  // m13 item 2: Help caps, the routed-threshold streaks, the initial
+  // strengths the threshold scales from, and the stalemate ring.
+  help_target_count_.assign(world_.units.size(), 0);
+  help_probe_buffer_.clear();
+  below_threshold_ticks_.fill(0);
+  initial_alive_.fill(0);
+  for (const Unit& unit : world_.units) {
+    if (unit.alive) {
+      ++initial_alive_[faction_index(unit.faction)];
+    }
+  }
+  attack_count_ring_.assign(
+      static_cast<std::size_t>(std::min<std::uint64_t>(
+          effective_morale_->termination.stalemate_ticks, 10000)),
+      0);
+  stalemate_ring_pos_ = 0;
+  stalemate_samples_ = 0;
   events_ = config_.events;
   for (Unit& unit : world_.units) {
     unit.decision_interval =
@@ -1077,6 +1094,10 @@ void Simulation::decide_targets() {
     // M10: clear this tick's tactic goals and mark which squads had a
     // member seeing an enemy on the previous tick (a 1-tick-stale but
     // deterministic "frontally engaged" signal for Flank).
+    if (config_.ai_avail_v2) {
+      // m13: the per-ally Help cap counts within one tick.
+      std::fill(help_target_count_.begin(), help_target_count_.end(), 0u);
+    }
     if (tactics_active_) {
       std::fill(tactic_goal_set_.begin(), tactic_goal_set_.end(), 0);
       if (squads_active_) {
@@ -1289,13 +1310,25 @@ Action Simulation::decide_unit_action(std::size_t index,
                  effective_tactics_->contact_seek.idle_ticks) {
         contactless_streak_[index] += 1;
       }
-      const bool seeking_now =
+      bool seeking_now =
           best < 0 &&
           contactless_streak_[index] >=
               effective_tactics_->contact_seek.idle_ticks &&
           estimate_tick_[faction] > 0 &&
           tick_number - estimate_tick_[faction] <=
               effective_tactics_->contact_seek.estimate_max_age;
+      // m13 item 2 (--ai-avail v2): a seeker that has reached the
+      // estimated position and still sees nothing proves the estimate
+      // stale — drop it (the next real sighting refreshes it) instead
+      // of milling around the point forever.
+      if (config_.ai_avail_v2 && seeking_now) {
+        const double edx = unit.x - estimate_x_[faction];
+        const double edy = unit.y - estimate_y_[faction];
+        if (edx * edx + edy * edy <= sight * sight) {
+          estimate_tick_[faction] = 0;
+          seeking_now = false;
+        }
+      }
       if (events_ != nullptr && seeking_now && !was_seeking_[index]) {
         events_->record(tick_number, EventType::SeekStart, unit.id);
       }
@@ -1336,6 +1369,25 @@ Action Simulation::decide_unit_action(std::size_t index,
           damage_this_tick_[candidate] > 0.0;
       if (!in_need) {
         continue;
+      }
+      // m13 item 2 (--ai-avail v2): a routed ally far from any living
+      // enemy is out of the fight, not in danger — never a Help target.
+      if (config_.ai_avail_v2 && other.routed) {
+        const double reach =
+            effective_tactics_->help.routed_help_enemy_distance;
+        grid_.radius_query(world_.units, other.x, other.y, reach,
+                           help_probe_buffer_);
+        bool near_enemy = false;
+        for (std::uint32_t probe : help_probe_buffer_) {
+          const Unit& probe_unit = world_.units[probe];
+          if (probe_unit.alive && probe_unit.faction != unit.faction) {
+            near_enemy = true;
+            break;
+          }
+        }
+        if (!near_enemy) {
+          continue;
+        }
       }
       const double dx = other.x - unit.x;
       const double dy = other.y - unit.y;
@@ -1380,6 +1432,8 @@ Action Simulation::decide_unit_action(std::size_t index,
   // M10 inputs (zeros/defaults with tactics off, so legacy scoring and
   // every M1-M9 reference are untouched).
   inputs.sight_radius = sight;
+  // m13 item 2: --ai-avail v2 gates the regroup lift in score_actions.
+  inputs.availability_v2 = config_.ai_avail_v2;
   inputs.has_fresh_contact = has_fresh_contact;
   inputs.contact_distance = contact_distance;
   inputs.contact_age = contact_age;
@@ -1561,6 +1615,18 @@ Action Simulation::decide_unit_action(std::size_t index,
             bonus *= commanders_->player_orders.weight_scale;
           }
         }
+        if (config_.ai_avail_v2 && squad.player_order_active &&
+            squad.player_order_type == PlayerOrderType::MoveTo &&
+            scores[static_cast<std::size_t>(Action::Advance)] < 0.0) {
+          // m13 item 2: the regroup clamp that used to lift an
+          // unavailable Advance to a pseudo-available 0.0 is gone under
+          // --ai-avail v2, but MoveTo's documented "marches past
+          // enemies" needs the march available while enemies are
+          // visible — the same 0.0 base, now explicit and scoped to
+          // delivered MoveTo orders only (melee still wins: base Attack
+          // ~0.9 outranks the saturated Advance bonus of ~0.88).
+          scores[static_cast<std::size_t>(Action::Advance)] = 0.0;
+        }
         for (std::size_t action = 0; action < kActionCount; ++action) {
           if (scores[action] >= 0.0) {
             scores[action] =
@@ -1594,6 +1660,21 @@ Action Simulation::decide_unit_action(std::size_t index,
       // current one (a Hold order used to pin Hold over Attack forever).
       chosen = choose_action(scores, previous, config_.action_stickiness,
                              player_order_scored);
+      // m13 item 2 (--ai-avail v2): at most help.max_helpers_per_ally
+      // units may Help the same ally in one tick; a full cap falls
+      // through to the next-best action (unit index order makes the
+      // cap deterministic).
+      if (config_.ai_avail_v2 && chosen == Action::Help && ally_in_need) {
+        if (help_target_count_[ally_goal] >=
+            static_cast<std::uint32_t>(std::max(
+                0, effective_tactics_->help.max_helpers_per_ally))) {
+          scores[static_cast<std::size_t>(Action::Help)] = -1.0;
+          chosen = choose_action(scores, previous, config_.action_stickiness,
+                                 player_order_scored);
+        } else {
+          ++help_target_count_[ally_goal];
+        }
+      }
       if (tactics_active_) {
         const std::uint32_t interval =
             unit.decision_interval > 0 ? unit.decision_interval : 1;
@@ -2825,6 +2906,97 @@ void Simulation::update_termination() {
         winner_ = red_routed_out ? Faction::Blue : Faction::Red;
       }
       return;
+    }
+  }
+
+  // m13 item 2 (--end v2): a faction whose active units (alive and not
+  // routed) stayed below max(min_units, fraction of its initial
+  // strength) for routed_threshold_ticks consecutive ticks is routed —
+  // the mass-rout tail the full-route timeout above never catches (the
+  // M13 hold-arm study battles: >90% routed, ~20 fighting on, grinding
+  // to the tick limit).
+  if (morale_enabled_ && config_.end_v2) {
+    const auto active_of = [this](Faction faction) {
+      std::uint32_t active = 0;
+      for (const Unit& unit : world_.units) {
+        if (unit.alive && !unit.routed && unit.faction == faction) {
+          ++active;
+        }
+      }
+      return active;
+    };
+    const auto threshold_out = [&](Faction faction) {
+      const std::size_t index = faction_index(faction);
+      const auto& term = effective_morale_->termination;
+      const std::uint32_t threshold = std::max(
+          term.routed_threshold_min_units,
+          static_cast<std::uint32_t>(
+              term.routed_threshold_fraction *
+              static_cast<double>(initial_alive_[index])));
+      if (active_of(faction) >= threshold) {
+        below_threshold_ticks_[index] = 0;
+        return false;
+      }
+      below_threshold_ticks_[index] += 1;
+      return below_threshold_ticks_[index] >= term.routed_threshold_ticks;
+    };
+    const bool red_threshold = threshold_out(Faction::Red);
+    const bool blue_threshold = threshold_out(Faction::Blue);
+    if (red_threshold || blue_threshold) {
+      finished_ = true;
+      reason_ = TerminationReason::RoutedThreshold;
+      if (red_threshold && blue_threshold) {
+        has_winner_ = false;  // both factions below the threshold
+      } else {
+        has_winner_ = true;
+        winner_ = red_threshold ? Faction::Blue : Faction::Red;
+      }
+      return;
+    }
+  }
+
+  // m13 item 2 (--end v2, stalemate): after first contact, track the
+  // combined attacker count per tick; when the last stalemate_ticks
+  // ticks average fewer than stalemate_max_engagements attackers, the
+  // battle is a rout-lock standoff — two mostly-routed armies trading
+  // potshots or not fighting at all (the M12-documented Nile swapped
+  // tail: 0-3 attackers per tick with rare bursts, versus 30-60+ in a
+  // real fight). An average, not a streak, so sporadic bursts cannot
+  // keep a dead battle alive. The first_contact guard keeps pre-contact
+  // marches out of the window; winner by alive count, like the tick
+  // limit.
+  if (morale_enabled_ && config_.end_v2 && first_contact_tick_ > 0 &&
+      !attack_count_ring_.empty()) {
+    std::uint32_t attacking = 0;
+    for (const Unit& unit : world_.units) {
+      if (unit.alive &&
+          unit.last_action == static_cast<std::uint8_t>(Action::Attack)) {
+        ++attacking;
+      }
+    }
+    const std::size_t window = attack_count_ring_.size();
+    attack_count_ring_[stalemate_ring_pos_] = attacking;
+    stalemate_ring_pos_ = (stalemate_ring_pos_ + 1) % window;
+    stalemate_samples_ = std::min(stalemate_samples_ + 1, window);
+    if (stalemate_samples_ >= window) {
+      std::uint64_t attacks = 0;
+      for (std::uint32_t count : attack_count_ring_) {
+        attacks += count;
+      }
+      if (attacks < static_cast<std::uint64_t>(
+                       effective_morale_->termination
+                           .stalemate_max_engagements) *
+                       static_cast<std::uint64_t>(window)) {
+        finished_ = true;
+        reason_ = TerminationReason::Stalemate;
+        if (red != blue) {
+          has_winner_ = true;
+          winner_ = red > blue ? Faction::Red : Faction::Blue;
+        } else {
+          has_winner_ = false;
+        }
+        return;
+      }
     }
   }
 
