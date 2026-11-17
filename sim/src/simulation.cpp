@@ -2413,18 +2413,25 @@ void Simulation::update_command_auras() {
   }
   if (squads_active_) {
     // The stance needs a squad (its cohesion); without squads the
-    // per-unit squad index and squad table do not exist.
+    // per-unit squad index and squad table do not exist. A squad holds
+    // the stance when its effective Hold ORDER is active — holders
+    // fight back when engaged (their chosen action flips to Attack),
+    // and the stance must survive that — or when a member is itself
+    // choosing Hold.
     for (std::size_t i = 0; i < world_.units.size(); ++i) {
       const Unit& unit = world_.units[i];
-      if (!unit.alive ||
-          static_cast<Action>(unit.last_action) != Action::Hold) {
-        continue;
-      }
-      if (unit_squad_[i] < 0) {
+      if (!unit.alive || unit_squad_[i] < 0) {
         continue;
       }
       const Squad& squad =
           squads_[static_cast<std::size_t>(unit_squad_[i])];
+      const bool holding_order =
+          squad.members.size() > unit_member_[i] &&
+          squad.members[unit_member_[i]].order == Order::Hold;
+      if (!holding_order &&
+          static_cast<Action>(unit.last_action) != Action::Hold) {
+        continue;
+      }
       if (squad.cohesion >= effective_combat_->stance.cohesion_min) {
         defensive_stance_[i] = 1;
       }

@@ -1036,6 +1036,7 @@ struct DeathFixture {
     config.unit_types = &types;
     config.morale_enabled = true;
     config.tactics_enabled = false;  // M10: M6-era reproduction fixture
+    config.combat_v2 = false;  // m13: M6-era reproduction fixture
     config.commanders = &commanders;
     // Composition mirrors the explicit units (squad plan validation).
     config.composition[kRed].push_back(sim::TypeCount{1, 1});

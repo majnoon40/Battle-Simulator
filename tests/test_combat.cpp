@@ -528,6 +528,44 @@ TEST(CombatExportTest, V1BaselinesReproduceMainByteForByte) {
 }
 
 // ---------------------------------------------------------------------------
+// The defensive stance: it follows the Hold ORDER, not the momentary
+// action (holders fight back when engaged — their action flips to
+// Attack — and the stance must survive that).
+
+TEST(CombatStanceTest, HoldOrderGrantsTheStanceWhileEngaged) {
+  // A scripted hold battle: the ordered side's squads hold from tick 100,
+  // get engaged, and their stance absorbs a steady stream of hits. The
+  // same battle without orders barely produces stances (only the rare
+  // action-Hold standoff).
+  std::ofstream script("/tmp/m13_stance_orders.json");
+  script << "[{\"tick\": 100, \"faction\": \"red\", \"squads\": \"all\", "
+         << "\"order\": \"hold\"}]\n";
+  script.close();
+  ASSERT_EQ(run_cli("--scenario data/scenarios/squads.json --seed 3 "
+                    "--ticks 900 --orders on "
+                    "--script /tmp/m13_stance_orders.json "
+                    "--export-json /tmp/m13_stance_hold.json"),
+            0);
+  nlohmann::json held =
+      nlohmann::json::parse(read_bytes("/tmp/m13_stance_hold.json"));
+  const std::uint64_t absorbed =
+      held["statistics"]["Red"]["combat"]["stance_hits_taken"]
+          .get<std::uint64_t>();
+  EXPECT_GT(absorbed, 100u)
+      << "the Hold order's stance never engaged while under attack";
+  ASSERT_EQ(run_cli("--scenario data/scenarios/squads.json --seed 3 "
+                    "--ticks 900 --export-json /tmp/m13_stance_free.json"),
+            0);
+  nlohmann::json free =
+      nlohmann::json::parse(read_bytes("/tmp/m13_stance_free.json"));
+  const std::uint64_t baseline =
+      free["statistics"]["Red"]["combat"]["stance_hits_taken"]
+          .get<std::uint64_t>();
+  EXPECT_LT(baseline, 100u)
+      << "without orders the stance should be rare (action-Hold only)";
+}
+
+// ---------------------------------------------------------------------------
 // The config parser.
 
 TEST(CombatConfigTest, ParsesShippedFileAndRejectsBadValues) {

@@ -302,7 +302,7 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
       out << "- " << faction_name(f) << ": " << stats.flank_hits
           << " flank hits, " << stats.rear_hits << " rear hits, "
           << stats.charge_hits << " charge hits, "
-          << stats.stance_hits_taken << " hits absorbed in stance";
+          << stats.stance_hits_taken << " hits absorbed in stance\n";
     }
     out << "\n";
   }

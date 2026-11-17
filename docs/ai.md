@@ -310,11 +310,16 @@ added — every mechanic is a pure function of unit state, so determinism,
 - **Commander aura**: same-faction units inside a commander's
   `leadership_radius` (a type stat) get +`aura.damage_bonus` (0.05)
   damage and x(1 - `aura.morale_reduction` 0.25) morale losses.
-- **Defensive stance**: a unit whose chosen action is Hold and whose
-  squad's cohesion is above `stance.cohesion_min` (0.6) takes incoming
-  damage x`stance.damage_factor` (0.8) and gets
-  `stance.morale_resist` (0.20) morale-loss resistance (stacked with
-  experience and auras, the combined resist is capped at 0.9).
+- **Defensive stance**: a unit whose squad holds the Hold order (or
+  that is itself choosing Hold) and whose squad's cohesion is above
+  `stance.cohesion_min` (0.6) takes incoming damage x
+  `stance.damage_factor` (0.8) and gets `stance.morale_resist` (0.20)
+  morale-loss resistance (stacked with experience and auras, the
+  combined resist is capped at 0.9). Keying on the *order* matters:
+  holders fight back when engaged (their chosen action flips to
+  Attack), and the stance must survive that — an action-keyed stance
+  absorbed 3 of thousands of incoming hits in a probe battle, the
+  order-keyed one 350-980.
 
 Morale-loss resistances scale the *loss* terms of `morale_delta`
 (gains are untouched; under v1 the resist is exactly 0 and the v1 delta

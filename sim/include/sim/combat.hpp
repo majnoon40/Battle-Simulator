@@ -22,10 +22,10 @@
 //   aura      — a commander (a unit with leadership_radius) projects its
 //               aura over same-faction units inside that radius: more
 //               damage, less morale loss.
-//   stance    — a unit on Hold whose squad's cohesion is above
-//               cohesion_min takes a defensive stance: incoming damage
-//               x damage_factor, morale-loss resistance, and the charge
-//               reduction above.
+//   stance    — a unit whose squad holds the Hold order (or that
+//               chooses Hold) with cohesion above cohesion_min takes a
+//               defensive stance: incoming damage x damage_factor,
+//               morale-loss resistance, and the charge reduction above.
 //
 // All hooks are pure functions of unit state; no RNG is added, so v2
 // stays exactly as deterministic as v1 (same seed, same bytes; --threads
