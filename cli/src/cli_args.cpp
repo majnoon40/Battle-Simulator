@@ -578,6 +578,30 @@ ParseOutcome parse_args(int argc, char** argv) {
       args.orders_on = mode == "on";
       continue;
     }
+    if (flag == "--threads") {
+      const char* value = require_value("--threads");
+      if (value == nullptr) {
+        return outcome;
+      }
+      // m13 item 4: strict unsigned parse (the shared parser rejects
+      // trailing characters, signs and overflow). 0 = hardware
+      // concurrency (resolved by main); 1 (default) = inline phases.
+      // Above 256 the pool would only add contention — refused with a
+      // clear message instead.
+      const ParsedNumber parsed = parse_unsigned(value, "--threads", 256);
+      if (!parsed.ok) {
+        outcome.ok = false;
+        outcome.error = parsed.error;
+        return outcome;
+      }
+      args.threads = static_cast<std::uint32_t>(parsed.value);
+      args.threads_explicit = true;
+      continue;
+    }
+    if (flag == "--profile-phases") {
+      args.profile_phases = true;
+      continue;
+    }
     if (flag == "--script") {
       const char* value = require_value("--script");
       if (value == nullptr) {
@@ -1008,6 +1032,17 @@ void print_usage(std::ostream& out) {
       << "                         formation, x, y, formation}; recorded\n"
       << "                         into --record replays, re-applied by\n"
       << "                         --replay\n"
+      << "  --threads <n>           Deterministic multithreading (m13):\n"
+      << "                         1 (default) runs every phase inline;\n"
+      << "                         n >= 2 runs perception and decision\n"
+      << "                         on a persistent worker pool in fixed\n"
+      << "                         chunks; 0 = one worker per hardware\n"
+      << "                         core. Output is byte-identical for\n"
+      << "                         every thread count\n"
+      << "  --profile-phases        Print per-phase timing after the run\n"
+      << "                         (perception / decision / resolution /\n"
+      << "                         commit / total; clock reads only, the\n"
+      << "                         battle is unchanged)\n"
       << "\n"
       << "Without --units or --scenario, the default scenario runs (with the\n"
       << "shipped data files: 250 infantry per faction). The battle ends when\n"

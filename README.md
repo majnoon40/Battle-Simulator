@@ -18,6 +18,11 @@ has a design report under `docs/`.
   of randomness; the same seed reproduces the same battle byte-for-byte,
   and the spatial-hash neighbor mode produces identical output to the
   brute-force mode (`grid == brute`, tested).
+- **Deterministic multithreading (M13)** — `--threads N` runs the
+  perception and decision phases on a persistent worker pool in fixed
+  chunks; output is byte-identical for every thread count (verified
+  1/2/3/4/8 across scenarios; ThreadSanitizer-clean; measured 1.85x on
+  2 cores at 20,000 units), `--profile-phases` prints per-phase timing.
 - **Utility AI with morale** — units score actions (attack, approach,
   advance, retreat, hold) from health, local strength, distance, cooldown
   and personality (bravery / caution / aggression); morale states, routing,
@@ -160,6 +165,15 @@ More detail (including runtime controls) in
 # Benchmarks (the report prints ticks/s and ms/tick)
 ./build/battle_cli --scenario perf-5000 --ticks 600
 ./build/battle_cli --scenario perf-20000 --ticks 600
+
+# Deterministic multithreading: perception + decision on a worker
+# pool; output is byte-identical for every thread count (m13 item 4)
+./build/battle_cli --scenario perf-5000 --ticks 600 --threads 4
+./build/battle_cli --scenario perf-5000 --ticks 600 --threads 0  # = hw cores
+
+# Per-phase timing (perception / decision / resolution / commit; the
+# battle itself is unchanged by profiling)
+./build/battle_cli --scenario perf-5000 --ticks 600 --profile-phases
 ```
 
 Shipped scenarios (see `data/scenarios/`): `default`, `mixed`,

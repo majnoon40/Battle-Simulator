@@ -54,6 +54,16 @@ struct Arguments {
   // m13 item 3: combat depth (--combat v2|v1); v2 default, v1
   // reproduces milestone-12 combat byte-for-byte.
   bool combat_v2 = true;
+
+  // m13 item 4: deterministic multithreading (--threads N; 0 = use
+  // hardware concurrency, resolved in main with a printed note; default
+  // 1 = all phases inline, byte-identical to the pre-threads binary).
+  // Output is byte-identical for every thread count. --profile-phases
+  // prints per-phase timing (perception / decision / resolution /
+  // commit / total) after the run; profiling only reads the clock.
+  std::uint32_t threads = 1;
+  bool threads_explicit = false;
+  bool profile_phases = false;
   // m11b player orders: --orders on (default) or off (issue_order is
   // inert; a --script is rejected). With no order issued battles are
   // byte-identical either way.

@@ -471,6 +471,64 @@ TEST(CliArgsTest, TraceIntervalBoundsAreEnforced) {
   EXPECT_FALSE(parse({"battle_cli", "--trace-interval", "100001"}).ok);
 }
 
+// m13 item 4: --threads (strict unsigned parse; 0 = hardware
+// concurrency resolved by main; 1 = inline default) and
+// --profile-phases.
+TEST(CliArgsTest, ThreadsFlagParses) {
+  const cli::ParseOutcome outcome = parse({"battle_cli", "--threads", "4"});
+  ASSERT_TRUE(outcome.ok);
+  EXPECT_EQ(outcome.args.threads, 4u);
+  EXPECT_TRUE(outcome.args.threads_explicit);
+  // Defaults: 1 (inline), not explicit, no profiling.
+  const cli::ParseOutcome defaults = parse({"battle_cli"});
+  ASSERT_TRUE(defaults.ok);
+  EXPECT_EQ(defaults.args.threads, 1u);
+  EXPECT_FALSE(defaults.args.threads_explicit);
+  EXPECT_FALSE(defaults.args.profile_phases);
+  // 0 = hardware concurrency (a valid value; main resolves it).
+  const cli::ParseOutcome zero = parse({"battle_cli", "--threads", "0"});
+  ASSERT_TRUE(zero.ok);
+  EXPECT_EQ(zero.args.threads, 0u);
+  // Boundary: 256 is the documented cap.
+  ASSERT_TRUE(parse({"battle_cli", "--threads", "256"}).ok);
+  // Repeated flags: last wins (the shared convention).
+  const cli::ParseOutcome twice =
+      parse({"battle_cli", "--threads", "2", "--threads", "8"});
+  ASSERT_TRUE(twice.ok);
+  EXPECT_EQ(twice.args.threads, 8u);
+}
+
+TEST(CliArgsTest, ThreadsRejectsMalformedValues) {
+  for (const char* bad :
+       {"", "-1", "1.5", "2junk", " 4", "4 ", "+4", "0x2", "1e2",
+        "257",           // above the documented cap
+        "99999999999999999999999"}) {
+    const cli::ParseOutcome outcome = parse({"battle_cli", "--threads", bad});
+    EXPECT_FALSE(outcome.ok) << "value: '" << bad << "'";
+  }
+  // The error names the flag and echoes the value.
+  const cli::ParseOutcome named =
+      parse({"battle_cli", "--threads", "2junk"});
+  ASSERT_FALSE(named.ok);
+  EXPECT_NE(named.error.find("--threads"), std::string::npos)
+      << "error was: " << named.error;
+  const cli::ParseOutcome capped =
+      parse({"battle_cli", "--threads", "257"});
+  ASSERT_FALSE(capped.ok);
+  EXPECT_NE(capped.error.find("256"), std::string::npos)
+      << "error was: " << capped.error;
+  // --threads requires a value.
+  EXPECT_FALSE(parse({"battle_cli", "--threads"}).ok);
+}
+
+TEST(CliArgsTest, ProfilePhasesIsASwitch) {
+  const cli::ParseOutcome outcome = parse({"battle_cli", "--profile-phases"});
+  ASSERT_TRUE(outcome.ok);
+  EXPECT_TRUE(outcome.args.profile_phases);
+  // It takes no value.
+  EXPECT_FALSE(parse({"battle_cli", "--profile-phases", "on"}).ok);
+}
+
 // m13 audit finding 1: every numeric option must parse strictly —
 // trailing characters, signs, empty strings and overflow are rejected,
 // and the error names the offending argument.

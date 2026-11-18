@@ -279,8 +279,10 @@ Combat depth adds six mechanics, all values data-driven in
 `data/combat.json` (validated; the file is required for utility-mode
 runs, like tactics.json). `--combat v1` is the exact milestone-12 combat
 byte-for-byte, and combat depth never runs in legacy mode. No RNG is
-added — every mechanic is a pure function of unit state, so determinism,
-`--threads` (when it lands) and replay verification are unchanged.
+added — every mechanic is a pure function of unit state, so determinism
+and replay verification are unchanged, and `--threads` (m13 item 4)
+runs the decision phase on a worker pool with byte-identical output
+(see docs/determinism.md "Threading").
 
 - **Facing**: a unit's heading is its last movement direction (spawned
   facing its objective; a standing unit keeps its heading). An attack's

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -13,6 +15,7 @@
 #include "sim/rng.hpp"
 #include "sim/events.hpp"
 #include "sim/spatial_hash.hpp"
+#include "sim/thread_pool.hpp"
 #include "sim/timeline.hpp"
 #include "sim/squads.hpp"
 #include "sim/tactics.hpp"
@@ -328,6 +331,31 @@ class Simulation {
     return ai_debug_;
   }
 
+  // Phase profiling (m13 item 4, --profile-phases). When enabled, tick()
+  // accumulates steady-clock nanoseconds per pipeline phase; profiling
+  // reads the clock only and never touches simulation state, so the
+  // battle is byte-identical with it on or off. Phase mapping (documented
+  // in docs/milestone-13.md item 4): perception = the parallel
+  // perception/inputs pass of decide_targets (plus the legacy
+  // nearest-enemy scans); decision = the ordered scoring/commit pass plus
+  // squad contacts and faction estimates; resolution = flow fields,
+  // cooldowns, movement, combat and deaths; commit = morale, squads,
+  // termination and timeline sampling.
+  struct PhaseTimings {
+    std::uint64_t perception_ns = 0;
+    std::uint64_t decision_ns = 0;
+    std::uint64_t resolution_ns = 0;
+    std::uint64_t commit_ns = 0;
+    std::uint64_t total_ns = 0;
+    std::uint64_t ticks = 0;
+  };
+  void enable_phase_profiling(bool enabled) noexcept {
+    phase_profiling_ = enabled;
+  }
+  [[nodiscard]] const PhaseTimings& phase_timings() const noexcept {
+    return phase_timings_;
+  }
+
   // Intervention hook (M6 acceptance experiments): zeroes a unit's health
   // between ticks. The death resolves in the next tick's apply_deaths with
   // full semantics — morale events and, for an acting commander, the
@@ -451,11 +479,72 @@ class Simulation {
   void assign_squads();
   // Recomputes one squad's alive-member centroid and cohesion metric.
   void update_squad_metrics(Squad& squad);
-  // Utility AI (M4): perception + scoring for one unit, from the tick-start
-  // snapshot. Fills perception and scores and returns the chosen action
-  // (Action::Flee for routed units, whose scores stay -1).
-  Action decide_unit_action(std::size_t index, Perception& perception,
-                            ActionScores& scores);
+  // Utility AI (M4) for one unit, from the tick-start snapshot — split
+  // into two halves for deterministic multithreading (m13 item 4):
+  //
+  // compute_decision_inputs is the PARALLELIZABLE half: everything that
+  // only reads state stable for the whole decide phase (the spatial
+  // grid, unit positions/health, squads, the faction estimates) plus
+  // writes to this unit's OWN slots (tactical memory, the contactless
+  // streak). It fills a DecisionInputs slot; two workers never touch
+  // the same slot. The radius-query scratch buffers are per worker.
+  //
+  // finish_unit_decision is the ORDERED half, run single-threaded in
+  // unit-index order on the simulation thread: it resolves the state
+  // whose semantics are order-dependent (the faction estimate decay —
+  // the first seeker to reach a stale estimate drops it and everyone
+  // later in index order sees it gone; the per-ally Help cap — a greedy
+  // in-order allocation; event recording), scores, chooses, and commits
+  // the decision's own-slot state (pursuit bookkeeping, tactic goals,
+  // the commit timer). `estimate_dropper` carries, per faction, the
+  // 1-based index of this tick's first estimate-dropping unit (0 =
+  // none) as determined from the parallel pass, so the ordered replay
+  // is exactly the serial semantics.
+  struct DecisionInputs {
+    Perception perception;  // aggregated radius-query result
+    double sight = 0.0;     // effective sight radius (terrain-scaled)
+    bool broken = false;    // routed/morale-broken: forced Flee below
+    bool enemy_in_attack_range = false;  // exact d2 comparison result
+    bool target_routed = false;
+    bool pursuit_within_bounds = false;
+    // Contact variants (tactics/contact-seek). The "personal" contact is
+    // the freshest of own memory and squad intel; the "estimate" variant
+    // is the faction estimate snapshot (valid when base_seeking).
+    std::uint64_t personal_tick = 0;  // 0 = no usable contact
+    double personal_x = 0.0;
+    double personal_y = 0.0;
+    bool base_seeking = false;   // no enemy seen, streak ripe, estimate fresh
+    bool drop_candidate = false;  // base_seeking && reached the estimate
+    std::uint64_t estimate_tick = 0;
+    double estimate_x = 0.0;
+    double estimate_y = 0.0;
+    // Help scan (tactics): the neediest visible ally inside help.radius.
+    bool ally_in_need = false;
+    double ally_health_fraction = 1.0;
+    double ally_distance = 0.0;
+    std::size_t ally_goal = 0;
+    // Squad inputs for scoring/flank.
+    bool squad_engaged = false;
+    bool member_may_flank = false;
+    bool has_squad = false;
+    double squad_cohesion = 1.0;
+    // Order term (M6/m11b), computed from stable squad state.
+    bool order_active = false;  // the member carries an effective order
+    double obedience = 0.0;
+    std::array<double, kActionCount> order_bonus{};
+    bool player_order_scored = false;
+  };
+
+  void compute_decision_inputs(std::size_t index, DecisionInputs& out,
+                               std::vector<std::uint32_t>& perceive_buffer,
+                               std::vector<std::uint32_t>& probe_buffer);
+  [[nodiscard]] Action finish_unit_decision(
+      std::size_t index, const DecisionInputs& inputs,
+      const std::array<std::size_t, kFactionCount>& estimate_dropper,
+      Perception& perception, ActionScores& scores);
+  // Creates the worker pool and per-worker scratch (both constructors);
+  // a no-op re-run is safe but never happens.
+  void init_threading();
   // Phase 0 of the project pipeline: keep the spatial index current. The
   // grid is built once after spawning (or adopting an explicit state) and
   // then maintained incrementally in fixed unit-index order: moved units are
@@ -498,8 +587,18 @@ class Simulation {
   std::array<double, kFactionCount> objective_x_{};  // faction -> objective
   std::array<double, kFactionCount> objective_y_{};
   std::vector<Perception> last_perception_{};   // per unit, last alive tick
-  std::vector<std::uint32_t> perceive_buffer_;  // reused radius-query buffer
   std::vector<std::uint8_t> action_commit_{};   // commit ticks left per unit
+  // m13 item 4: the persistent worker pool (null with thread_count <= 1 —
+  // every phase then runs inline on the simulation thread, byte-identical
+  // to the pre-threads binary), the per-worker radius-query scratch
+  // buffers (index 0 is the simulation thread itself in inline mode), the
+  // preallocated per-unit decision-input slots of the parallel pass, and
+  // the fixed decision chunk size (independent of the worker count).
+  static constexpr std::size_t kDecisionChunkUnits = 256;
+  std::unique_ptr<ThreadPool> thread_pool_;
+  std::vector<std::vector<std::uint32_t>> worker_perceive_{};
+  std::vector<std::vector<std::uint32_t>> worker_probe_{};
+  std::vector<DecisionInputs> decide_inputs_{};
   std::array<std::array<std::uint64_t, kActionCount>, kFactionCount>
       action_counts_{};  // cumulative per-faction action totals
   // Morale and routing state (M5).
@@ -592,7 +691,6 @@ class Simulation {
   // order so the cap is deterministic) and a scratch buffer for the
   // routed-ally-near-combat probe.
   std::vector<std::uint32_t> help_target_count_{};
-  std::vector<std::uint32_t> help_probe_buffer_{};
 
   // m13 item 2 (--end v2): consecutive ticks each faction's active count
   // stayed below the routed threshold, and the initial alive counts the
@@ -637,6 +735,9 @@ class Simulation {
   // from this tick's perceptions.
   void update_faction_estimates();
   AiDebugCapture ai_debug_{};
+  // --profile-phases state (m13 item 4); see enable_phase_profiling.
+  PhaseTimings phase_timings_{};
+  bool phase_profiling_ = false;
   static inline const Perception kNoPerception{};
   bool finished_ = false;
   TerminationReason reason_ = TerminationReason::None;

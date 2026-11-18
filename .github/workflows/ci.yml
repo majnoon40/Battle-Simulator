@@ -98,3 +98,40 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+
+  # m13 item 4: ThreadSanitizer over the worker pool, the cross-thread
+  # determinism tests, and the unit/squad/morale suites that exercise the
+  # parallel decision phase. (The full suite under TSan would take hours;
+  # the thread-relevant selection covers every code path that runs on
+  # the pool — the pool tests themselves, the multithreaded battles, and
+  # the sim mechanics whose state feeds the parallel pass.)
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Debug, TSan)
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Thread-pool and multithreading tests
+        run: >
+          ./build/battle_tests --gtest_filter='ThreadPoolTest.*:ThreadsDeterminismTest.*:PhaseProfilingTest.*'
+          --gtest_break_on_failure
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+
+      - name: Simulation and squad mechanics under TSan
+        run: >
+          ./build/battle_tests
+          --gtest_filter='DeterminismTest.*:TerminationTest.*:TerminationV2Test.*:MoraleStateTest.*:MoraleDeltaTest.*:MoraleModifierTest.*:MoraleOnTest.*:MoraleOffTest.*:SquadAssignmentTest.*:SquadSeparationTest.*:SquadConfigValidationTest.*:ConfigValidationTest.*'
+          --gtest_break_on_failure
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1

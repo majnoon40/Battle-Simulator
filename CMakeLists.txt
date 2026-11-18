@@ -38,6 +38,10 @@ FetchContent_Declare(stb
   GIT_SHALLOW TRUE
   GIT_PROGRESS TRUE)
 FetchContent_MakeAvailable(stb)
+# m13 item 4: the deterministic worker pool (sim/thread_pool.hpp) needs
+# std::thread and its condition variables.
+find_package(Threads REQUIRED)
+
 add_library(stb_headers INTERFACE)
 target_include_directories(stb_headers INTERFACE ${stb_SOURCE_DIR})
 
