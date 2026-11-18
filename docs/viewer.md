@@ -69,12 +69,32 @@ Controls:
 | R                    | restart from tick 0 with the same seed              |
 | N                    | new random seed                                     |
 | left-click           | select a unit (inspector) or a squad badge (panel)  |
+| left-drag            | rectangle-select every Red squad touched (m13 5a)  |
+| Shift + click/drag   | add to the squad selection (toggle on click)       |
+| right-click          | MoveTo the world point for the selected squads     |
+| Shift + right-click  | AttackMove the world point (m13 5a)                |
+| 1 / 2 / 3            | Hold / Retreat / Regroup the selected squads (5a)  |
+| M                    | toggle the minimap (m13 5a)                        |
 | L / I / O / G / H    | toggle squad links / sight radius / formation slots / grid / HUD |
 | T                    | toggle the terrain layer (M8 maps) |
 
 The terrain layer (M8 maps) is drawn first, in the terrain palette
 colors, and can be toggled with T; see docs/terrain.md. The sim runs at
 60 ticks/s at 1x.
+
+m13 item 5a adds the battle-view command layer: the minimap (bottom-
+left; terrain thumbnail when a map is loaded, unit dots, camera
+viewport outline — a click jumps the camera there), the multi-squad
+selection (rings on every member of the selected squads), and order
+markers (a line and glyph from each ordered squad to its target: M
+MoveTo, A AttackMove, H Hold, R Retreat, G Regroup). Orders route
+through the same courier-delay delivery as `--script` (m11b), so a
+click takes effect a few ticks later — the marker appears when the
+squad receives it. Right-drag still pans: a right press that moves
+more than 6 px is a pan, a stationary release is an order. The pure
+policy (selection rules, intent mapping, minimap geometry) lives in
+game/battle_input.hpp and is headless-tested (test_battle_input.cpp);
+the window only feeds mouse/key facts and renders.
 
 Rendering: units are drawn per faction color (Red vivid red, Blue vivid
 blue; routed units desaturated; dead units not drawn); shape by type

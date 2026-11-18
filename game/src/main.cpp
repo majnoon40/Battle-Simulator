@@ -34,6 +34,7 @@
 
 #include "cli/cli_args.hpp"
 #include "game/accumulator.hpp"
+#include "game/battle_input.hpp"
 #include "game/camera.hpp"
 #include "game/picking.hpp"
 #include "game/theme.hpp"
@@ -251,6 +252,17 @@ int main(int argc, char** argv) {
   const render::ui::Theme ui_theme = render::ui::default_theme();
   render::ui::BattleView view;  // pause/speed/options/zoom from the UI
   std::string loaded_scenario = scenario_name;  // what the sim runs now
+  // m13 item 5a: multi-squad selection + click/drag bookkeeping. The
+  // press positions distinguish a click from a drag (left: pick vs
+  // rect-select; right: order vs pan). Pure policy lives in
+  // game/battle_input (headless-tested); this loop only feeds facts.
+  game::SquadSelection selection;
+  bool show_minimap = true;  // the window's interactive layers (M toggles)
+  Vector2 left_press{0.0f, 0.0f};
+  Vector2 right_press{0.0f, 0.0f};
+  bool left_pressed_battle = false;
+  bool right_pressed_battle = false;
+  bool left_pressed_minimap = false;
 
   // (Re)builds the battle for a scenario stem; resets every viewer
   // state exactly like R (restart) does.
@@ -273,6 +285,7 @@ int main(int argc, char** argv) {
     finished = false;
     options.selected_unit = -1;
     options.selected_squad = -1;
+    selection = game::SquadSelection{};
     loaded_scenario = stem;
   };
 
@@ -422,6 +435,7 @@ int main(int argc, char** argv) {
       finished = false;
       options.selected_unit = -1;
       options.selected_squad = -1;
+      selection = game::SquadSelection{};
     }
     if (IsKeyPressed(KEY_N)) {  // new seed
       const auto now = std::chrono::steady_clock::now().time_since_epoch();
@@ -434,6 +448,7 @@ int main(int argc, char** argv) {
       finished = false;
       options.selected_unit = -1;
       options.selected_squad = -1;
+      selection = game::SquadSelection{};
     }
     if (IsKeyPressed(KEY_L)) {
       options.squad_links = !options.squad_links;
@@ -453,6 +468,30 @@ int main(int argc, char** argv) {
     if (IsKeyPressed(KEY_H)) {
       options.show_hud = !options.show_hud;
     }
+    // m13 item 5a: order hotkeys on the multi-squad selection
+    // (1/2/3 = Hold/Retreat/Regroup) and the minimap toggle. The
+    // intents route through the pure game:: policy and land in the sim
+    // through issue_order, exactly like --script.
+    if (IsKeyPressed(KEY_ONE)) {
+      const game::OrderIntent intent =
+          game::order_from_hotkey(selection, game::OrderType::Hold);
+      static_cast<void>(game::apply_order(simulation, intent));
+    }
+    if (IsKeyPressed(KEY_TWO)) {
+      const game::OrderIntent intent =
+          game::order_from_hotkey(selection, game::OrderType::Retreat);
+      static_cast<void>(game::apply_order(simulation, intent));
+    }
+    if (IsKeyPressed(KEY_THREE)) {
+      const game::OrderIntent intent =
+          game::order_from_hotkey(selection, game::OrderType::Regroup);
+      static_cast<void>(game::apply_order(simulation, intent));
+    }
+    if (IsKeyPressed(KEY_M)) {
+      show_minimap = !show_minimap;
+    }
+    options.show_minimap = show_minimap;
+    options.show_order_markers = true;
     }
     // Pan: held keys and right-drag (pixels per second at 1x speed feel).
     // Arrow keys pan only when the UI does not own them.
@@ -503,31 +542,103 @@ int main(int argc, char** argv) {
         }
       }
     }
-    // Click: unit first, then squad badge — never through the UI.
+    // m13 item 5a: left press/release. A press inside the minimap jumps
+    // the camera there on release; a drag (> 6 px) rect-selects every
+    // Red squad touched; a plain click picks a unit first, then a squad
+    // badge (the m11 rule), and the multi-selection follows the pick.
+    // Never through the UI chrome.
     if (in_battle && !pointer_over_ui &&
         IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      left_press = GetMousePosition();
+      left_pressed_battle = true;
+      const game::MinimapGeometry geometry = game::minimap_geometry(
+          screen_width, screen_height, simulation.world().width,
+          simulation.world().height);
+      left_pressed_minimap = game::minimap_covers(
+          geometry, static_cast<int>(left_press.x),
+          static_cast<int>(left_press.y));
+    }
+    if (in_battle && left_pressed_battle &&
+        IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       const Vector2 mouse = GetMousePosition();
-      const std::int32_t unit = game::pick_unit(
-          simulation, camera, screen_width, screen_height, mouse.x, mouse.y,
-          8.0);
-      if (unit >= 0) {
-        options.selected_unit = unit;
-        options.selected_squad =
-            simulation.unit_squad_info(static_cast<std::size_t>(unit))
-                .squad_id;
-        // Arm the debug capture so the inspector shows live scores.
-        sim::AiDebugCapture capture;
-        capture.unit_id =
-            simulation.world().units[static_cast<std::size_t>(unit)].id;
-        capture.tick = simulation.tick_index() + 1;
-        capture.explicit_tick = true;
-        simulation.set_ai_debug(capture);
-      } else {
+      const float dx = mouse.x - left_press.x;
+      const float dy = mouse.y - left_press.y;
+      const bool drag = dx * dx + dy * dy > 36.0f;  // > 6 px
+      const bool shift =
+          IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+      if (left_pressed_minimap) {
+        const game::MinimapGeometry geometry = game::minimap_geometry(
+            screen_width, screen_height, simulation.world().width,
+            simulation.world().height);
+        camera.center_x = game::world_x_from_minimap(
+            geometry, static_cast<double>(mouse.x));
+        camera.center_y = game::world_y_from_minimap(
+            geometry, static_cast<double>(mouse.y));
+      } else if (drag) {
+        selection = game::select_squad_rect(
+            simulation, selection,
+            camera.world_x(left_press.x, screen_width),
+            camera.world_y(left_press.y, screen_height),
+            camera.world_x(mouse.x, screen_width),
+            camera.world_y(mouse.y, screen_height), shift);
         options.selected_unit = -1;
-        options.selected_squad = game::pick_squad(
+        options.selected_squad =
+            selection.empty() ? -1
+                              : static_cast<std::int32_t>(
+                                    selection.squads.front());
+      } else {
+        const std::int32_t unit = game::pick_unit(
             simulation, camera, screen_width, screen_height, mouse.x,
-            mouse.y, 10.0);
+            mouse.y, 8.0);
+        if (unit >= 0) {
+          options.selected_unit = unit;
+          const auto info =
+              simulation.unit_squad_info(static_cast<std::size_t>(unit));
+          options.selected_squad = info.squad_id;
+          selection = game::select_squad_click(
+              selection, info.squad_id, shift);
+          // Arm the debug capture so the inspector shows live scores.
+          sim::AiDebugCapture capture;
+          capture.unit_id =
+              simulation.world().units[static_cast<std::size_t>(unit)].id;
+          capture.tick = simulation.tick_index() + 1;
+          capture.explicit_tick = true;
+          simulation.set_ai_debug(capture);
+        } else {
+          options.selected_unit = -1;
+          const std::int32_t squad = game::pick_squad(
+              simulation, camera, screen_width, screen_height, mouse.x,
+              mouse.y, 10.0);
+          options.selected_squad = squad;
+          selection = game::select_squad_click(selection, squad, shift);
+        }
       }
+      left_pressed_battle = false;
+      left_pressed_minimap = false;
+    }
+    // m13 item 5a: right-click without a drag issues MoveTo (shift =
+    // AttackMove) to the world point on the whole selection; a right
+    // drag still pans (the pan block above runs on the held button).
+    if (in_battle && !pointer_over_ui &&
+        IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+      right_press = GetMousePosition();
+      right_pressed_battle = true;
+    }
+    if (in_battle && right_pressed_battle &&
+        IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) {
+      const Vector2 mouse = GetMousePosition();
+      const float dx = mouse.x - right_press.x;
+      const float dy = mouse.y - right_press.y;
+      if (dx * dx + dy * dy <= 36.0f) {  // a click, not a pan drag
+        const bool attack =
+            IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        const game::OrderIntent intent = game::order_from_right_click(
+            selection, attack,
+            camera.world_x(mouse.x, screen_width),
+            camera.world_y(mouse.y, screen_height));
+        static_cast<void>(game::apply_order(simulation, intent));
+      }
+      right_pressed_battle = false;
     }
 
     // --- simulation ------------------------------------------------------
@@ -569,6 +680,10 @@ int main(int argc, char** argv) {
     stats.speed = accumulator.speed();
     stats.limited = limited;
     stats.scenario_name = scenario_name;
+    options.selected_squads.clear();
+    for (std::uint32_t id : selection.squads) {
+      options.selected_squads.push_back(static_cast<std::int32_t>(id));
+    }
     render::DrawList list = render::build_battle_draw_list(
         simulation, camera, options, screen_width, screen_height, stats);
     if (!in_battle) {

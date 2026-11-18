@@ -1,3 +1,4 @@
+#include "game/battle_input.hpp"
 #include "render/battle_view.hpp"
 
 #include <algorithm>
@@ -342,6 +343,98 @@ DrawList build_battle_draw_list(const sim::Simulation& simulation,
     }
   }
 
+  // m13 item 5a: multi-squad selection — an outline ring on every alive
+  // member of each selected squad (a 2 px mark in point mode), in the
+  // same accent the selected unit uses.
+  if (!options.selected_squads.empty() && squads) {
+    const bool points_mode = camera.zoom < options.point_zoom_threshold;
+    for (const sim::Squad& squad : simulation.squads()) {
+      if (std::find(options.selected_squads.begin(),
+                    options.selected_squads.end(),
+                    static_cast<std::int32_t>(squad.id)) ==
+          options.selected_squads.end()) {
+        continue;
+      }
+      for (const sim::SquadMemberState& member : squad.members) {
+        const sim::Unit& unit = world.units[member.unit_index];
+        if (!unit.alive) {
+          continue;
+        }
+        const double sx = camera.screen_x(unit.x, screen_width);
+        const double sy = camera.screen_y(unit.y, screen_height);
+        if (sx < -4.0 || sy < -4.0 || sx > screen_width + 4.0 ||
+            sy > screen_height + 4.0) {
+          continue;
+        }
+        if (points_mode) {
+          list.rect(sx - 1.0, sy - 1.0, 2.0, 2.0, game::selected_outline(),
+                    true);
+          continue;
+        }
+        DrawCmd ring;
+        ring.kind = CmdKind::Circle;
+        ring.a = sx;
+        ring.b = sy;
+        ring.c = 3.0;
+        ring.e = 1.0;  // outline only
+        ring.color2 = game::selected_outline();
+        list.cmds.push_back(std::move(ring));
+      }
+    }
+  }
+
+  // m13 item 5a: order markers. Point orders draw a line from the squad
+  // centroid to the target, a small circle there and the order glyph;
+  // point-less orders (Hold/Retreat/Regroup/formation) draw the glyph
+  // above the squad badge.
+  if (options.show_order_markers && squads) {
+    for (const sim::Squad& squad : simulation.squads()) {
+      if (!squad.player_order_active) {
+        continue;
+      }
+      char glyph = '?';
+      switch (squad.player_order_type) {
+        case sim::PlayerOrderType::MoveTo:
+          glyph = 'M';
+          break;
+        case sim::PlayerOrderType::AttackMove:
+          glyph = 'A';
+          break;
+        case sim::PlayerOrderType::Hold:
+          glyph = 'H';
+          break;
+        case sim::PlayerOrderType::Retreat:
+          glyph = 'R';
+          break;
+        case sim::PlayerOrderType::Regroup:
+          glyph = 'G';
+          break;
+        case sim::PlayerOrderType::ChangeFormation:
+          glyph = 'F';
+          break;
+      }
+      const double csx =
+          camera.screen_x(squad.centroid_x, screen_width);
+      const double csy =
+          camera.screen_y(squad.centroid_y, screen_height);
+      game::Color accent = game::faction_color(squad.faction);
+      accent.a = 220;
+      if (squad.player_order_point) {
+        const double tsx =
+            camera.screen_x(squad.player_order_x, screen_width);
+        const double tsy =
+            camera.screen_y(squad.player_order_y, screen_height);
+        list.line(csx, csy, tsx, tsy, 1.0, accent);
+        list.circle(tsx, tsy, 3.0, game::Color{}, accent);
+        list.text(tsx + 5.0, tsy - 3.0, 7, std::string(1, glyph),
+                  game::text_color());
+      } else {
+        list.text(csx - 2.0, csy - 22.0, 7, std::string(1, glyph),
+                  game::text_color());
+      }
+    }
+  }
+
   // HUD (top-left).
   if (options.show_hud) {
     const std::vector<std::string> lines =
@@ -382,6 +475,87 @@ DrawList build_battle_draw_list(const sim::Simulation& simulation,
                  static_cast<double>(screen_height) - block_height + 6.0, 14,
                  18.0);
     }
+  }
+
+  // m13 item 5a: the minimap — bottom-left square: panel background,
+  // a coarse terrain thumbnail (4-px blocks) when a map is loaded, unit
+  // dots, and the camera viewport outline. Click-to-jump is the window's
+  // job (game::world_x/y_from_minimap); this is only the drawing.
+  if (options.show_minimap) {
+    const game::MinimapGeometry geometry = game::minimap_geometry(
+        screen_width, screen_height, world.width, world.height);
+    list.rect(static_cast<double>(geometry.x),
+              static_cast<double>(geometry.y),
+              static_cast<double>(geometry.size),
+              static_cast<double>(geometry.size), game::panel_color(),
+              true);
+    if (const sim::TerrainGrid* terrain = simulation.terrain()) {
+      const int block = 4;  // minimap pixels per terrain sample
+      for (int by = 0; by + block <= geometry.size; by += block) {
+        for (int bx = 0; bx + block <= geometry.size; bx += block) {
+          const double wx = game::world_x_from_minimap(
+              geometry,
+              static_cast<double>(geometry.x + bx + block / 2.0));
+          const double wy = game::world_y_from_minimap(
+              geometry,
+              static_cast<double>(geometry.y + by + block / 2.0));
+          const std::uint16_t type = terrain->type_index_at(wx, wy);
+          if (type == sim::TerrainGrid::kNoCell) {
+            continue;
+          }
+          const sim::TerrainType& shape = terrain->table->types[type];
+          list.rect(static_cast<double>(geometry.x + bx),
+                    static_cast<double>(geometry.y + by),
+                    static_cast<double>(block),
+                    static_cast<double>(block),
+                    game::Color{shape.r, shape.g, shape.b, 255}, true);
+        }
+      }
+    }
+    for (const sim::Unit& unit : world.units) {
+      if (!unit.alive) {
+        continue;
+      }
+      const double mx = game::minimap_x(geometry, unit.x);
+      const double my = game::minimap_y(geometry, unit.y);
+      const game::Color color =
+          unit.routed ? game::routed_color(unit.faction)
+                      : game::faction_color(unit.faction);
+      list.rect(mx - 1.0, my - 1.0, 2.0, 2.0, color, true);
+    }
+    // Camera viewport outline.
+    {
+      const double vx0 = game::minimap_x(
+          geometry, camera.world_x(0.0, screen_width));
+      const double vy0 = game::minimap_y(
+          geometry, camera.world_y(0.0, screen_height));
+      const double vx1 = game::minimap_x(
+          geometry,
+          camera.world_x(static_cast<double>(screen_width),
+                         screen_width));
+      const double vy1 = game::minimap_y(
+          geometry,
+          camera.world_y(static_cast<double>(screen_height),
+                         screen_height));
+      DrawCmd frame;
+      frame.kind = CmdKind::Rect;
+      frame.a = vx0;
+      frame.b = vy0;
+      frame.c = vx1 - vx0;
+      frame.d = vy1 - vy0;
+      frame.e = 0.0;  // outline
+      frame.color = game::Color{255, 255, 255, 180};
+      list.cmds.push_back(std::move(frame));
+    }
+    DrawCmd border;
+    border.kind = CmdKind::Rect;
+    border.a = static_cast<double>(geometry.x);
+    border.b = static_cast<double>(geometry.y);
+    border.c = static_cast<double>(geometry.size);
+    border.d = static_cast<double>(geometry.size);
+    border.e = 0.0;  // outline
+    border.color = game::text_color();
+    list.cmds.push_back(std::move(border));
   }
 
   return list;

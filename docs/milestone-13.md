@@ -849,3 +849,43 @@ budget armies are size-elastic (the fill follows the costs) while squad
 plans pin exact soldier counts, so the two forms do not compose — a
 size-elastic squad plan is the follow-up that would let budget armies
 form up.
+
+## Item 5a — the battle view: minimap, selection, orders (branch
+m13-battle-view)
+
+The m11d spec's remaining battle-view features, built on the item-1
+window wiring with the same shell policy: everything rule-shaped is a
+pure function in `game/battle_input` (headless-tested,
+tests/test_battle_input.cpp), and the window only feeds mouse/key
+facts and renders.
+
+- **Selection** (`game::SquadSelection`, sorted unique squad ids): a
+  plain left-click still picks a unit first, then a squad badge — and
+  now also drives the multi-selection; shift-click adds or toggles; a
+  left drag (> 6 px) rectangle-selects every Red squad with an alive
+  member inside (shift adds); clicking nothing clears (shift keeps).
+  The renderer rings every alive member of each selected squad (a 2 px
+  mark below the point-zoom threshold).
+- **Orders**: right-click issues MoveTo to the world point on the whole
+  selection (shift = AttackMove); 1 / 2 / 3 issue Hold / Retreat /
+  Regroup. Intents route through `apply_order` ->
+  `Simulation::issue_order`, the exact m11b courier path (delivery
+  takes ticks; the marker appears when the squad receives the order).
+  A right press that moves more than 6 px is still a pan.
+- **Markers**: for every squad with an active player order the renderer
+  draws a line from the centroid to the target, a circle there and the
+  order glyph (M/A/H/R/G/F); point-less orders draw the glyph above the
+  squad badge. Toggle: the `show_order_markers` ViewOptions flag.
+- **Minimap** (bottom-left, 200 px, `M` toggles): panel background, a
+  coarse terrain thumbnail (4 px blocks) when a map is loaded, unit
+  dots (routed desaturated), the camera viewport outline; a click jumps
+  the camera center to the world point (clamped to the battlefield).
+  The HUD keeps top-left, the inspector top-right, the squad panel
+  bottom-right — the four corners do not collide.
+
+Verification: 10 new tests (selection semantics incl. enemy squads
+never selectable; intent mapping; apply_order through courier delivery;
+minimap placement/coverage/round-trip/clamping; renderer marker and
+minimap commands on/off; one ring per on-screen squad member), full
+suite green, battle_game compiled locally against raylib (BUILD_GAME=ON)
+before pushing. docs/viewer.md documents every new control.

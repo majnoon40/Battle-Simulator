@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace game {
 
@@ -18,6 +19,15 @@ struct ViewOptions {
   bool show_badges = true;        // clickable squad id badges at centroids
   std::int32_t selected_unit = -1;  // unit index, or -1
   std::int32_t selected_squad = -1; // global squad id, or -1
+  // m13 item 5a: the multi-squad selection (sorted global squad ids —
+  // game::SquadSelection) the battle view highlights, the order markers
+  // on squads with active player orders, and the minimap (bottom-left).
+  std::vector<std::int32_t> selected_squads;
+  // The interactive battle view (window) turns these on; the pinned
+  // PNG/report baselines keep their exact command streams, so the
+  // defaults stay off.
+  bool show_order_markers = false;
+  bool show_minimap = false;
   // Below this zoom (pixels per world unit) units draw as single pixels so
   // 20,000-unit battles stay readable at full-view.
   double point_zoom_threshold = 1.0;

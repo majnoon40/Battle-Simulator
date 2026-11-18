@@ -5,6 +5,7 @@
 # exact release tag in that case — see the root CMakeLists and
 # docs/viewer.md for the per-OS dev libraries raylib needs).
 add_library(game_core STATIC
+  core/src/battle_input.cpp
   core/src/theme.cpp
   core/src/picking.cpp
   core/src/ascii.cpp)
