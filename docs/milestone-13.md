@@ -749,7 +749,8 @@ purchase on a structural exchange rate, so this is documented with the
 evidence instead.
 
 ## Item H(b) — unit balance: cost field, budget armies, RPS tuning
-(in progress — engine and round 1 complete, rounds 2-3 pending)
+(engine done; three measured rounds run, no strict cycle — honest miss,
+details below)
 
 ### The engine part (done, tested)
 
@@ -791,3 +792,60 @@ cavalry edge only — cavalry speed 4.0 -> 4.4 (shortens the volley
 window against the fast closer, leaves the infantry matchup's dynamics
 alone) or archer range 44 -> 40 — while keeping both proven edges
 (margins 0.09 and 0.18) clear of 0.5.
+
+Round 2 (archer range 44 -> 40, cooldown 6 -> 7 — the round-1 direction,
+weakening the archer against both closers to give cavalry the edge):
+
+| matchup | type-A share | 95% CI |
+| --- | --- | --- |
+| infantry vs archer | 0.535 | [0.466, 0.603] |
+| archer vs cavalry | 0.525 | [0.456, 0.593] |
+| cavalry vs infantry | 0.410 | [0.344, 0.479] |
+
+The archer nerf moved the infantry matchup (+0.18 for infantry) twice
+as far as the cavalry one (-0.065): the inf-arch edge overshot and
+arch-cav landed dead even. Round 3 (final): archer range 42 (between
+the two proven points) and cavalry speed back to 4.5 (the strongest
+catch-up lever, with the proven hp/damage values):
+
+| matchup | type-A share | 95% CI |
+| --- | --- | --- |
+| infantry vs archer | 0.525 | [0.456, 0.593] |
+| archer vs cavalry | 0.495 | [0.426, 0.564] |
+| cavalry vs infantry | 0.465 | [0.397, 0.534] |
+
+### The honest result: balanced, not cyclic
+
+After the three allowed rounds every directed win share sits within
+0.035 of even: infantry beats archer (0.525) and cavalry (0.535),
+cavalry beats archer by a coin flip (0.505), and the archer beats
+nobody — by margins of 0.005 and 0.025. Read against the acceptance
+criteria: **"no type wins everything" passes** (the legacy table was
+cavalry 200/0 against both); **"each type beats >= 1" fails on the
+archer**, whose two losses are both coin flips.
+
+What the rounds demonstrate structurally: pure stat tuning converges to
+an all-even state rather than a cycle, because the engine's macro
+dynamics couple the matchups through shared stats. Archers beat
+whoever closes slowly and lose to whoever closes fast — kiting speed
+(2.3 vs infantry 2.0) was the one asymmetric edge that held every
+round, and it cannot point at cavalry without also pointing at
+infantry. Every cavalry knob moves cav-arch and cav-inf together
+(rounds 2->3: speed 4.0 -> 4.5 moved both +0.03/-0.055 together); every
+infantry knob moves inf-arch and inf-cav together. A strict RPS cycle
+needs a matchup-specific mechanism (bonus-vs-type damage tables, or
+formation-based counters), which is engine design, not unit data — out
+of scope for a data-first item. The shipped `units-balanced.json` is
+the round-3 table: six competitive matchups, costs
+1.0/1.4/2.4/3.0, legacy units.json untouched.
+
+### The balanced demo
+
+`battle_cli --config data/units-balanced.json --scenario
+data/scenarios/balanced-demo.json` — two different 300-point armies
+(red infantry-archer weighted, blue cavalry weighted; seed 42: Red wins
+at t350 by routed_threshold, 28 vs 71 dead). The demo fields no squads:
+budget armies are size-elastic (the fill follows the costs) while squad
+plans pin exact soldier counts, so the two forms do not compose — a
+size-elastic squad plan is the follow-up that would let budget armies
+form up.

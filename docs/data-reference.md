@@ -94,6 +94,8 @@ battle_cli --config data/units-balanced.json \
 ```
 
 Both sides spend the same budget on different mixes (red is
-infantry-archer weighted, blue cavalry weighted), so the demo stays
-fair when a mod or tuning round changes the stats — re-run the same
-scenario and the fill re-equalizes from the new costs.
+infantry-archer weighted, blue cavalry weighted), so the fill
+re-equalizes from the current costs. The demo fields no squads:
+budget armies are size-elastic (the fill follows the costs) while
+squad plans pin exact soldier counts, so the two forms do not
+compose.

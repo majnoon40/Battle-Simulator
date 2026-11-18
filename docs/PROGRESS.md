@@ -20,7 +20,7 @@ milestone-N.md files); this table is the index.
 | m13 item 4 — deterministic threads (--threads, worker pool, --profile-phases) | merged | #11 | 2026-11-18 |
 | m13 item P — performance regression (routed-ally probe memo, byte-identical) | in this PR | #12 | 2026-11-18 |
 | m13 item H(a) — hold arm kill attribution + Search analysis (report, tool) | in this PR | #13 | 2026-11-18 |
-| m13 item H(b) — cost field + budget armies + RPS tuning | in progress (engine done, round 1/3 measured; branch m13-units-balanced) | — | — |
+| m13 item H(b) — cost field + budget armies + 3 measured tuning rounds (balanced, not cyclic — honest miss on the strict RPS cycle) | in this PR | #14 | 2026-11-18 |
 | m13 item 5a — battle view (minimap, selection, order UI, markers) | pending | — | — |
 | m13 item 5b — end screen + replay viewer | pending | — | — |
 | m13 item 5c — setup editor + settings + scenario save/load | pending | — | — |
