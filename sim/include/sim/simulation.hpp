@@ -536,8 +536,7 @@ class Simulation {
   };
 
   void compute_decision_inputs(std::size_t index, DecisionInputs& out,
-                               std::vector<std::uint32_t>& perceive_buffer,
-                               std::vector<std::uint32_t>& probe_buffer);
+                               std::vector<std::uint32_t>& perceive_buffer);
   [[nodiscard]] Action finish_unit_decision(
       std::size_t index, const DecisionInputs& inputs,
       const std::array<std::size_t, kFactionCount>& estimate_dropper,
@@ -590,15 +589,28 @@ class Simulation {
   std::vector<std::uint8_t> action_commit_{};   // commit ticks left per unit
   // m13 item 4: the persistent worker pool (null with thread_count <= 1 —
   // every phase then runs inline on the simulation thread, byte-identical
-  // to the pre-threads binary), the per-worker radius-query scratch
-  // buffers (index 0 is the simulation thread itself in inline mode), the
+  // to the pre-threads binary), the per-worker perception scratch buffer
+  // (index 0 is the simulation thread itself in inline mode), the
   // preallocated per-unit decision-input slots of the parallel pass, and
   // the fixed decision chunk size (independent of the worker count).
+  // (m13 item P: the second per-worker buffer went away with the
+  // routed-ally probe it served — the probe is memoized per routed unit
+  // before the pass, so pass A no longer queries at all.)
   static constexpr std::size_t kDecisionChunkUnits = 256;
   std::unique_ptr<ThreadPool> thread_pool_;
   std::vector<std::vector<std::uint32_t>> worker_perceive_{};
-  std::vector<std::vector<std::uint32_t>> worker_probe_{};
   std::vector<DecisionInputs> decide_inputs_{};
+  // m13 item P: per-tick memo of the avail-v2 routed-ally Help gate. The
+  // gate asks, per helper and visible routed ally, "does this routed ally
+  // have a living enemy within help.routed_help_enemy_distance?" — the
+  // answer depends only on the routed ally and the tick-start grid, so it
+  // is computed once per routed in-need unit by a pre-pass before the
+  // parallel decision phase instead of once per (helper, ally) pair
+  // inside it (measured on perf-5000: ~5,081 redundant queries per tick,
+  // ~37% of the whole tick). Values: 0 = not probed this tick, 1 = no
+  // living enemy in reach, 2 = a living enemy is in reach.
+  std::vector<std::uint8_t> routed_probe_{};
+  std::vector<std::uint32_t> routed_probe_buffer_{};  // pre-pass scratch
   std::array<std::array<std::uint64_t, kActionCount>, kFactionCount>
       action_counts_{};  // cumulative per-faction action totals
   // Morale and routing state (M5).
