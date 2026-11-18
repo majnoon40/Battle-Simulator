@@ -15,8 +15,9 @@
 
 namespace render::ui {
 
-// The screens.
-enum class Screen : std::uint8_t { Menu, Scenario, Battle };
+// The screens. m13 item 5b adds End (the battle-over screen) and
+// Replay (the replay viewer list).
+enum class Screen : std::uint8_t { Menu, Scenario, Battle, End, Replay };
 
 // Stable widget ids across the screens.
 inline constexpr const char* kIdNewBattle = "new-battle";
@@ -25,6 +26,18 @@ inline constexpr const char* kIdQuit = "quit";
 inline constexpr const char* kIdScenarioList = "scenario-list";
 inline constexpr const char* kIdStart = "start";
 inline constexpr const char* kIdBack = "back";
+// m13 item 5b.
+inline constexpr const char* kIdReplays = "replays";        // menu button
+inline constexpr const char* kIdReplayList = "replay-list"; // Select
+inline constexpr const char* kIdLoad = "load";
+inline constexpr const char* kIdVerify = "verify";
+inline constexpr const char* kIdReplayStatus = "replay-status";
+inline constexpr const char* kIdEndTitle = "end-title";
+inline constexpr const char* kIdEndResult = "end-result";
+inline constexpr const char* kIdEndCasualties = "end-casualties";
+inline constexpr const char* kIdRematch = "rematch";
+inline constexpr const char* kIdSaveReplay = "save-replay";
+inline constexpr const char* kIdSaveReport = "save-report";
 
 // The whole sandbox UI: the active screen and its three states.
 struct App {
@@ -32,8 +45,11 @@ struct App {
   State menu;
   State scenario;
   State battle;
+  State end;      // m13 item 5b: the battle-over screen
+  State replay;   // m13 item 5b: the replay viewer list
   bool quit = false;            // the Quit button was clicked
   std::string chosen_scenario;  // the scenario Start picked ("" = none)
+  std::string chosen_replay;    // the replay Load picked ("" = none)
   int width = 0;
   int height = 0;
 
@@ -45,6 +61,10 @@ struct App {
         return scenario;
       case Screen::Battle:
         break;
+      case Screen::End:
+        return end;
+      case Screen::Replay:
+        return replay;
     }
     return battle;
   }
@@ -54,10 +74,12 @@ struct App {
 };
 
 // Builds the app: the menu screen active, the scenario list filled
-// with `scenarios` (in the given order), the battle screen from
-// demo_state. All three states are laid out for width x height.
-[[nodiscard]] App sandbox_app(int width, int height,
-                              const std::vector<std::string>& scenarios);
+// with `scenarios` and the replay list with `replays` (in the given
+// orders), the battle screen from demo_state. All states are laid out
+// for width x height. m13 item 5b adds the End and Replay screens.
+[[nodiscard]] App sandbox_app(
+    int width, int height, const std::vector<std::string>& scenarios,
+    const std::vector<std::string>& replays = {});
 
 // The screen-level reducer: routes the event to the active screen's
 // state (through the pure ui::reduce), then applies navigation clicks

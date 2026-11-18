@@ -20,6 +20,7 @@
 
 #include "cli/cli_args.hpp"
 #include "cli/replay.hpp"
+#include "cli/replay_runtime.hpp"
 #include "cli/report.hpp"
 #include "cli/trace.hpp"
 #include "sim/replay.hpp"
@@ -1047,60 +1048,26 @@ int run_with_replay(const cli::Arguments& args,
                          (a.tick == b.tick && a.unit < b.unit);
                 });
     }
-    std::size_t next_intervention = 0;
-    std::size_t next_order = 0;
     // m11b: replaying applies the recorded orders; recording applies the
-    // --script orders (both ascending by tick).
+    // --script orders (both ascending by tick). m13 item 5b: the loop is
+    // the shared cli::ReplayDriver (the window's replay viewer runs the
+    // exact same semantics); warnings surface exactly as before.
     const std::vector<cli::OrderIntervention>& order_script =
         args.replay_on ? replay_data.order_interventions : script_orders;
-    std::size_t next_checkpoint = 0;
-    bool mismatch = false;
-    while (!simulation.finished()) {
-      const std::uint64_t upcoming = simulation.world().tick_count + 1;
-      while (next_intervention < interventions.size() &&
-             interventions[next_intervention].tick <= upcoming) {
-        if (!simulation.intervene_kill(interventions[next_intervention].unit)) {
-          std::cerr << "warning: intervention kill: unit "
-                    << interventions[next_intervention].unit
-                    << " at tick " << interventions[next_intervention].tick
-                    << " has no effect (unknown or already dead id)\n";
-        }
-        ++next_intervention;
-      }
-      while (next_order < order_script.size() &&
-             order_script[next_order].tick <= upcoming) {
-        apply_script_order(order_script[next_order]);
-        ++next_order;
-      }
-      simulation.tick();
-      const std::uint64_t tick = simulation.world().tick_count;
-      const bool checkpoint =
-          tick % 25 == 0 || simulation.finished() ||
-          (args.replay_seek != 0 && tick >= args.replay_seek);
-      if (!checkpoint) {
-        continue;
-      }
-      const std::string hash = simulation.state_hash();
-      if (args.record_on) {
-        replay_data.hashes.emplace_back(tick, hash);
-      } else {
-        if (next_checkpoint < replay_data.hashes.size() &&
-            replay_data.hashes[next_checkpoint].first == tick) {
-          if (replay_data.hashes[next_checkpoint].second != hash) {
-            std::cout << "replay verification FAILED\n"
-                      << "  first mismatching tick: " << tick << "\n"
-                      << "  expected "
-                      << replay_data.hashes[next_checkpoint].second
-                      << "\n  got      " << hash << "\n";
-            mismatch = true;
-            break;
-          }
-          ++next_checkpoint;
-        }
-      }
-      if (args.replay_seek != 0 && tick >= args.replay_seek) {
-        break;  // --seek T: stop here (cost: a full re-run from tick 0)
-      }
+    std::vector<std::string> driver_warnings;
+    cli::ReplayDriver driver(simulation, interventions, order_script);
+    const cli::ReplayDriver::RunResult run = driver.run(
+        args.replay_seek, args.record_on ? &replay_data : nullptr,
+        args.replay_on ? &replay_data : nullptr, &driver_warnings);
+    for (const std::string& warning : driver_warnings) {
+      std::cerr << warning << "\n";
+    }
+    const bool mismatch = run.mismatch;
+    if (mismatch) {
+      std::cout << "replay verification FAILED\n"
+                << "  first mismatching tick: " << run.mismatch_tick << "\n"
+                << "  expected " << run.expected << "\n"
+                << "  got      " << run.got << "\n";
     }
     if (args.record_on) {
       replay_data.version = sim::kSimVersion;
@@ -1142,10 +1109,10 @@ int run_with_replay(const cli::Arguments& args,
     } else if (mismatch) {
       return 2;
     } else if (args.replay_verify) {
-      if (next_checkpoint < replay_data.hashes.size()) {
+      if (run.checkpoints_verified < replay_data.hashes.size()) {
         std::cout << "replay verification FAILED\n  replay ended at tick "
                   << simulation.world().tick_count << " with "
-                  << replay_data.hashes.size() - next_checkpoint
+                  << replay_data.hashes.size() - run.checkpoints_verified
                   << " unverified checkpoints\n";
         return 2;
       }

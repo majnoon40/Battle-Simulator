@@ -24,6 +24,7 @@
 // select) reach the screens; the pointer over UI panels belongs to the
 // UI. The sim runs at 60 ticks/s at 1x.
 #include <chrono>
+#include <fstream>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -34,6 +35,10 @@
 
 #include "cli/cli_args.hpp"
 #include "game/accumulator.hpp"
+#include "cli/replay.hpp"
+#include "cli/replay_runtime.hpp"
+#include "cli/report.hpp"
+#include "game/battle_input.hpp"
 #include "game/camera.hpp"
 #include "game/picking.hpp"
 #include "game/theme.hpp"
@@ -43,6 +48,7 @@
 #include "render/ui/screens.hpp"
 #include "render/ui/shell.hpp"
 #include "sim/config.hpp"
+#include "sim/version.hpp"
 #include "sim/scenario.hpp"
 #include "sim/simulation.hpp"
 #include "sim/squads.hpp"
@@ -251,6 +257,34 @@ int main(int argc, char** argv) {
   const render::ui::Theme ui_theme = render::ui::default_theme();
   render::ui::BattleView view;  // pause/speed/options/zoom from the UI
   std::string loaded_scenario = scenario_name;  // what the sim runs now
+  // m13 item 5a: multi-squad selection + click/drag bookkeeping. The
+  // press positions distinguish a click from a drag (left: pick vs
+  // rect-select; right: order vs pan). Pure policy lives in
+  // game/battle_input (headless-tested); this loop only feeds facts.
+  game::SquadSelection selection;
+  bool show_minimap = true;  // the window's interactive layers (M toggles)
+  Vector2 left_press{0.0f, 0.0f};
+  Vector2 right_press{0.0f, 0.0f};
+  bool left_pressed_battle = false;
+  bool right_pressed_battle = false;
+  bool left_pressed_minimap = false;
+  // m13 item 5b: the end screen + replay viewer state. The window
+  // records per-tick alive counts (the end-screen curves), state-hash
+  // checkpoints every 25 ticks and its own issued orders (the 5a order
+  // paths) so Save replay writes exactly what --record would. In
+  // replay mode the accumulator stops driving the sim: , / . seek
+  // (a seek is a full re-run from tick 0, like --seek), Home jumps to
+  // the start, End runs to the end.
+  std::vector<std::uint32_t> alive_red;
+  std::vector<std::uint32_t> alive_blue;
+  cli::ReplayData live_replay;
+  sim::EventRecorder window_events;
+  bool end_shown = false;
+  bool replay_mode = false;
+  cli::ReplayData replay_data;
+  cli::Arguments replay_args;
+  std::uint64_t replay_tick = 0;
+  std::string replay_error;
 
   // (Re)builds the battle for a scenario stem; resets every viewer
   // state exactly like R (restart) does.
@@ -262,6 +296,7 @@ int main(int argc, char** argv) {
     scenario_args.scenario_path = path;
     config = build_config(scenario_args, types, picked, personalities,
                           morale, formations, commanders, scenario_name);
+    config.events = &window_events;
     simulation = sim::Simulation(config);
     camera = game::Camera::fit(simulation.world().width,
                                simulation.world().height,
@@ -271,8 +306,14 @@ int main(int argc, char** argv) {
     sim_ticks_done = 0;
     paused = false;
     finished = false;
+    end_shown = false;
+    replay_mode = false;
+    alive_red.clear();
+    alive_blue.clear();
+    live_replay = cli::ReplayData{};
     options.selected_unit = -1;
     options.selected_squad = -1;
+    selection = game::SquadSelection{};
     loaded_scenario = stem;
   };
 
@@ -287,6 +328,20 @@ int main(int argc, char** argv) {
                                     scenario_names);
     }
     const bool in_battle = app.screen == render::ui::Screen::Battle;
+
+    // m13 item 5b: refresh the replay list on entering the viewer (new
+    // files may have appeared; a resize rebuild already refreshes it).
+    static render::ui::Screen previous_screen = render::ui::Screen::Menu;
+    if (app.screen == render::ui::Screen::Replay &&
+        previous_screen != render::ui::Screen::Replay) {
+      const std::vector<std::string> replay_names =
+          render::ui::list_replays(".");
+      const render::ui::Screen target = app.screen;
+      app = render::ui::sandbox_app(screen_width, screen_height,
+                                    scenario_names, replay_names);
+      app.screen = target;
+    }
+    previous_screen = app.screen;
 
     // --- UI events: raylib input -> ui::Event -> reduce_app -----------
     {
@@ -378,14 +433,215 @@ int main(int argc, char** argv) {
       }
     }
 
+    // --- m13 item 5b: the replay viewer ---------------------------------
+    if (app.screen == render::ui::Screen::Replay) {
+      const render::ui::ReplayClicks clicks =
+          render::ui::replay_clicks(app.replay);
+      const auto set_status = [&app](const std::string& text) {
+        for (render::ui::Widget& widget : app.replay.tree.widgets) {
+          if (widget.id == render::ui::kIdReplayStatus) {
+            widget.text = text;
+          }
+        }
+      };
+      const auto selected_path = [&]() -> std::string {
+        if (clicks.load_stem.empty()) {
+          return "";
+        }
+        return clicks.load_stem + ".replay";
+      };
+      // Load: parse, version-check, rebuild the sim from the recorded
+      // setup and switch to the battle screen in replay mode at tick 0.
+      if (clicks.load && !selected_path().empty()) {
+        std::string error;
+        cli::ReplayData data;
+        if (!cli::parse_replay(selected_path(), data, error)) {
+          set_status("parse FAILED: " + error);
+        } else if (data.version != sim::kSimVersion) {
+          set_status("version mismatch: recorded " + data.version +
+                     ", binary " + sim::kSimVersion);
+        } else if (data.mod != "-") {
+          set_status("replay needs a mod; the window loads no mods");
+        } else {
+          replay_data = data;
+          replay_args = cli::arguments_from_replay(replay_data);
+          const sim::Scenario scenario =
+              sim::parse_scenario(read_file(replay_data.scenario,
+                                            "scenario"));
+          std::string name;
+          config = build_config(replay_args, types, scenario,
+                                personalities, morale, formations,
+                                commanders, name);
+          config.orders_enabled = replay_data.orders == "on";
+          simulation = sim::Simulation(config);
+          replay_mode = true;
+          replay_tick = 0;
+          finished = simulation.finished();
+          camera = game::Camera::fit(simulation.world().width,
+                                     simulation.world().height,
+                                     screen_width, screen_height);
+          base_zoom = camera.zoom;
+          accumulator.reset();
+          end_shown = false;
+          alive_red.clear();
+          alive_blue.clear();
+          selection = game::SquadSelection{};
+          app.screen = render::ui::Screen::Battle;
+        }
+      } else if (clicks.verify && !selected_path().empty()) {
+        std::string error;
+        cli::ReplayData data;
+        if (!cli::parse_replay(selected_path(), data, error)) {
+          set_status("parse FAILED: " + error);
+        } else if (data.version != sim::kSimVersion) {
+          set_status("version mismatch: recorded " + data.version);
+        } else if (data.mod != "-") {
+          set_status("replay needs a mod; the window loads no mods");
+        } else {
+          const cli::Arguments verify_args =
+              cli::arguments_from_replay(data);
+          const sim::Scenario scenario =
+              sim::parse_scenario(read_file(data.scenario, "scenario"));
+          std::string name;
+          sim::SimulationConfig verify_config = build_config(
+              verify_args, types, scenario, personalities, morale,
+              formations, commanders, name);
+          verify_config.orders_enabled = data.orders == "on";
+          sim::Simulation verify(verify_config);
+          cli::ReplayDriver driver(verify, data.interventions,
+                                   data.order_interventions);
+          const cli::ReplayDriver::RunResult run =
+              driver.run(0, nullptr, &data);
+          if (run.mismatch) {
+            set_status("MISMATCH at tick " +
+                       std::to_string(run.mismatch_tick));
+          } else if (run.checkpoints_verified < data.hashes.size()) {
+            set_status("FAILED: replay ended at t" +
+                       std::to_string(run.last_tick) + " with " +
+                       std::to_string(data.hashes.size() -
+                                      run.checkpoints_verified) +
+                       " unverified checkpoints");
+          } else {
+            set_status("verified: " +
+                       std::to_string(data.hashes.size()) +
+                       " checkpoints over " +
+                       std::to_string(run.last_tick) + " ticks");
+          }
+        }
+      }
+    }
+
     // --- battle-screen controls from the UI ---------------------------
     if (in_battle) {
       view = render::ui::apply_battle_frame(app, view, base_zoom);
-      options = view.options;
-      paused = view.paused;
-      accumulator.set_speed(view.speed);
+      if (!replay_mode) {
+        options = view.options;
+        paused = view.paused;
+        accumulator.set_speed(view.speed);
+      } else {
+        // Replay mode: the scrub keys drive the sim; the playback
+        // widgets are ignored (seeking re-runs from tick 0, so free
+        // running would desync from the recorded checkpoints).
+        options = view.options;
+        paused = true;
+      }
       camera.zoom = view.zoom;
       camera.clamp_zoom();
+    }
+
+    // --- m13 item 5b: the end screen ------------------------------------
+    if (in_battle && simulation.finished() && !end_shown) {
+      end_shown = true;
+      app.screen = render::ui::Screen::End;
+      const sim::BattleResult result = simulation.result();
+      std::string line = "draw";
+      if (result.has_winner) {
+        line = std::string(sim::to_string(result.winner)) + " wins - " +
+               sim::to_string(result.reason) + " (t" +
+               std::to_string(result.ticks_elapsed) + ")";
+      } else {
+        line = std::string("draw - ") + sim::to_string(result.reason) +
+               " (t" + std::to_string(result.ticks_elapsed) + ")";
+      }
+      const auto faction_index = [](sim::Faction faction) {
+        return static_cast<std::size_t>(faction);
+      };
+      const std::string casualties =
+          "Red " +
+          std::to_string(result.factions[faction_index(sim::Faction::Red)]
+                             .deaths) +
+          " dead / " +
+          std::to_string(result.factions[faction_index(sim::Faction::Red)]
+                             .survivors) +
+          " left   |   Blue " +
+          std::to_string(
+              result.factions[faction_index(sim::Faction::Blue)].deaths) +
+          " dead / " +
+          std::to_string(
+              result.factions[faction_index(sim::Faction::Blue)].survivors) +
+          " left";
+      for (render::ui::Widget& widget : app.end.tree.widgets) {
+        if (widget.id == render::ui::kIdEndResult) {
+          widget.text = line;
+        } else if (widget.id == render::ui::kIdEndCasualties) {
+          widget.text = casualties;
+        }
+      }
+    }
+    if (app.screen == render::ui::Screen::End) {
+      const render::ui::EndClicks clicks = render::ui::end_clicks(app.end);
+      if (clicks.rematch) {
+        load_scenario(loaded_scenario);
+        app.screen = render::ui::Screen::Battle;
+      } else if (clicks.save_replay) {
+        live_replay.version = sim::kSimVersion;
+        live_replay.scenario =
+            "data/scenarios/" + loaded_scenario + ".json";
+        live_replay.mod = "-";
+        live_replay.seed = config.seed;
+        live_replay.ticks = config.max_ticks;
+        live_replay.variance = config.tactics_enabled ? "on" : "off";
+        live_replay.contact_seek =
+            config.contact_seek_enabled ? "on" : "off";
+        live_replay.neighbor =
+            config.ai_mode == sim::AiMode::Utility ? "grid" : "brute";
+        live_replay.squads = config.squads_enabled ? "on" : "off";
+        live_replay.swap_sides = "off";
+        live_replay.nav = config.nav_v2 ? "v2" : "v1";
+        live_replay.ai_avail = config.ai_avail_v2 ? "v2" : "v1";
+        live_replay.end = config.end_v2 ? "v2" : "v1";
+        live_replay.combat = config.combat_v2 ? "v2" : "v1";
+        live_replay.orders = config.orders_enabled ? "on" : "off";
+        const std::string path = loaded_scenario + ".replay";
+        if (cli::write_replay(path, live_replay)) {
+          for (render::ui::Widget& widget : app.end.tree.widgets) {
+            if (widget.id == render::ui::kIdEndResult) {
+              widget.text = "replay saved: " + path;
+            }
+          }
+        } else {
+          for (render::ui::Widget& widget : app.end.tree.widgets) {
+            if (widget.id == render::ui::kIdEndResult) {
+              widget.text = "replay save FAILED: " + path;
+            }
+          }
+        }
+      } else if (clicks.save_report) {
+        cli::ReportMeta meta;
+        meta.scenario = scenario_name;
+        meta.seed = config.seed;
+        const std::string markdown = cli::generate_report_markdown(
+            simulation, &window_events, types, meta);
+        const std::string path = loaded_scenario + "-report.md";
+        std::ofstream out(path);
+        out << markdown;
+        for (render::ui::Widget& widget : app.end.tree.widgets) {
+          if (widget.id == render::ui::kIdEndResult) {
+            widget.text = out.good() ? "report saved: " + path
+                                     : "report save FAILED: " + path;
+          }
+        }
+      }
     }
     const render::ui::Point pointer{
         static_cast<int>(GetMousePosition().x),
@@ -404,7 +660,7 @@ int main(int argc, char** argv) {
       accumulator.set_speed(
           game::TickAccumulator::speed_down(accumulator.speed()));
     }
-    if (paused && IsKeyPressed(KEY_PERIOD)) {
+    if (paused && IsKeyPressed(KEY_PERIOD) && !replay_mode) {
       simulation.tick();  // step one tick
       ++sim_ticks_done;
     }
@@ -422,6 +678,7 @@ int main(int argc, char** argv) {
       finished = false;
       options.selected_unit = -1;
       options.selected_squad = -1;
+      selection = game::SquadSelection{};
     }
     if (IsKeyPressed(KEY_N)) {  // new seed
       const auto now = std::chrono::steady_clock::now().time_since_epoch();
@@ -434,6 +691,7 @@ int main(int argc, char** argv) {
       finished = false;
       options.selected_unit = -1;
       options.selected_squad = -1;
+      selection = game::SquadSelection{};
     }
     if (IsKeyPressed(KEY_L)) {
       options.squad_links = !options.squad_links;
@@ -453,6 +711,67 @@ int main(int argc, char** argv) {
     if (IsKeyPressed(KEY_H)) {
       options.show_hud = !options.show_hud;
     }
+    // m13 item 5b: replay scrubbing. A seek is a full re-run from
+    // tick 0 (the --seek semantics), driven through the shared
+    // ReplayDriver so interventions and recorded orders land exactly
+    // as recorded. , / . step 25 ticks, Home restarts, End finishes.
+    if (replay_mode) {
+      const auto seek = [&](std::uint64_t target) {
+        simulation = sim::Simulation(config);
+        cli::ReplayDriver driver(simulation, replay_data.interventions,
+                                 replay_data.order_interventions);
+        const cli::ReplayDriver::RunResult run =
+            driver.run(target, nullptr, nullptr);
+        replay_tick = simulation.world().tick_count;
+        finished = simulation.finished();
+        alive_red.clear();
+        alive_blue.clear();
+        selection = game::SquadSelection{};
+      };
+      std::uint64_t target = 0;
+      bool seek_now = false;
+      if (IsKeyPressed(KEY_COMMA)) {
+        target = replay_tick > 25 ? replay_tick - 25 : 1;
+        seek_now = true;
+      } else if (IsKeyPressed(KEY_PERIOD)) {
+        target = replay_tick + 25;
+        seek_now = true;
+      } else if (IsKeyPressed(KEY_HOME)) {
+        target = 1;
+        seek_now = true;
+      } else if (IsKeyPressed(KEY_END)) {
+        target = 0;  // run to the end
+        seek_now = true;
+      }
+      if (seek_now) {
+        seek(target);
+      }
+    }
+    // m13 item 5a: order hotkeys on the multi-squad selection
+    // (1/2/3 = Hold/Retreat/Regroup) and the minimap toggle. The
+    // intents route through the pure game:: policy and land in the sim
+    // through issue_order, exactly like --script. Never in replay mode
+    // (extra orders would desync the recorded checkpoints).
+    if (IsKeyPressed(KEY_ONE) && !replay_mode) {
+      const game::OrderIntent intent =
+          game::order_from_hotkey(selection, game::OrderType::Hold);
+      static_cast<void>(game::apply_order(simulation, intent));
+    }
+    if (IsKeyPressed(KEY_TWO) && !replay_mode) {
+      const game::OrderIntent intent =
+          game::order_from_hotkey(selection, game::OrderType::Retreat);
+      static_cast<void>(game::apply_order(simulation, intent));
+    }
+    if (IsKeyPressed(KEY_THREE) && !replay_mode) {
+      const game::OrderIntent intent =
+          game::order_from_hotkey(selection, game::OrderType::Regroup);
+      static_cast<void>(game::apply_order(simulation, intent));
+    }
+    if (IsKeyPressed(KEY_M)) {
+      show_minimap = !show_minimap;
+    }
+    options.show_minimap = show_minimap;
+    options.show_order_markers = true;
     }
     // Pan: held keys and right-drag (pixels per second at 1x speed feel).
     // Arrow keys pan only when the UI does not own them.
@@ -503,31 +822,105 @@ int main(int argc, char** argv) {
         }
       }
     }
-    // Click: unit first, then squad badge — never through the UI.
+    // m13 item 5a: left press/release. A press inside the minimap jumps
+    // the camera there on release; a drag (> 6 px) rect-selects every
+    // Red squad touched; a plain click picks a unit first, then a squad
+    // badge (the m11 rule), and the multi-selection follows the pick.
+    // Never through the UI chrome.
     if (in_battle && !pointer_over_ui &&
         IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      left_press = GetMousePosition();
+      left_pressed_battle = true;
+      const game::MinimapGeometry geometry = game::minimap_geometry(
+          screen_width, screen_height, simulation.world().width,
+          simulation.world().height);
+      left_pressed_minimap = game::minimap_covers(
+          geometry, static_cast<int>(left_press.x),
+          static_cast<int>(left_press.y));
+    }
+    if (in_battle && left_pressed_battle &&
+        IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       const Vector2 mouse = GetMousePosition();
-      const std::int32_t unit = game::pick_unit(
-          simulation, camera, screen_width, screen_height, mouse.x, mouse.y,
-          8.0);
-      if (unit >= 0) {
-        options.selected_unit = unit;
-        options.selected_squad =
-            simulation.unit_squad_info(static_cast<std::size_t>(unit))
-                .squad_id;
-        // Arm the debug capture so the inspector shows live scores.
-        sim::AiDebugCapture capture;
-        capture.unit_id =
-            simulation.world().units[static_cast<std::size_t>(unit)].id;
-        capture.tick = simulation.tick_index() + 1;
-        capture.explicit_tick = true;
-        simulation.set_ai_debug(capture);
-      } else {
+      const float dx = mouse.x - left_press.x;
+      const float dy = mouse.y - left_press.y;
+      const bool drag = dx * dx + dy * dy > 36.0f;  // > 6 px
+      const bool shift =
+          IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+      if (left_pressed_minimap) {
+        const game::MinimapGeometry geometry = game::minimap_geometry(
+            screen_width, screen_height, simulation.world().width,
+            simulation.world().height);
+        camera.center_x = game::world_x_from_minimap(
+            geometry, static_cast<double>(mouse.x));
+        camera.center_y = game::world_y_from_minimap(
+            geometry, static_cast<double>(mouse.y));
+      } else if (drag) {
+        selection = game::select_squad_rect(
+            simulation, selection,
+            camera.world_x(left_press.x, screen_width),
+            camera.world_y(left_press.y, screen_height),
+            camera.world_x(mouse.x, screen_width),
+            camera.world_y(mouse.y, screen_height), shift);
         options.selected_unit = -1;
-        options.selected_squad = game::pick_squad(
+        options.selected_squad =
+            selection.empty() ? -1
+                              : static_cast<std::int32_t>(
+                                    selection.squads.front());
+      } else {
+        const std::int32_t unit = game::pick_unit(
             simulation, camera, screen_width, screen_height, mouse.x,
-            mouse.y, 10.0);
+            mouse.y, 8.0);
+        if (unit >= 0) {
+          options.selected_unit = unit;
+          const auto info =
+              simulation.unit_squad_info(static_cast<std::size_t>(unit));
+          options.selected_squad = info.squad_id;
+          selection = game::select_squad_click(
+              selection, info.squad_id, shift);
+          // Arm the debug capture so the inspector shows live scores.
+          sim::AiDebugCapture capture;
+          capture.unit_id =
+              simulation.world().units[static_cast<std::size_t>(unit)].id;
+          capture.tick = simulation.tick_index() + 1;
+          capture.explicit_tick = true;
+          simulation.set_ai_debug(capture);
+        } else {
+          options.selected_unit = -1;
+          const std::int32_t squad = game::pick_squad(
+              simulation, camera, screen_width, screen_height, mouse.x,
+              mouse.y, 10.0);
+          options.selected_squad = squad;
+          selection = game::select_squad_click(selection, squad, shift);
+        }
       }
+      left_pressed_battle = false;
+      left_pressed_minimap = false;
+    }
+    // m13 item 5a: right-click without a drag issues MoveTo (shift =
+    // AttackMove) to the world point on the whole selection; a right
+    // drag still pans (the pan block above runs on the held button).
+    if (in_battle && !pointer_over_ui &&
+        IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+      right_press = GetMousePosition();
+      right_pressed_battle = true;
+    }
+    if (in_battle && right_pressed_battle &&
+        IsMouseButtonReleased(MOUSE_BUTTON_RIGHT)) {
+      const Vector2 mouse = GetMousePosition();
+      const float dx = mouse.x - right_press.x;
+      const float dy = mouse.y - right_press.y;
+      if (dx * dx + dy * dy <= 36.0f) {  // a click, not a pan drag
+        if (!replay_mode) {
+          const bool attack =
+              IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+          const game::OrderIntent intent = game::order_from_right_click(
+              selection, attack,
+              camera.world_x(mouse.x, screen_width),
+              camera.world_y(mouse.y, screen_height));
+          static_cast<void>(game::apply_order(simulation, intent));
+        }
+      }
+      right_pressed_battle = false;
     }
 
     // --- simulation ------------------------------------------------------
@@ -548,6 +941,16 @@ int main(int argc, char** argv) {
       const double before = GetTime();
       for (int i = 0; i < ticks; ++i) {
         simulation.tick();
+        // m13 item 5b: the end-screen curves + the replay checkpoints
+        // (every 25th tick and the final one — the --record rule).
+        alive_red.push_back(simulation.world().alive_count(
+            sim::Faction::Red));
+        alive_blue.push_back(simulation.world().alive_count(
+            sim::Faction::Blue));
+        const std::uint64_t tick = simulation.world().tick_count;
+        if (tick % 25 == 0 || simulation.finished()) {
+          live_replay.hashes.emplace_back(tick, simulation.state_hash());
+        }
       }
       sim_seconds += GetTime() - before;
       sim_ticks_done += static_cast<std::uint64_t>(ticks);
@@ -569,11 +972,33 @@ int main(int argc, char** argv) {
     stats.speed = accumulator.speed();
     stats.limited = limited;
     stats.scenario_name = scenario_name;
+    options.selected_squads.clear();
+    for (std::uint32_t id : selection.squads) {
+      options.selected_squads.push_back(static_cast<std::int32_t>(id));
+    }
     render::DrawList list = render::build_battle_draw_list(
         simulation, camera, options, screen_width, screen_height, stats);
-    if (!in_battle) {
+    // The menu / picker / replay-list screens draw over a plain
+    // background; the end screen keeps the final battle frame under
+    // its panel and adds the casualty curves (m13 item 5b).
+    if (!in_battle && app.screen != render::ui::Screen::End) {
       list.background = game::background_color();
       list.cmds.clear();
+    }
+    if (app.screen == render::ui::Screen::End) {
+      render::draw_end_curves(list, 8.0, 64.0,
+                              static_cast<double>(screen_width) / 2.0 - 16.0,
+                              220.0, alive_red, alive_blue);
+    }
+    if (in_battle && replay_mode) {
+      for (render::ui::Widget& widget : app.battle.tree.widgets) {
+        if (widget.id == "status") {
+          widget.text = "replay t" + std::to_string(replay_tick) +
+                        " / " +
+                        std::to_string(simulation.world().tick_count) +
+                        "  (, . Home End seek)";
+        }
+      }
     }
     render::ui::draw_ui(app.active(), ui_theme, list);
 

@@ -849,3 +849,87 @@ budget armies are size-elastic (the fill follows the costs) while squad
 plans pin exact soldier counts, so the two forms do not compose — a
 size-elastic squad plan is the follow-up that would let budget armies
 form up.
+
+## Item 5a — the battle view: minimap, selection, orders (branch
+m13-battle-view)
+
+The m11d spec's remaining battle-view features, built on the item-1
+window wiring with the same shell policy: everything rule-shaped is a
+pure function in `game/battle_input` (headless-tested,
+tests/test_battle_input.cpp), and the window only feeds mouse/key
+facts and renders.
+
+- **Selection** (`game::SquadSelection`, sorted unique squad ids): a
+  plain left-click still picks a unit first, then a squad badge — and
+  now also drives the multi-selection; shift-click adds or toggles; a
+  left drag (> 6 px) rectangle-selects every Red squad with an alive
+  member inside (shift adds); clicking nothing clears (shift keeps).
+  The renderer rings every alive member of each selected squad (a 2 px
+  mark below the point-zoom threshold).
+- **Orders**: right-click issues MoveTo to the world point on the whole
+  selection (shift = AttackMove); 1 / 2 / 3 issue Hold / Retreat /
+  Regroup. Intents route through `apply_order` ->
+  `Simulation::issue_order`, the exact m11b courier path (delivery
+  takes ticks; the marker appears when the squad receives the order).
+  A right press that moves more than 6 px is still a pan.
+- **Markers**: for every squad with an active player order the renderer
+  draws a line from the centroid to the target, a circle there and the
+  order glyph (M/A/H/R/G/F); point-less orders draw the glyph above the
+  squad badge. Toggle: the `show_order_markers` ViewOptions flag.
+- **Minimap** (bottom-left, 200 px, `M` toggles): panel background, a
+  coarse terrain thumbnail (4 px blocks) when a map is loaded, unit
+  dots (routed desaturated), the camera viewport outline; a click jumps
+  the camera center to the world point (clamped to the battlefield).
+  The HUD keeps top-left, the inspector top-right, the squad panel
+  bottom-right — the four corners do not collide.
+
+Verification: 10 new tests (selection semantics incl. enemy squads
+never selectable; intent mapping; apply_order through courier delivery;
+minimap placement/coverage/round-trip/clamping; renderer marker and
+minimap commands on/off; one ring per on-screen squad member), full
+suite green, battle_game compiled locally against raylib (BUILD_GAME=ON)
+before pushing. docs/viewer.md documents every new control.
+
+## Item 5b — the end screen and the replay viewer (branch
+m13-end-replay)
+
+The m11d spec's remaining screens. The record / replay / seek / verify
+loop semantics moved out of the CLI's run function into a shared
+`cli::ReplayDriver` (cli_report) so the CLI and the window run the
+exact same loop: apply due interventions and orders between ticks, hash
+every checkpoint tick (every 25th, the final tick, and the seek
+target), append on record, compare-and-stop-at-the-first-mismatch on
+verify. The CLI was refactored onto the driver (its output, exit codes
+and `--seek` semantics unchanged; the record/verify smoke test passes),
+and `cli::arguments_from_replay` maps a parsed replay onto the CLI
+arguments that reproduce it (also extracted from the CLI).
+
+- **End screen** (`Screen::End`): result line (winner + termination
+  reason + end tick), per-faction casualties, Back / Rematch / Save
+  replay / Save report. The window records per-tick alive counts
+  (curves), the 25-tick state-hash checkpoints and its own issued
+  orders (5a) while the battle runs, so Save replay writes exactly
+  what `--record` would; Save report runs the report generator with
+  the run's event recorder. The casualty curves (`render::
+  draw_end_curves`) draw behind the panel over the final battle frame.
+- **Replay viewer** (`Screen::Replay`): the sorted `.replay` stems of
+  the working directory (`render::ui::list_replays`), Verify (full
+  re-run + checkpoint comparison through the shared driver; the status
+  label reports ok / mismatch tick / unverified checkpoints), Load
+  (parse, version check, rebuild the config via
+  `arguments_from_replay`, enter replay mode).
+- **Replay mode** on the battle screen: `,` / `.` seek ±25 ticks,
+  Home restart, End finish — every seek is a full re-run from tick 0
+  through the driver (the documented `--seek` cost), the playback
+  widgets and order issuing are disabled so the checkpoints stay
+  meaningful, and the status bar shows the replay tick.
+
+Verification: 11 new tests (466 total) — driver record/verify
+round-trip, tampered-hash mismatch at exactly its tick, seek stops at
+the target, orders applied at their tick, the arguments mapping for
+every recorded field, the sorted replay listing, menu/end/replay
+navigation and click reading, curves frame-only for empty series /
+lines + determinism for real ones. `battle_game` syntax-checked
+against the full raylib API surface (the sandbox lacks libxrandr-dev;
+CI's game-build job compiles it for real). docs/viewer.md documents
+every new control.

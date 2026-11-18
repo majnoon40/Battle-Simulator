@@ -21,6 +21,15 @@ struct HudStats {
   std::string scenario_name;
 };
 
+// m13 item 5b: casualty curves for the end screen. Pure drawing into a
+// DrawList: two polylines (per-faction alive counts over the ticks of
+// the finished battle) inside the screen rect, sampled to at most 120
+// points each, with a frame and a legend. The window draws it behind
+// the end screen's UI panel. Empty series draw an empty frame.
+void draw_end_curves(DrawList& list, double x, double y, double w,
+                     double h, const std::vector<std::uint32_t>& red,
+                     const std::vector<std::uint32_t>& blue);
+
 // Builds the whole frame for a battle snapshot: background, world grid,
 // formation slots, squad links, sight radius of the selected unit, units
 // (points at low zoom, shapes by type otherwise; routed desaturated; dead
