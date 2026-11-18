@@ -112,7 +112,8 @@ std::uint32_t positive_count(const OrderedJson& value, const std::string& type_i
 }
 
 std::vector<ScenarioEntry> parse_army(const OrderedJson& armies,
-                                      std::string_view key) {
+                                      std::string_view key,
+                                      std::optional<ScenarioBudget>& budget) {
   const std::string name(key);
   const OrderedJson& army = required_field(armies, key, "'armies'");
   if (!army.is_object()) {
@@ -120,6 +121,53 @@ std::vector<ScenarioEntry> parse_army(const OrderedJson& armies,
   }
   if (army.empty()) {
     fail("army '" + name + "' must list at least one unit type");
+  }
+  // m13 item H(b): budget form. {"budget": points, "mix": {type: weight}}
+  // replaces the count entries for this army; the two forms are mutually
+  // exclusive so a scenario never has two ways to say the same thing.
+  const bool has_budget = army.contains("budget");
+  const bool has_mix = army.contains("mix");
+  if (has_budget || has_mix) {
+    if (!has_budget || !has_mix) {
+      fail("army '" + name +
+           "': budget-form armies need both 'budget' and 'mix'");
+    }
+    if (army.size() != 2) {
+      fail("army '" + name +
+           "': budget-form armies take exactly 'budget' and 'mix' "
+           "(counts and budget are mutually exclusive)");
+    }
+    const OrderedJson& budget_value = army.at("budget");
+    if (!budget_value.is_number()) {
+      fail("army '" + name + "': field 'budget' must be a number (got " +
+           budget_value.dump() + ")");
+    }
+    const double points = budget_value.get<double>();
+    if (!std::isfinite(points) || points <= 0.0) {
+      fail("army '" + name + "': field 'budget' must be > 0 (got " +
+           budget_value.dump() + ")");
+    }
+    const OrderedJson& mix = army.at("mix");
+    if (!mix.is_object() || mix.empty()) {
+      fail("army '" + name + "' field 'mix' must be a non-empty object of "
+           "type -> weight");
+    }
+    ScenarioBudget spec;
+    spec.budget = points;
+    spec.mix.reserve(mix.size());
+    for (auto it = mix.begin(); it != mix.end(); ++it) {
+      if (it.key().empty()) {
+        fail("army '" + name + "' has an empty unit type id in 'mix'");
+      }
+      ScenarioEntry entry;
+      entry.type_id = it.key();
+      // Weights reuse the count validation: positive integers within
+      // the unit cap (a weight above the cap could never be spent).
+      entry.count = positive_count(it.value(), it.key(), name);
+      spec.mix.push_back(entry);
+    }
+    budget = spec;
+    return {};
   }
 
   std::vector<ScenarioEntry> entries;
@@ -217,9 +265,11 @@ Scenario parse_scenario_document(const OrderedJson& root) {
     fail("scenario field 'armies' must be a JSON object");
   }
   scenario.armies[static_cast<std::size_t>(Faction::Red)] =
-      parse_army(armies, "red");
+      parse_army(armies, "red", scenario.budgets[static_cast<std::size_t>(
+                                   Faction::Red)]);
   scenario.armies[static_cast<std::size_t>(Faction::Blue)] =
-      parse_army(armies, "blue");
+      parse_army(armies, "blue", scenario.budgets[static_cast<std::size_t>(
+                                    Faction::Blue)]);
 
   // Optional per-faction objectives (M4): {"red": {"x": .., "y": ..},
   // "blue": {...}}. Factions may be omitted individually; both default to
@@ -422,6 +472,93 @@ std::array<std::vector<TypeCount>, kFactionCount> build_composition(
   std::array<std::vector<TypeCount>, kFactionCount> composition{};
   for (Faction faction : kAllFactions) {
     const std::size_t index = static_cast<std::size_t>(faction);
+    // m13 item H(b): budget-form army. Deterministic largest-remainder
+    // fill — every number below depends only on the scenario, the type
+    // table and exact double arithmetic, never on the seed.
+    if (const auto& spec = scenario.budgets[index]) {
+      struct Fill {
+        std::uint32_t type_index = 0;
+        double cost = 1.0;
+        double points = 0.0;  // this type's share of the budget
+        std::uint32_t count = 0;
+      };
+      std::vector<Fill> fills;
+      fills.reserve(spec->mix.size());
+      double total_weight = 0.0;
+      for (const ScenarioEntry& entry : spec->mix) {
+        const int type_index = types.index_of(entry.type_id);
+        if (type_index < 0) {
+          fail("scenario army '" + std::string(to_string(faction)) +
+               "' references unknown unit type '" + entry.type_id + "'");
+        }
+        Fill fill;
+        fill.type_index = static_cast<std::uint32_t>(type_index);
+        fill.cost = types.types[static_cast<std::size_t>(type_index)].cost;
+        total_weight += static_cast<double>(entry.count);
+        fills.push_back(fill);
+      }
+      double spent = 0.0;
+      std::uint64_t total_units = 0;
+      for (std::size_t i = 0; i < fills.size(); ++i) {
+        const double weight = static_cast<double>(spec->mix[i].count);
+        fills[i].points = spec->budget * weight / total_weight;
+        fills[i].count =
+            static_cast<std::uint32_t>(std::floor(fills[i].points /
+                                                  fills[i].cost));
+        if (fills[i].count == 0) {
+          // Every mix type fields at least one unit; the min-one pass
+          // below is what makes the leftover distribution start from a
+          // legal army.
+          fills[i].count = 1;
+        }
+        spent += static_cast<double>(fills[i].count) * fills[i].cost;
+        total_units += fills[i].count;
+      }
+      if (spent > spec->budget) {
+        fail("scenario army '" + std::string(to_string(faction)) +
+             "': budget " + std::to_string(spec->budget) +
+             " cannot field at least one unit of every mix type "
+             "(needs >= " + std::to_string(spent) + " points)");
+      }
+      if (total_units > kMaxUnits) {
+        fail("scenario army '" + std::string(to_string(faction)) +
+             "': budget fill needs more than " + std::to_string(kMaxUnits) +
+             " units, which exceeds the unit cap");
+      }
+      // Leftover points: one unit at a time to the largest affordable
+      // fractional remainder (ties to the lower mix index). Terminates:
+      // every round spends at least the cheapest cost in the mix.
+      for (;;) {
+        std::size_t best = fills.size();
+        double best_gap = 0.0;
+        double leftover = spec->budget - spent;
+        for (std::size_t i = 0; i < fills.size(); ++i) {
+          const double gap = fills[i].points -
+                             static_cast<double>(fills[i].count) *
+                                 fills[i].cost;
+          if (gap > best_gap && fills[i].cost <= leftover) {
+            best = i;
+            best_gap = gap;
+          }
+        }
+        if (best == fills.size()) {
+          break;
+        }
+        ++fills[best].count;
+        spent += fills[best].cost;
+        ++total_units;
+        if (total_units > kMaxUnits) {
+          fail("scenario army '" + std::string(to_string(faction)) +
+               "': budget fill needs more than " + std::to_string(kMaxUnits) +
+               " units, which exceeds the unit cap");
+        }
+      }
+      for (const Fill& fill : fills) {
+        composition[index].push_back(
+            TypeCount{fill.type_index, fill.count});
+      }
+      continue;
+    }
     composition[index].reserve(scenario.armies[index].size());
     for (std::size_t entry_index = 0;
          entry_index < scenario.armies[index].size(); ++entry_index) {

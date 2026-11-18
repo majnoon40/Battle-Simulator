@@ -189,3 +189,36 @@ TEST(UnitTypesTest, CommittedDataFileIsValid) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// m13 item H(b): the optional cost field.
+
+TEST(UnitTypesCostTest, DefaultsToOne) {
+  const sim::UnitTypeTable table = sim::parse_unit_types(kValidTable);
+  ASSERT_EQ(table.size(), 3u);
+  for (const sim::UnitType& type : table.types) {
+    EXPECT_DOUBLE_EQ(type.cost, 1.0) << "type without 'cost' must cost 1";
+  }
+}
+
+TEST(UnitTypesCostTest, ParsesPositiveCost) {
+  const sim::UnitTypeTable table = sim::parse_unit_types(R"json([
+    {"id": "a", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0,
+     "cooldown": 4, "sight_radius": 40.0, "cost": 2.5},
+    {"id": "b", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0,
+     "cooldown": 4, "sight_radius": 40.0, "cost": 0.5}
+  ])json");
+  ASSERT_EQ(table.size(), 2u);
+  EXPECT_DOUBLE_EQ(table.types[0].cost, 2.5);
+  EXPECT_DOUBLE_EQ(table.types[1].cost, 0.5);
+}
+
+TEST(UnitTypesCostTest, RejectsInvalidCost) {
+  const std::string valid =
+      R"({"id": "a", "health": 10.0, "damage": 2.0, "speed": 1.0, )"
+      R"("range": 3.0, "cooldown": 4, "sight_radius": 40.0)";
+  expect_reject("[" + valid + R"(, "cost": 0}])", "'cost' must be > 0");
+  expect_reject("[" + valid + R"(, "cost": -2}])", "'cost' must be > 0");
+  expect_reject("[" + valid + R"(, "cost": "expensive"}])",
+                "'cost' must be a number");
+}

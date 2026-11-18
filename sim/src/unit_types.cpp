@@ -73,7 +73,7 @@ bool is_known_field(std::string_view field) {
          field == "speed" || field == "range" || field == "cooldown" ||
          field == "sight_radius" || field == "leadership_radius" ||
          field == "accuracy" || field == "damage_variance" ||
-         field == "cooldown_jitter";
+         field == "cooldown_jitter" || field == "cost";
 }
 
 UnitTypeTable parse_table(const nlohmann::json& root) {
@@ -133,6 +133,12 @@ UnitTypeTable parse_table(const nlohmann::json& root) {
     // Command radius (M6): optional; absent means "cannot command" (0).
     // Present values must be strictly positive — a commander with no reach
     // is a data error, not a default.
+    // m13 item H(b): optional army-building cost for budget-form
+    // scenarios. Strictly positive; absent means 1 (all existing tables
+    // keep their exact old behavior).
+    if (auto it = entry.find("cost"); it != entry.end()) {
+      type.cost = positive_number(*it, id, "cost");
+    }
     if (auto it = entry.find("leadership_radius"); it != entry.end()) {
       type.stats.leadership_radius =
           positive_number(*it, id, "leadership_radius");

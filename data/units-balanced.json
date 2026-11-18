@@ -1,0 +1,55 @@
+[
+  {
+    "id": "infantry",
+    "health": 170.0,
+    "damage": 32.0,
+    "speed": 2.0,
+    "range": 2.0,
+    "cooldown": 5,
+    "sight_radius": 40.0,
+    "accuracy": 0.85,
+    "damage_variance": 0.15,
+    "cooldown_jitter": 0.1,
+    "cost": 1.0
+  },
+  {
+    "id": "archer",
+    "health": 70.0,
+    "damage": 13.0,
+    "speed": 2.3,
+    "range": 44.0,
+    "cooldown": 6,
+    "sight_radius": 60.0,
+    "accuracy": 0.85,
+    "damage_variance": 0.2,
+    "cooldown_jitter": 0.1,
+    "cost": 1.4
+  },
+  {
+    "id": "cavalry",
+    "health": 115.0,
+    "damage": 18.0,
+    "speed": 4.0,
+    "range": 2.0,
+    "cooldown": 8,
+    "sight_radius": 50.0,
+    "accuracy": 0.9,
+    "damage_variance": 0.1,
+    "cooldown_jitter": 0.15,
+    "cost": 2.4
+  },
+  {
+    "id": "commander",
+    "health": 150.0,
+    "damage": 8.0,
+    "speed": 1.8,
+    "range": 2.0,
+    "cooldown": 10,
+    "sight_radius": 60.0,
+    "leadership_radius": 120.0,
+    "accuracy": 0.85,
+    "damage_variance": 0.15,
+    "cooldown_jitter": 0.1,
+    "cost": 3.0
+  }
+]

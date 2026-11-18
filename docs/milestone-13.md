@@ -747,3 +747,47 @@ every battle and were already logged as the design candidates in item
 3. Small gated patches (the only kind item H(a) allows) have no
 purchase on a structural exchange rate, so this is documented with the
 evidence instead.
+
+## Item H(b) — unit balance: cost field, budget armies, RPS tuning
+(in progress — engine and round 1 complete, rounds 2-3 pending)
+
+### The engine part (done, tested)
+
+- `cost` field on unit types: optional, strictly positive, default 1
+  (units.json without it behaves exactly as before).
+- Budget-form armies: `{"budget": points, "mix": {type: weight}}` —
+  points split by weights, deterministic largest-remainder fill, every
+  mix type fields at least one unit, 20k-unit cap, count-form and
+  budget-form mutually exclusive. 10 new tests (parse validation, fill
+  math, seed independence, cap, default-cost split); 445/445 total.
+- `data/units-balanced.json` (legacy units.json untouched),
+  `data/scenarios/balanced-demo.json` (two different 300-point armies),
+  `docs/data-reference.md`, and the measurement tool
+  `tools/analysis/m13_balance_rps.py` (the unit-matrix protocol with an
+  explicit --config; 20-seed `--screen` mode for steering).
+
+### Tuning state after round 1 of at most 3
+
+Eight 20-seed steering screens mapped the couplings (archer speed
+locks arch>inf by kiting; cavalry punch couples cav-arch and cav-inf;
+infantry strength couples inf-arch and inf-cav; archer range boosts
+archers vs both, but twice as much vs slow infantry). The measured
+protocol (100 paired seeds x 2 orientations per round) then ran:
+
+Round 1 (infantry 170/32/2.0, archer 70/13/2.3/range 44/cd 6,
+cavalry 115/18/cd 8/4.0, costs 1.0/1.4/2.4/3.0):
+
+| matchup | type-A share | 95% CI |
+| --- | --- | --- |
+| infantry vs archer | 0.355 | [0.292, 0.423] |
+| archer vs cavalry | 0.590 | [0.521, 0.656] |
+| cavalry vs infantry | 0.410 | [0.344, 0.479] |
+
+Two of three triangle edges hold decisively — **archer beats infantry
+(0.645)** and **infantry beats cavalry (0.590)** — but archers also
+beat cavalry (0.590), so the cycle is not closed: archer is dominant.
+Round 2 direction (recorded before running it): weaken the archer vs
+cavalry edge only — cavalry speed 4.0 -> 4.4 (shortens the volley
+window against the fast closer, leaves the infantry matchup's dynamics
+alone) or archer range 44 -> 40 — while keeping both proven edges
+(margins 0.09 and 0.18) clear of 0.5.

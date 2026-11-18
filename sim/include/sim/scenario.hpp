@@ -25,6 +25,21 @@ struct ScenarioEntry {
   std::uint32_t count_max = 0;  // 0 = fixed count (no range)
 };
 
+// m13 item H(b): a budget-form army, as written in a scenario file
+// ("armies": {"red": {"budget": 400, "mix": {"infantry": 3, "archer":
+// 2}}}). The faction spends `budget` points on units, each unit of a
+// type costing that type's `cost` field (data/units.json, default 1);
+// the points are split across the mix proportional to the integer
+// weights. The fill is deterministic (no seed): counts start at the
+// floor of each share, every mix type fields at least one unit, and
+// leftover points go to the largest affordable fractional remainders
+// in mix order. An army is either count-form or budget-form, never
+// both.
+struct ScenarioBudget {
+  double budget = 0.0;             // total army points, > 0
+  std::vector<ScenarioEntry> mix;  // type_id + weight (count reused)
+};
+
 // A per-faction objective point (M4), as written in a scenario file.
 struct ScenarioObjective {
   double x = 0.0;
@@ -61,6 +76,10 @@ struct Scenario {
   double spawn_band_fraction = 0.0;
   std::optional<ScenarioMap> map{};
   std::array<std::vector<ScenarioEntry>, kFactionCount> armies{};
+  // m13 item H(b): budget-form armies. When set for a faction, that
+  // faction's `armies` entry list is empty and the composition comes
+  // from the budget fill in build_composition().
+  std::array<std::optional<ScenarioBudget>, kFactionCount> budgets{};
   std::array<std::optional<ScenarioObjective>, kFactionCount> objectives{};
   std::array<std::optional<ScenarioSquads>, kFactionCount> squads{};
   // M10 spawn patterns: Band (default) keeps the M1-M9 uniform random

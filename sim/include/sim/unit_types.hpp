@@ -18,6 +18,10 @@ namespace sim {
 struct UnitType {
   std::string id;  // stable type identifier, e.g. "infantry"
   UnitStats stats{};
+  // m13 item H(b): the type's army-building value for budget-form
+  // scenario armies (see ScenarioBudget). Strictly positive; defaults
+  // to 1 so every existing table behaves as before.
+  double cost = 1.0;
 };
 
 // Indexed spawn-plan entry: `count` units of table type `type_index`.
@@ -41,7 +45,8 @@ struct UnitTypeTable {
 // data/units.json): a non-empty array of objects with the fields id, health,
 // damage, speed, range, cooldown, sight_radius and the optional
 // leadership_radius (M6; strictly positive when present, 0 when absent —
-// only commander types carry it). Throws std::invalid_argument with a
+// only commander types carry it) and the optional cost (item H(b);
+// strictly positive, default 1). Throws std::invalid_argument with a
 // descriptive message for every invalid input — malformed JSON, wrong root
 // type, missing or unknown fields, non-numeric or non-positive values,
 // non-integer cooldowns, empty ids, duplicate ids, an empty table, or a
