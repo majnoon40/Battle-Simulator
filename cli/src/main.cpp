@@ -16,7 +16,11 @@
 #include <thread>
 #include <vector>
 
+// Peak-memory reporting uses getrusage (POSIX); MSVC has no
+// sys/resource.h — the Windows build reports 0 MiB there.
+#if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
+#endif
 
 #include "cli/cli_args.hpp"
 #include "cli/replay.hpp"
@@ -62,12 +66,16 @@ constexpr const char* kDefaultCommandersPath = "data/commanders.json";
 // Peak resident set size of this process in MiB, via getrusage; used for the
 // performance report ("memory consumption when measurable").
 double peak_rss_mib() {
+#if defined(__unix__) || defined(__APPLE__)
   rusage usage{};
   if (getrusage(RUSAGE_SELF, &usage) != 0) {
     return -1.0;
   }
   // ru_maxrss is in KiB on Linux.
   return static_cast<double>(usage.ru_maxrss) / 1024.0;
+#else
+  return 0.0;  // MSVC: no getrusage; the report line reads 0 MiB
+#endif
 }
 
 // Reads a whole file. All file I/O lives in the CLI; sim only parses text or

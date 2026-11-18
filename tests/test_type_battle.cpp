@@ -149,7 +149,9 @@ TEST(TypeBehaviorTest, CavalryReachesTheEnemyFirst) {
   // a cavalry (speed 4.5) or an infantry (speed 2.0) unit from the same spot;
   // both have range 2.0. First damage tick: 9 for cavalry, 19 for infantry —
   // cavalry engages first, as the M2 spec requires.
-  auto first_damage_tick = [&kTableText](bool cavalry) -> int {
+  // kTableText has namespace scope: no capture needed (and clang
+  // rejects capturing non-automatic storage duration entities).
+  auto first_damage_tick = [](bool cavalry) -> int {
     const sim::UnitTypeTable types = sim::parse_unit_types(kTableText);
     const std::uint32_t type = static_cast<std::uint32_t>(
         cavalry ? types.index_of("cavalry") : types.index_of("infantry"));
