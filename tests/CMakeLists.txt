@@ -24,6 +24,7 @@ add_executable(battle_tests
   test_morale.cpp
   test_battle_input.cpp
   test_replay_runtime.cpp
+  test_setup_editor.cpp
   test_squads.cpp
   test_viewer.cpp
   test_terrain.cpp

@@ -17,7 +17,8 @@ namespace render::ui {
 
 // The screens. m13 item 5b adds End (the battle-over screen) and
 // Replay (the replay viewer list).
-enum class Screen : std::uint8_t { Menu, Scenario, Battle, End, Replay };
+enum class Screen : std::uint8_t { Menu, Scenario, Battle, End, Replay,
+                            Setup, Settings };
 
 // Stable widget ids across the screens.
 inline constexpr const char* kIdNewBattle = "new-battle";
@@ -38,6 +39,18 @@ inline constexpr const char* kIdEndCasualties = "end-casualties";
 inline constexpr const char* kIdRematch = "rematch";
 inline constexpr const char* kIdSaveReplay = "save-replay";
 inline constexpr const char* kIdSaveReport = "save-report";
+// m13 item 5c: the setup editor and the settings screen.
+inline constexpr const char* kIdSetup = "setup";            // menu button
+inline constexpr const char* kIdSettings = "settings";      // menu button
+inline constexpr const char* kIdSetupFaction = "setup-faction";
+inline constexpr const char* kIdSetupSave = "setup-save";
+inline constexpr const char* kIdSetupStart = "setup-start";
+inline constexpr const char* kIdResolution = "resolution";
+inline constexpr const char* kIdFullscreen = "fullscreen";
+inline constexpr const char* kIdVsync = "vsync";
+inline constexpr const char* kIdUiScale = "ui-scale";
+inline constexpr const char* kIdColorblind = "colorblind";
+inline constexpr const char* kIdSettingsApply = "settings-apply";
 
 // The whole sandbox UI: the active screen and its three states.
 struct App {
@@ -47,6 +60,8 @@ struct App {
   State battle;
   State end;      // m13 item 5b: the battle-over screen
   State replay;   // m13 item 5b: the replay viewer list
+  State setup;    // m13 item 5c: the army editor (built per scenario)
+  State settings; // m13 item 5c: the settings screen
   bool quit = false;            // the Quit button was clicked
   std::string chosen_scenario;  // the scenario Start picked ("" = none)
   std::string chosen_replay;    // the replay Load picked ("" = none)
@@ -65,6 +80,10 @@ struct App {
         return end;
       case Screen::Replay:
         return replay;
+      case Screen::Setup:
+        return setup;
+      case Screen::Settings:
+        return settings;
     }
     return battle;
   }
@@ -79,14 +98,24 @@ struct App {
 // for width x height. m13 item 5b adds the End and Replay screens.
 [[nodiscard]] App sandbox_app(
     int width, int height, const std::vector<std::string>& scenarios,
-    const std::vector<std::string>& replays = {});
+    const std::vector<std::string>& replays = {},
+    const Theme& theme = default_theme());
+
+// m13 item 5c: the army editor screen for one scenario — per-type
+// count rows for the edited faction (the count labels carry the live
+// counts; the window rewrites them), the faction select, drag-to-place
+// happens on the window's battlefield preview, and Save / Start.
+[[nodiscard]] State setup_state(
+    int width, int height, const Theme& theme,
+    const std::vector<std::string>& type_names);
 
 // The screen-level reducer: routes the event to the active screen's
 // state (through the pure ui::reduce), then applies navigation clicks
 // — menu: New battle / Scenario / Quit; scenario: Start (with the
 // selected entry) / Back; battle: Back returns to the menu. Pure.
-[[nodiscard]] App reduce_app(App app, const Event& event,
-                             const std::vector<std::string>& scenarios);
+[[nodiscard]] App reduce_app(
+    App app, const Event& event, const std::vector<std::string>& scenarios,
+    const Theme& theme = default_theme());
 
 // Maps the battle screen's widget values onto the viewer's options:
 // the hud / terrain / squad-links / grid checkboxes, and the filter
