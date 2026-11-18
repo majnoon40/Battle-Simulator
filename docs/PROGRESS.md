@@ -19,7 +19,8 @@ milestone-N.md files); this table is the index.
 | m13 item 3b — adversarial audit (13 findings fixed, 13 regression tests) | merged | #10 | 2026-11-17 |
 | m13 item 4 — deterministic threads (--threads, worker pool, --profile-phases) | merged | #11 | 2026-11-18 |
 | m13 item P — performance regression (routed-ally probe memo, byte-identical) | in this PR | #12 | 2026-11-18 |
-| m13 item H — hold arm analysis + unit balance (cost field, units-balanced) | pending | — | — |
+| m13 item H(a) — hold arm kill attribution + Search analysis (report, tool) | in this PR | #13 | 2026-11-18 |
+| m13 item H(b) — unit balance: cost field, units-balanced.json RPS tuning | pending | — | — |
 | m13 item 5a — battle view (minimap, selection, order UI, markers) | pending | — | — |
 | m13 item 5b — end screen + replay viewer | pending | — | — |
 | m13 item 5c — setup editor + settings + scenario save/load | pending | — | — |
