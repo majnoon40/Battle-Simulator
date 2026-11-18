@@ -998,3 +998,26 @@ and an order script for the file-based harnesses. CI: the `Fuzzing`
 job runs every target 60s per push; a nightly workflow (03:00 UTC)
 runs 10 minutes per target and uploads crash artifacts. docs/fuzzing.md
 documents the flow.
+
+## Item 7 — packaging, cross-platform CI, docs (branch m13-packaging)
+
+- **Packaging**: install rules (`bin/battle_cli`, `data/`, `docs/`,
+  README/LICENSE/THIRD_PARTY_NOTICES) and a CPack config (TGZ + ZIP)
+  in the root CMakeLists; the archive version follows
+  `sim::kSimVersion` (parsed from `sim/version.hpp` — the project()
+  version, CPACK_PACKAGE_VERSION and the archive name all carry it;
+  verified locally: `battle-simulator-13.1-Linux.tar.gz`).
+- **Cross-platform CI**: a macOS job (build + full ctest — the forced
+  `-ffp-contract=off` and IEEE doubles keep the determinism pins
+  platform-independent) and a Windows job (MSVC build + a smoke run;
+  the pinned FP flags are gcc/clang-only, so cross-platform hash
+  equality is not claimed there — documented in the workflow).
+- **Release workflow** (`.github/workflows/release.yml`): pushing a
+  `v*` tag builds the CPack archives on Linux, macOS and Windows and
+  attaches them to the GitHub release (`--generate-notes`, clobbered
+  uploads per matrix leg).
+- **Docs**: README features refreshed through M13 (reports/replays,
+  item P performance, item H balance data, the full window feature set
+  incl. items 5a-5c, fuzzing) + a Packaging section;
+  `docs/architecture.md` notes the new modules (battle_input,
+  replay_runtime, setup_edit, settings, fuzz); PROGRESS row.

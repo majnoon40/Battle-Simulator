@@ -12,7 +12,7 @@ runs fully headless.
 The project was developed milestone-by-milestone (M1–M10); each milestone
 has a design report under `docs/`.
 
-## Features (through milestone M11d)
+## Features (through milestone M13)
 
 - **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
   of randomness; the same seed reproduces the same battle byte-for-byte,
@@ -33,6 +33,31 @@ has a design report under `docs/`.
 - **Terrain from maps** — PNG maps with a per-terrain palette: movement
   costs, line of sight, defense modifiers, impassable water with fords,
   flow-field pathing, stuck detection and recovery (M8).
+- **Battle reports, replays and events (M10)** — `--report out.md`
+  (outcome, casualties, morale timeline, squads, turning points),
+  `--record` / `--replay --verify` with canonical state hashes every
+  25 ticks, `--events` JSONL and `--export-csv` timelines.
+- **Performance (M13 item P)** — the whole regression chain from the
+  initial release is measured in `docs/milestone-13.md`; the routed-ally
+  Help probe is memoized per tick: 5,000 units run at 82 t/s with 2
+  threads on 2 cores (byte-identical, verified by replay hashes).
+- **Unit balance data (M13 item H)** — optional `cost` field on unit
+  types and budget-form scenario armies (`{"budget": 300, "mix": ...}`,
+  deterministic largest-remainder fill); the tuned
+  `data/units-balanced.json` makes every matchup competitive; the
+  legacy `data/units.json` is untouched (`docs/data-reference.md`).
+- **The sandbox window (M13 items 1, 5a-5c)** — the raylib window runs
+  the same deterministic battle with the full UI: scenario picker,
+  battle controls, minimap, multi-squad selection and player orders
+  (right-click / hotkeys, the same courier-delay path as `--script`),
+  order markers, an end screen with casualty curves and save
+  replay/report, a replay viewer with verify + scrub, an army editor
+  with drag-to-place spawn anchors, and settings (resolution,
+  fullscreen, vsync, UI scale, colorblind palette) —
+  `docs/viewer.md`.
+- **Fuzzing (M13 item 6)** — 13 libFuzzer harnesses over every parser
+  plus a bounded simulation harness; a 60s-per-push CI job, a nightly
+  10-minute run and a committed seed corpus (`docs/fuzzing.md`).
 - **Navigation v2** — `--nav v2` (default): the `--swap-sides`
   explicit-objective swap actually happens, and formation members far
   from their slot march along the flow field instead of beelining into
@@ -289,3 +314,17 @@ Measured on main (M13 item 0 state check; full method and tables in
 MIT — see [LICENSE](LICENSE). Third-party licenses (nlohmann/json,
 GoogleTest, stb, raylib) are reproduced in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Packaging (M13 item 7)
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cpack --config build/CPackConfig.cmake   # TGZ + ZIP with bin/, data/, docs/
+```
+
+The archive name carries the sim version (`battle-simulator-13.1-...`).
+`cmake --install` lays out the same tree. Pushing a `v*` tag runs the
+Release workflow: archives built on Linux, macOS and Windows, attached
+to the GitHub release. CI builds and tests on all three platforms
+(Windows: compile + smoke — see `.github/workflows/ci.yml`).
