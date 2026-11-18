@@ -10,6 +10,8 @@
 #include <sstream>
 #include <string>
 
+#include "wait_status.hpp"
+
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
@@ -114,7 +116,7 @@ int run_cli(const std::string& arguments, std::string& output) {
     output += buffer;
   }
   const int code = pclose(pipe);
-  return WEXITSTATUS(code);
+  return exit_status_of(code);
 }
 
 }  // namespace
