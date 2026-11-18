@@ -519,3 +519,137 @@ oversubscribed cores). Memory is thread-count-independent (the
 per-worker buffers are tens of KiB). Per-core throughput on this
 sandbox is below the M13 item-3 box (23 vs 49-60 t/s at 5000 units);
 the relative speedups are the meaningful numbers.
+
+## Item P — performance regression: measured, fixed (byte-identical)
+
+Method: the initial public release plus the merge of every later PR (up
+to #11, the threads PR), each built Release on this box (2 vCPU, gcc
+14.2.0) and run on perf-5000 (utility AI, morale on, 1 thread,
+600-tick limit) in 3 alternating rounds — A,B,C,A,B,C over the
+commits — so thermal and load drift hits every commit evenly (load
+1.0-1.3 during the run phase; `results.csv` and `runs/*.log` under the
+measurement directory keep the raw outputs).
+
+### The chain (median of 3 alternating runs per commit)
+
+| commit | ticks run | median t/s | Δ vs initial |
+| --- | --- | --- | --- |
+| initial public release (M10) | 287 | 76.5 | — |
+| PR #1 ci-setup | 287 | 76.4 | -0.1% |
+| PR #2 m11a nav v2 | 287 | 77.0 | +0.7% |
+| PR #3 m11b player orders | 287 | 76.9 | +0.5% |
+| PR #4 m11c UI framework | 287 | 76.7 | +0.3% |
+| PR #5 m11d sandbox screens | 287 | 76.4 | -0.1% |
+| PR #6 m12-audit | 287 | 76.8 | +0.4% |
+| PR #7 m13-window-wiring | 287 | 76.4 | -0.1% |
+| **PR #8 m13-avail-end** | 286 | **49.4** | **-35.4%** |
+| PR #9 m13-combat | 286 | 48.3 | -36.9% |
+| PR #10 m13-audit | 286 | 48.5 | -36.6% |
+| PR #11 m13-threads | 286 | 48.0 | -37.3% |
+
+The battles are comparable across eras (287 vs 286 ticks run;
+termination v2 ends the same battle one tick earlier), so ticks/s is a
+fair per-tick cost comparison. Every commit through #7 is within noise
+of the initial release; the entire regression lands with PR #8
+(--ai-avail / --end v2), and #9-#11 add nothing material on top.
+
+### Diagnosis (numbers first)
+
+- `--profile-phases` at main 11289e4 (1 thread): perception 20.13 of
+  20.94 ms/tick (96.1%); decision 0.24, resolution 0.36, commit 0.21.
+- Same-binary isolation: `--ai-avail v1` runs 76.9-77.3 t/s vs 47.7-48.1
+  for v2 on the same battle (286 ticks both) — the whole cost is
+  avail-v2 logic (the end-v2 rule counts actives once per tick; the
+  Help cap and the estimate decay live in the 0.24 ms decision pass).
+- The only per-pair hot-path addition from PR #8 is the routed-ally
+  Help gate in `compute_decision_inputs`: every helper that sees a
+  routed, in-need ally runs a fresh `radius_query` (reach 30) around
+  that ally to ask "is any living enemy near it?". An instrumented
+  count (throwaway build, counter only): **1,453,130 probes over 286
+  ticks ≈ 5,081 per tick** — and the answer depends only on the routed
+  ally and the tick-start grid, not on the helper, so all but one per
+  routed ally per tick are redundant.
+
+### The fix (byte-identical by construction; no flag, no version bump)
+
+A pre-pass in `decide_targets` computes `routed_probe_[i]` for every
+alive, routed, in-need unit (the gate mirrors the inline conditions
+exactly: health fraction below `ally_health_below` or damaged on the
+previous tick): 2 = a living enemy within
+`routed_help_enemy_distance`, 1 = none. Pass A then reads the flag
+instead of querying — once per routed unit per tick instead of once per
+(helper, ally) pair. The correctness argument: the spatial grid is not
+modified between the pre-pass and pass A (re-bucketing is the later
+phase-0 continuation step), `radius_query` is const, and "enemy of the
+ally" equals "enemy of the helper" because the same-faction check
+already ran — so every memoized answer equals the inline query it
+replaces. The pre-pass completes on the simulation thread before the
+worker pool is dispatched, so workers only read the array (the TSan CI
+job covers the pool paths). The per-worker probe buffers that existed
+only for the inline query are removed with it.
+
+Proposals at the time, ranked by expected gain — only the first is
+implemented (it recovers the whole regression and touches one gate):
+
+1. The routed-ally memo (this PR).
+2. Structure-of-arrays perception (x/y/faction/alive packed per tick)
+   to cut cache misses in the radius-query aggregation — targets the
+   remaining per-tick cost, but is a core-path refactor touching every
+   consumer of the query; deferred with the profile numbers recorded
+   here as the baseline for that decision.
+3. Skipping decisions for idle units on a fixed schedule — rejected
+   outright: it changes outcomes (a skipped unit scores against a stale
+   world) and cannot be made byte-identical.
+
+### Verification
+
+- 435/435 tests (+2): `RoutedAllyNearEnemyIsStillHelpedUnderV2` (the
+  near-combat complement of the existing far test — three helpers
+  share one memoized answer, the per-ally cap still bounds them) and
+  `RoutedAllyExclusionPicksTheNearCombatAlly` (two routed allies, the
+  needier one far from combat: v2 helps the near-combat ally, v1 the
+  needier one — pinning the answer per ALLY, never per tick or
+  faction).
+- Byte-identity, old binary (11289e4) vs new: 41/41 identical exports
+  — 10 scenarios x 3 seeds, every relevant flag combination (avail-v1,
+  end-v1, combat-v1, all-v1, morale off, legacy AI), `--threads 1` ==
+  `--threads 4` on the new binary, and a cross-binary replay verify
+  (record with 11289e4, `--replay --verify` with the fix: every
+  25-tick state hash matches).
+
+### Before/after (medians of 3 alternating rounds, old binary vs this
+fix, same box, 600-tick limit)
+
+| units | threads | old t/s | new t/s | Δ |
+| --- | --- | --- | --- | --- |
+| 5,000 | 1 | 48.3 | 78.5 | +62% |
+| 5,000 | 2 | 48.8 | **82.1** | +68% |
+| 5,000 | 4 | 56.9 | 88.1 | +55% |
+| 20,000 | 1 | 15.3 | 18.0 | +18% |
+| 20,000 | 2 | 15.8 | 16.6 | +5% |
+| 20,000 | 4 | 18.3 | 21.0 | +15% |
+
+The acceptance target — 5,000 units at >= 60 ticks/s with 2 threads —
+is **met** on this box (82.1 t/s; 1 thread alone clears it at 78.5).
+
+`--profile-phases`, 1 thread, same box, old vs new:
+
+| scenario | binary | perception ms/tick | total ms/tick |
+| --- | --- | --- | --- |
+| perf-5000 (286 ticks) | old | 20.09 | 20.92 |
+| perf-5000 | new | 11.94 | 12.79 |
+| perf-20000 (600 ticks) | old | 60.70 | 65.77 |
+| perf-20000 | new | 52.84 | 57.94 |
+
+The memo removes ~8.1 ms/tick at 5,000 units (the whole regression plus
+margin — perception is back under its PR-#7 level) and ~7.9 ms/tick at
+20,000. The honest caveat: at 20,000 units the gain shrinks with 2
+threads (+5%) because the old binary's inline probes ran inside the
+parallel pass A (they scaled with the pool), while the memo pre-pass is
+serial by design — it runs before the pool is dispatched so workers
+only read the array. The pre-pass could itself be chunked over the pool
+(each worker writing distinct `routed_probe_[i]` slots, order-
+independent); it is a net win at every size and thread count as is, so
+that is left as a follow-up with these numbers as the baseline. The
+remaining 52.8 ms/tick of perception at 20,000 units is the base
+sight-radius query and aggregation — the SoA candidate (proposal 2).
