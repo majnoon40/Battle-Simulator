@@ -1,0 +1,27 @@
+{
+  "battlefield": {
+    "width": 1000.0,
+    "height": 1000.0
+  },
+  "spawn_band_fraction": 0.15,
+  "armies": {
+    "red": {
+      "budget": 300,
+      "mix": {
+        "commander": 1,
+        "infantry": 5,
+        "archer": 2,
+        "cavalry": 2
+      }
+    },
+    "blue": {
+      "budget": 300,
+      "mix": {
+        "commander": 1,
+        "cavalry": 3,
+        "infantry": 4,
+        "archer": 1
+      }
+    }
+  }
+}

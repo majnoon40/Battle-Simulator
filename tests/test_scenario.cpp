@@ -249,3 +249,179 @@ TEST(ScenarioTest, CommittedScenarioFilesAreValid) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// m13 item H(b): budget-form armies.
+
+namespace {
+
+// Costs: a = 1, b = 2.5, c = 4 (a omitted -> default 1).
+constexpr const char* kCostTable = R"json([
+  {"id": "a", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0, "cooldown": 4, "sight_radius": 40.0},
+  {"id": "b", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0, "cooldown": 4, "sight_radius": 40.0, "cost": 2.5},
+  {"id": "c", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0, "cooldown": 4, "sight_radius": 40.0, "cost": 4.0}
+])json";
+
+sim::Scenario budget_scenario(const std::string& red_army) {
+  const std::string json =
+      R"({"battlefield": {"width": 1000.0, "height": 1000.0}, )"
+      R"("spawn_band_fraction": 0.15, "armies": {"red": )" +
+      red_army + R"(, "blue": {"a": 10}}})";
+  return sim::parse_scenario(json);
+}
+
+void expect_scenario_reject(const std::string& red_army,
+                            const std::string& fragment) {
+  try {
+    static_cast<void>(budget_scenario(red_army));
+    FAIL() << "expected rejection for army: " << red_army;
+  } catch (const std::invalid_argument& error) {
+    EXPECT_NE(std::string(error.what()).find(fragment), std::string::npos)
+        << "error was: " << error.what();
+  }
+}
+
+}  // namespace
+
+TEST(ScenarioBudgetTest, ParsesBudgetForm) {
+  const sim::Scenario scenario =
+      budget_scenario(R"({"budget": 100, "mix": {"a": 2, "b": 1, "c": 1}})");
+  const auto& budget = scenario.budgets[static_cast<std::size_t>(
+      sim::Faction::Red)];
+  ASSERT_TRUE(budget.has_value());
+  EXPECT_DOUBLE_EQ(budget->budget, 100.0);
+  ASSERT_EQ(budget->mix.size(), 3u);
+  EXPECT_EQ(budget->mix[0].type_id, "a");
+  EXPECT_EQ(budget->mix[0].count, 2u);  // the weight, until the fill
+  EXPECT_EQ(budget->mix[2].type_id, "c");
+  EXPECT_TRUE(scenario.armies[static_cast<std::size_t>(
+                  sim::Faction::Red)].empty());
+  // The other faction's count form is untouched.
+  EXPECT_FALSE(scenario.budgets[static_cast<std::size_t>(
+                   sim::Faction::Blue)].has_value());
+  EXPECT_EQ(scenario.armies[static_cast<std::size_t>(sim::Faction::Blue)]
+                .size(),
+            1u);
+}
+
+TEST(ScenarioBudgetTest, RejectsMalformedBudgetArmies) {
+  expect_scenario_reject(R"({"budget": 100})",
+                         "both 'budget' and 'mix'");
+  expect_scenario_reject(R"({"mix": {"a": 1}})",
+                         "both 'budget' and 'mix'");
+  expect_scenario_reject(R"({"budget": 100, "mix": {"a": 1}, "b": 5})",
+                         "exactly 'budget' and 'mix'");
+  expect_scenario_reject(R"({"budget": 0, "mix": {"a": 1}})",
+                         "'budget' must be > 0");
+  expect_scenario_reject(R"({"budget": -3, "mix": {"a": 1}})",
+                         "'budget' must be > 0");
+  expect_scenario_reject(R"({"budget": "big", "mix": {"a": 1}})",
+                         "'budget' must be a number");
+  expect_scenario_reject(R"({"budget": 100, "mix": {}})",
+                         "non-empty object");
+  expect_scenario_reject(R"({"budget": 100, "mix": {"a": 0}})",
+                         "must be >= 1");
+  expect_scenario_reject(R"({"budget": 100, "mix": {"a": 1.5}})",
+                         "whole number");
+}
+
+TEST(ScenarioBudgetTest, DeterministicLargestRemainderFill) {
+  const sim::UnitTypeTable table = sim::parse_unit_types(kCostTable);
+  // budget 100, mix a:2 b:1 c:1 -> shares 50 / 25 / 25 points ->
+  // floors 50 / 10 / 6 (costs 1 / 2.5 / 4), leftover 1 point is below
+  // every remaining cost: {a 50, b 10, c 6}, 99 of 100 points spent.
+  const sim::Scenario scenario =
+      budget_scenario(R"({"budget": 100, "mix": {"a": 2, "b": 1, "c": 1}})");
+  const auto composition = sim::build_composition(scenario, table, 42);
+  const auto& red = composition[static_cast<std::size_t>(sim::Faction::Red)];
+  ASSERT_EQ(red.size(), 3u);
+  EXPECT_EQ(red[0].type_index, table.index_of("a"));
+  EXPECT_EQ(red[0].count, 50u);
+  EXPECT_EQ(red[1].count, 10u);
+  EXPECT_EQ(red[2].count, 6u);
+}
+
+TEST(ScenarioBudgetTest, LeftoverPointsGoToLargestAffordableRemainder) {
+  const sim::UnitTypeTable table = sim::parse_unit_types(kCostTable);
+  // budget 103, mix a:2 b:1 c:1 -> shares 51.5 / 25.75 / 25.75 ->
+  // floors 51 / 10 / 6 (spent 100), leftover 3: remainders a 0.5, b 0.75
+  // (affordable, cost 2.5), c 1.75 (unaffordable, cost 4) -> one more b.
+  const sim::Scenario scenario =
+      budget_scenario(R"({"budget": 103, "mix": {"a": 2, "b": 1, "c": 1}})");
+  const auto composition = sim::build_composition(scenario, table, 42);
+  const auto& red = composition[static_cast<std::size_t>(sim::Faction::Red)];
+  ASSERT_EQ(red.size(), 3u);
+  EXPECT_EQ(red[0].count, 51u);
+  EXPECT_EQ(red[1].count, 11u);
+  EXPECT_EQ(red[2].count, 6u);
+}
+
+TEST(ScenarioBudgetTest, EveryMixTypeFieldsAtLeastOneUnit) {
+  const sim::UnitTypeTable table = sim::parse_unit_types(kCostTable);
+  // budget 4.5, mix a:1 b:1 -> shares 2.25 / 2.25 -> floors 2 / 0 ->
+  // b lifted to 1 (spent exactly 4.5), no leftover: {a 2, b 1}.
+  const sim::Scenario scenario =
+      budget_scenario(R"({"budget": 4.5, "mix": {"a": 1, "b": 1}})");
+  const auto composition = sim::build_composition(scenario, table, 42);
+  const auto& red = composition[static_cast<std::size_t>(sim::Faction::Red)];
+  ASSERT_EQ(red.size(), 2u);
+  EXPECT_EQ(red[0].count, 2u);
+  EXPECT_EQ(red[1].count, 1u);
+  // A budget below one unit of every mix type is a data error: here
+  // one a (1.0) + one b (2.5) = 3.5 points minimum.
+  const sim::Scenario impossible =
+      budget_scenario(R"({"budget": 3, "mix": {"a": 1, "b": 1}})");
+  try {
+    static_cast<void>(sim::build_composition(impossible, table, 42));
+    FAIL() << "expected rejection";
+  } catch (const std::invalid_argument& error) {
+    EXPECT_NE(std::string(error.what()).find("cannot field at least one"),
+              std::string::npos)
+        << "error was: " << error.what();
+  }
+}
+
+TEST(ScenarioBudgetTest, FillIsSeedIndependentAndCapped) {
+  const sim::UnitTypeTable table = sim::parse_unit_types(kCostTable);
+  const sim::Scenario scenario =
+      budget_scenario(R"({"budget": 100, "mix": {"a": 2, "b": 1, "c": 1}})");
+  const auto with_seed_1 = sim::build_composition(scenario, table, 1);
+  const auto with_seed_999 = sim::build_composition(scenario, table, 999);
+  ASSERT_EQ(with_seed_1.size(), with_seed_999.size());
+  for (std::size_t faction = 0; faction < with_seed_1.size(); ++faction) {
+    ASSERT_EQ(with_seed_1[faction].size(), with_seed_999[faction].size());
+    for (std::size_t i = 0; i < with_seed_1[faction].size(); ++i) {
+      EXPECT_EQ(with_seed_1[faction][i].type_index,
+                with_seed_999[faction][i].type_index)
+          << "faction " << faction << " entry " << i;
+      EXPECT_EQ(with_seed_1[faction][i].count,
+                with_seed_999[faction][i].count)
+          << "faction " << faction << " entry " << i;
+    }
+  }
+  const sim::Scenario huge =
+      budget_scenario(R"({"budget": 25000, "mix": {"a": 1}})");
+  try {
+    static_cast<void>(sim::build_composition(huge, table, 42));
+    FAIL() << "expected rejection";
+  } catch (const std::invalid_argument& error) {
+    EXPECT_NE(std::string(error.what()).find("unit cap"), std::string::npos)
+        << "error was: " << error.what();
+  }
+}
+
+TEST(ScenarioBudgetTest, DefaultCostSplitsByWeight) {
+  // No 'cost' anywhere: every type costs 1, so a budget splits exactly
+  // by weights (budget 300, mix a:1 b:1 -> 150 / 150).
+  const sim::UnitTypeTable table = sim::parse_unit_types(R"json([
+    {"id": "a", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0, "cooldown": 4, "sight_radius": 40.0},
+    {"id": "b", "health": 10.0, "damage": 2.0, "speed": 1.0, "range": 3.0, "cooldown": 4, "sight_radius": 40.0}
+  ])json");
+  const sim::Scenario scenario =
+      budget_scenario(R"({"budget": 300, "mix": {"a": 1, "b": 1}})");
+  const auto composition = sim::build_composition(scenario, table, 42);
+  const auto& red = composition[static_cast<std::size_t>(sim::Faction::Red)];
+  ASSERT_EQ(red.size(), 2u);
+  EXPECT_EQ(red[0].count, 150u);
+  EXPECT_EQ(red[1].count, 150u);
+}

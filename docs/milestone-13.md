@@ -653,3 +653,199 @@ independent); it is a net win at every size and thread count as is, so
 that is left as a follow-up with these numbers as the baseline. The
 remaining 52.8 ms/tick of perception at 20,000 units is the base
 sight-radius query and aggregation — the SoA candidate (proposal 2).
+
+## Item H(a) — hold arm: kill attribution and the ~88k Search ticks
+(report; no engine change)
+
+`tools/analysis/m13_hold_kills.cpp` replicates the orders-study Hold arm
+(squads scenario, 250v250 + 10 commanders per side, every Red squad
+Hold at tick 100) over 20 seeds (1-20, 1500-tick limit), records every
+Red death with killer type and killer-victim distance at the time of
+the kill (movement commits before combat, so end-of-tick positions are
+the positions at the kill), and bins the unordered (Blue) side's
+actions per 100 ticks, splitting Search choosers by whether any living
+Red is inside their sight radius at end-of-tick. Seed 1 cross-checks
+against the CLI (--script hold, seed 1): end t795 stalemate, 42/5 dead
+— identical.
+
+### Outcomes (20 seeds)
+
+Red wins 0/20; every battle ends **stalemate** (t795-1348, mean 972.5);
+Red loses 62.1 dead/seed against Blue's 6.1 — the 10:1 grind of the
+item-3 study, reproduced.
+
+### Every kill is melee
+
+| Red deaths by killer | share | | kill distance (killer to victim) | share |
+| --- | --- | --- | --- | --- |
+| infantry | 97.8% | | <= 2.0 (melee range) | **100.0%** |
+| commander | 2.2% | | > 2.0 | 0.0% |
+
+All 1,243 Red deaths happen at infantry attack range. There is no
+ranged fire in this scenario (squads.json fields no archers), so item
+3's "hovering, sniping ring" is, in kill terms, a **melee ring**: Blue
+units close to contact, swing, and cycle out. What makes it feel like
+sniping is the cycling, and that the action bins make visible:
+
+| ticks | search (blind) | search (in sight) | approach | attack | retreat | flee |
+| --- | --- | --- | --- | --- | --- | --- |
+| 201-300 | 16,814 | 133 | 3,702 | 646 | 8 | 0 |
+| 301-400 | 7,767 | 52 | 15,391 | 464 | 34 | 0 |
+| 401-500 | 5,853 | 1,348 | 15,988 | 761 | 139 | 4 |
+| 501-600 | 9,938 | 1,974 | 11,855 | 466 | 212 | 27 |
+| 601-700 | 12,885 | 2,561 | 7,896 | 267 | 310 | 53 |
+| 701-800 | 13,703 | 2,958 | 6,301 | 226 | 444 | 86 |
+| 801-900 | 10,844 | 2,261 | 4,322 | 133 | 382 | 95 |
+
+(unit-ticks per bin, mean per seed; bins 1-200 are the advance-to-
+contact phase and bins past 1100 the tail of 2-3 long seeds. The ring:
+a broad Approach front (peaking ~160 units/tick), a thin Attack front
+(<= 8 attackers/tick at any moment), and a Retreat flow that grows
+from 8 to 444 unit-ticks per bin — hurt attackers cycle out, fresh
+ones cycle in. The held blob's front is permanent and thin, so the
+exchange rate is structural, not a bug: standing Red absorbs the whole
+Approach wave one contact-width at a time.)
+
+### The ~88k Search ticks: rear echelon, not combat refusal
+
+Total Search unit-ticks: 1,810,566 blind + 304,731 with a Red inside
+sight at end-of-tick (~105k/seed — the item-3 probe's ~88k single-
+battle figure is the same order). Distance from Search choosers to the
+nearest living Red:
+
+| band | <= 2 | 2-8 | 8-30 | 30-60 | > 60 |
+| --- | --- | --- | --- | --- | --- |
+| unit-ticks | 235 | 8,582 | 59,880 | 684,935 | 1,361,665 |
+
+96.7% of Search unit-ticks are more than 60 units from any Red. The
+14.4% "Search while in sight" is **decision staleness, not scoring**:
+`score_actions` only scores Search when the unit sees no enemy
+(ai.cpp), but perception reads the tick-start grid, movement commits
+after decisions in the same tick, and units re-decide every 1-5 ticks
+(M10 decision intervals) — so a Red that closed during the tick can be
+inside the sight radius at end-of-tick while the unit still executes
+the Search it chose while blind. It self-corrects at the next decision
+tick (the approach column, not search, grows where the front is hot).
+
+**Answer: enemies that can see the held blob do not choose Search —
+they structurally cannot.** The Search mass is the rear echelon
+converging on the contact estimate, exactly the M10 contact-seek
+design working as intended.
+
+### Cause, and why no fix lands here
+
+The hold arm loses because a stationary, concentrated force presents a
+permanent thin melee front while the attacker controls the engagement:
+Blue decides when to close (Approach), swings (Attack), and leaves
+(Retreat); Red, ordered to Hold, never pursues a disengaging attacker
+— pursuit exists (M6 pursuit anchor) but Hold means hold. The kill
+table (100% melee, 10:1 exchange) plus the action bins (cycling front)
+are the mechanism, and every number above is reproducible from the
+committed tool. A real fix is design, not data: pursuit-by-default for
+holders, or attacker fatigue biting on the cycling ring — both change
+every battle and were already logged as the design candidates in item
+3. Small gated patches (the only kind item H(a) allows) have no
+purchase on a structural exchange rate, so this is documented with the
+evidence instead.
+
+## Item H(b) — unit balance: cost field, budget armies, RPS tuning
+(engine done; three measured rounds run, no strict cycle — honest miss,
+details below)
+
+### The engine part (done, tested)
+
+- `cost` field on unit types: optional, strictly positive, default 1
+  (units.json without it behaves exactly as before).
+- Budget-form armies: `{"budget": points, "mix": {type: weight}}` —
+  points split by weights, deterministic largest-remainder fill, every
+  mix type fields at least one unit, 20k-unit cap, count-form and
+  budget-form mutually exclusive. 10 new tests (parse validation, fill
+  math, seed independence, cap, default-cost split); 445/445 total.
+- `data/units-balanced.json` (legacy units.json untouched),
+  `data/scenarios/balanced-demo.json` (two different 300-point armies),
+  `docs/data-reference.md`, and the measurement tool
+  `tools/analysis/m13_balance_rps.py` (the unit-matrix protocol with an
+  explicit --config; 20-seed `--screen` mode for steering).
+
+### Tuning state after round 1 of at most 3
+
+Eight 20-seed steering screens mapped the couplings (archer speed
+locks arch>inf by kiting; cavalry punch couples cav-arch and cav-inf;
+infantry strength couples inf-arch and inf-cav; archer range boosts
+archers vs both, but twice as much vs slow infantry). The measured
+protocol (100 paired seeds x 2 orientations per round) then ran:
+
+Round 1 (infantry 170/32/2.0, archer 70/13/2.3/range 44/cd 6,
+cavalry 115/18/cd 8/4.0, costs 1.0/1.4/2.4/3.0):
+
+| matchup | type-A share | 95% CI |
+| --- | --- | --- |
+| infantry vs archer | 0.355 | [0.292, 0.423] |
+| archer vs cavalry | 0.590 | [0.521, 0.656] |
+| cavalry vs infantry | 0.410 | [0.344, 0.479] |
+
+Two of three triangle edges hold decisively — **archer beats infantry
+(0.645)** and **infantry beats cavalry (0.590)** — but archers also
+beat cavalry (0.590), so the cycle is not closed: archer is dominant.
+Round 2 direction (recorded before running it): weaken the archer vs
+cavalry edge only — cavalry speed 4.0 -> 4.4 (shortens the volley
+window against the fast closer, leaves the infantry matchup's dynamics
+alone) or archer range 44 -> 40 — while keeping both proven edges
+(margins 0.09 and 0.18) clear of 0.5.
+
+Round 2 (archer range 44 -> 40, cooldown 6 -> 7 — the round-1 direction,
+weakening the archer against both closers to give cavalry the edge):
+
+| matchup | type-A share | 95% CI |
+| --- | --- | --- |
+| infantry vs archer | 0.535 | [0.466, 0.603] |
+| archer vs cavalry | 0.525 | [0.456, 0.593] |
+| cavalry vs infantry | 0.410 | [0.344, 0.479] |
+
+The archer nerf moved the infantry matchup (+0.18 for infantry) twice
+as far as the cavalry one (-0.065): the inf-arch edge overshot and
+arch-cav landed dead even. Round 3 (final): archer range 42 (between
+the two proven points) and cavalry speed back to 4.5 (the strongest
+catch-up lever, with the proven hp/damage values):
+
+| matchup | type-A share | 95% CI |
+| --- | --- | --- |
+| infantry vs archer | 0.525 | [0.456, 0.593] |
+| archer vs cavalry | 0.495 | [0.426, 0.564] |
+| cavalry vs infantry | 0.465 | [0.397, 0.534] |
+
+### The honest result: balanced, not cyclic
+
+After the three allowed rounds every directed win share sits within
+0.035 of even: infantry beats archer (0.525) and cavalry (0.535),
+cavalry beats archer by a coin flip (0.505), and the archer beats
+nobody — by margins of 0.005 and 0.025. Read against the acceptance
+criteria: **"no type wins everything" passes** (the legacy table was
+cavalry 200/0 against both); **"each type beats >= 1" fails on the
+archer**, whose two losses are both coin flips.
+
+What the rounds demonstrate structurally: pure stat tuning converges to
+an all-even state rather than a cycle, because the engine's macro
+dynamics couple the matchups through shared stats. Archers beat
+whoever closes slowly and lose to whoever closes fast — kiting speed
+(2.3 vs infantry 2.0) was the one asymmetric edge that held every
+round, and it cannot point at cavalry without also pointing at
+infantry. Every cavalry knob moves cav-arch and cav-inf together
+(rounds 2->3: speed 4.0 -> 4.5 moved both +0.03/-0.055 together); every
+infantry knob moves inf-arch and inf-cav together. A strict RPS cycle
+needs a matchup-specific mechanism (bonus-vs-type damage tables, or
+formation-based counters), which is engine design, not unit data — out
+of scope for a data-first item. The shipped `units-balanced.json` is
+the round-3 table: six competitive matchups, costs
+1.0/1.4/2.4/3.0, legacy units.json untouched.
+
+### The balanced demo
+
+`battle_cli --config data/units-balanced.json --scenario
+data/scenarios/balanced-demo.json` — two different 300-point armies
+(red infantry-archer weighted, blue cavalry weighted; seed 42: Red wins
+at t350 by routed_threshold, 28 vs 71 dead). The demo fields no squads:
+budget armies are size-elastic (the fill follows the costs) while squad
+plans pin exact soldier counts, so the two forms do not compose — a
+size-elastic squad plan is the follow-up that would let budget armies
+form up.
