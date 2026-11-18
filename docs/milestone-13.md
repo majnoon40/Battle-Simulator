@@ -973,3 +973,28 @@ with clamping, the setup-edit step/cap/clamp/to_scenario rules, setup +
 settings navigation and click reading. The window wiring is
 syntax-checked against the full raylib API surface (CI's game-build
 job compiles it for real).
+
+## Item 6 — fuzzing (branch m13-fuzzing, stacked on item 5c)
+
+Thirteen libFuzzer harnesses (`fuzz/harnesses.cpp`, plain functions —
+no libFuzzer dependency in the logic): the eight data parsers (unit
+types, scenario, personalities, morale, tactics, formations,
+commanders, combat), the JSON terrain grid, the window settings, the
+file-based replay and order-script parsers (through a scratch file —
+exactly how untrusted input reaches them), and a bounded simulation
+harness (valid scenario -> at most 1,000 units, 10 ticks) that fuzzes
+the state machine, not just the parsers. The contract — never crash,
+never hang, never escape an exception — is pinned twice: the clang
+builds (`BUILD_FUZZING=ON`, `-fsanitize=fuzzer,address,undefined`)
+wrap each harness in a libFuzzer target, and
+`tests/test_fuzz_harnesses.cpp` runs every harness over the committed
+seed corpus (plus every other harness's seeds — parsers face mixed
+directories through `--mod`) inside the normal suite, so the ASan/UBSan
+job covers the harness paths too.
+
+The corpus (`fuzz/corpus/<target>/`, committed) seeds each target with
+the shipped data files and shared edge cases, plus a recorded replay
+and an order script for the file-based harnesses. CI: the `Fuzzing`
+job runs every target 60s per push; a nightly workflow (03:00 UTC)
+runs 10 minutes per target and uploads crash artifacts. docs/fuzzing.md
+documents the flow.

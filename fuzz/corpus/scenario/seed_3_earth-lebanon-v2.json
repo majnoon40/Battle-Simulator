@@ -1,0 +1,45 @@
+{
+  "armies": {
+    "blue": {
+      "archer": 250,
+      "cavalry": 200,
+      "commander": 40,
+      "infantry": 550
+    },
+    "red": {
+      "archer": 250,
+      "cavalry": 200,
+      "commander": 40,
+      "infantry": 550
+    }
+  },
+  "battlefield": {
+    "height": 1000.0,
+    "width": 1000.0
+  },
+  "map": {
+    "cell_size": 2.5,
+    "file": "lebanon-v2.png"
+  },
+  "objectives": {
+    "blue": {
+      "x": 253.75,
+      "y": 563.75
+    },
+    "red": {
+      "x": 823.75,
+      "y": 501.25
+    }
+  },
+  "spawn_band_fraction": 0.35,
+  "squads": {
+    "blue": {
+      "count": 40,
+      "size": 25
+    },
+    "red": {
+      "count": 40,
+      "size": 25
+    }
+  }
+}

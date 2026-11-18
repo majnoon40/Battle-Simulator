@@ -10,6 +10,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 option(BUILD_GAME "Build the optional raylib graphical application (not implemented in M1)" OFF)
+# m13 item 6: the libFuzzer targets (clang only — -fsanitize=fuzzer).
+option(BUILD_FUZZING "Build the libFuzzer fuzzing targets (clang)" OFF)
 
 # Deterministic floating point: no fast-math, no FMA contraction.
 # The same flags apply to every build used for determinism comparisons.
@@ -49,6 +51,10 @@ add_subdirectory(sim)
 add_subdirectory(render)
 add_subdirectory(game)
 add_subdirectory(cli)
+
+if(BUILD_FUZZING)
+  add_subdirectory(fuzz)
+endif()
 
 enable_testing()
 add_subdirectory(tests)

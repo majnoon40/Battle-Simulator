@@ -1,0 +1,44 @@
+{
+  "memory": {
+    "forget_ticks": 1200,
+    "squad_intel_max_contacts": 8,
+    "squad_intel_delay_ticks": 12
+  },
+  "search": {
+    "score_base": 0.55,
+    "distance_weight": 0.25,
+    "age_weight": 0.2
+  },
+  "help": {
+    "radius": 40.0,
+    "ally_health_below": 0.5,
+    "strength_ratio_min": 0.8,
+    "score_base": 0.5,
+    "health_weight": 0.3,
+    "distance_weight": 0.2,
+    "max_helpers_per_ally": 2,
+    "routed_help_enemy_distance": 30.0
+  },
+  "flank": {
+    "max_per_squad": 4,
+    "outnumber_ratio": 1.25,
+    "offset_distance": 25.0,
+    "score_base": 0.65,
+    "strength_weight": 0.2
+  },
+  "pursuit": {
+    "routed_bonus": 0.25,
+    "cavalry_bonus_scale": 2.0,
+    "cavalry_speed_threshold": 4.0,
+    "max_distance": 300.0,
+    "max_ticks": 240
+  },
+  "regroup": {
+    "cohesion_below": 0.35,
+    "bonus_max": 0.2
+  },
+  "contact_seek": {
+    "idle_ticks": 100,
+    "estimate_max_age": 2400
+  }
+}

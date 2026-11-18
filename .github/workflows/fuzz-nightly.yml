@@ -1,0 +1,58 @@
+# m13 item 6 — the nightly fuzzing run: 10 minutes per harness over
+# the committed corpus plus everything the short runs have learned.
+# Crashes and the enriched corpus upload as artifacts.
+name: Fuzz nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz-nightly:
+    name: libFuzzer 10min per target
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Configure (clang, BUILD_FUZZING=ON)
+        run: >
+          CC=clang CXX=clang++ cmake -S . -B build-fuzz
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_FUZZING=ON
+
+      - name: Build the fuzz targets
+        run: cmake --build build-fuzz -j"$(nproc)"
+
+      - name: Fuzz every harness (10min each)
+        run: |
+          mkdir -p artifacts
+          status=0
+          for target in unit_types scenario personalities morale tactics \
+                        formations commanders combat terrain_grid settings \
+                        replay order_script simulation; do
+            echo "=== fuzz_${target} ==="
+            # artifact_prefix keeps crash-* files out of the repo root
+            if ! ./build-fuzz/fuzz_${target} -max_total_time=600 \
+                 -rss_limit_mb=2560 -timeout=25 \
+                 -artifact_prefix=artifacts/${target}- \
+                 -print_final_stats=1 fuzz/corpus/${target}; then
+              status=1
+              echo "::warning::fuzz_${target} found a crash or timeout"
+            fi
+          done
+          exit $status
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: fuzz-crashes
+          path: artifacts/
+          if-no-files-found: ignore
