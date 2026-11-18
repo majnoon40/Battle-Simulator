@@ -33,6 +33,11 @@ namespace render::ui {
 [[nodiscard]] std::vector<std::string> list_scenarios(
     const std::string& dir);
 
+// m13 item 5b: the .replay stems in `dir`, sorted (the replay viewer
+// list — the same rule list_scenarios uses, for .replay files).
+[[nodiscard]] std::vector<std::string> list_replays(
+    const std::string& dir);
+
 // True when the point is over drawn UI chrome — a Panel widget with
 // chrome on the active screen. Transparent layout scaffolding (the
 // centered-root spacers, the battle screen's window root) does not
@@ -65,6 +70,25 @@ struct BattleClicks {
 // so the window can follow wheel zoom back into the slider.
 [[nodiscard]] double zoom_from_slider(double slider, double base);
 [[nodiscard]] double slider_from_zoom(double zoom, double base);
+
+// m13 item 5b: the end screen's window actions, read from one frame's
+// clicks (navigation — Back — is handled by reduce_app; these stay in
+// state.clicked). At most one registers per frame.
+struct EndClicks {
+  bool rematch = false;
+  bool save_replay = false;
+  bool save_report = false;
+};
+[[nodiscard]] EndClicks end_clicks(const State& end);
+
+// m13 item 5b: the replay screen's window actions. Load returns the
+// selected replay's stem ("" when the list is empty).
+struct ReplayClicks {
+  bool load = false;
+  bool verify = false;
+  std::string load_stem;
+};
+[[nodiscard]] ReplayClicks replay_clicks(const State& replay);
 
 // The viewer state the battle screen implies: the view options and
 // pause/speed follow the widgets; zoom is the slider's mapping around

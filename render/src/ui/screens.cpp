@@ -56,7 +56,8 @@ namespace {
 }  // namespace
 
 App sandbox_app(int width, int height,
-                const std::vector<std::string>& scenarios) {
+                const std::vector<std::string>& scenarios,
+                const std::vector<std::string>& replays) {
   const Theme theme = default_theme();
 
   // --- The menu: a centered column of buttons. ---
@@ -73,7 +74,7 @@ App sandbox_app(int width, int height,
   for (const auto& [id, label] :
        std::initializer_list<std::pair<const char*, const char*>>{
            {kIdNewBattle, "New battle"}, {kIdScenario, "Scenarios"},
-           {kIdQuit, "Quit"}}) {
+           {kIdReplays, "Replays"}, {kIdQuit, "Quit"}}) {
     menu_tree.add(menu_box, [&] {
       Widget w;
       w.id = id;
@@ -139,6 +140,151 @@ App sandbox_app(int width, int height,
     return w;
   }());
 
+  // --- m13 item 5b: the end screen (result + casualties labels the
+  // window fills; the curves draw into the battle DrawList behind the
+  // UI; Rematch / Back / Save replay / Save report). ---
+  std::int32_t end_box = 0;
+  Tree end_tree = centered_root(width, height, 320, "end", end_box);
+  end_tree.add(end_box, [&] {
+    Widget w;
+    w.id = kIdEndTitle;
+    w.kind = Kind::Label;
+    w.text = "BATTLE OVER";
+    return w;
+  }());
+  end_tree.add(end_box, [&] {
+    Widget w;
+    w.id = kIdEndResult;
+    w.kind = Kind::Label;
+    w.text = " ";  // the window fills the result line
+    return w;
+  }());
+  end_tree.add(end_box, [&] {
+    Widget w;
+    w.id = kIdEndCasualties;
+    w.kind = Kind::Label;
+    w.text = " ";  // ... and the casualties line
+    return w;
+  }());
+  const std::int32_t end_row1 = static_cast<std::int32_t>(end_tree.add(
+      end_box, [&] {
+        Widget w;
+        w.id = "end-row-1";
+        w.kind = Kind::Panel;
+        w.box = Box::Row;
+        return w;
+      }()));
+  end_tree.add(end_row1, [&] {
+    Widget w;
+    w.id = kIdBack;
+    w.kind = Kind::Button;
+    w.text = "Back to battle";
+    w.grow = 1.0;
+    return w;
+  }());
+  end_tree.add(end_row1, [&] {
+    Widget w;
+    w.id = kIdRematch;
+    w.kind = Kind::Button;
+    w.text = "Rematch";
+    w.grow = 1.0;
+    return w;
+  }());
+  const std::int32_t end_row2 = static_cast<std::int32_t>(end_tree.add(
+      end_box, [&] {
+        Widget w;
+        w.id = "end-row-2";
+        w.kind = Kind::Panel;
+        w.box = Box::Row;
+        return w;
+      }()));
+  end_tree.add(end_row2, [&] {
+    Widget w;
+    w.id = kIdSaveReplay;
+    w.kind = Kind::Button;
+    w.text = "Save replay";
+    w.grow = 1.0;
+    return w;
+  }());
+  end_tree.add(end_row2, [&] {
+    Widget w;
+    w.id = kIdSaveReport;
+    w.kind = Kind::Button;
+    w.text = "Save report";
+    w.grow = 1.0;
+    return w;
+  }());
+
+  // --- m13 item 5b: the replay viewer (list + status + Back / Verify /
+  // Load; loading and verifying are window actions). ---
+  std::string replay_items;
+  for (const std::string& name : replays) {
+    if (!replay_items.empty()) {
+      replay_items.push_back('\n');
+    }
+    replay_items += name;
+  }
+  if (replay_items.empty()) {
+    replay_items = "(no .replay files)";
+  }
+  std::int32_t replay_box = 0;
+  Tree replay_tree =
+      centered_root(width, height, 300, "replay", replay_box);
+  replay_tree.add(replay_box, [&] {
+    Widget w;
+    w.id = "replay-title";
+    w.kind = Kind::Label;
+    w.text = "Replay viewer";
+    return w;
+  }());
+  replay_tree.add(replay_box, [&] {
+    Widget w;
+    w.id = kIdReplayList;
+    w.kind = Kind::Select;
+    w.text = replay_items;
+    w.grow = 1.0;
+    return w;
+  }());
+  replay_tree.add(replay_box, [&] {
+    Widget w;
+    w.id = kIdReplayStatus;
+    w.kind = Kind::Label;
+    w.text = " ";  // the window fills verify results here
+    return w;
+  }());
+  const std::int32_t replay_row = static_cast<std::int32_t>(replay_tree.add(
+      replay_box, [&] {
+        Widget w;
+        w.id = "replay-row";
+        w.kind = Kind::Panel;
+        w.box = Box::Row;
+        return w;
+      }()));
+  replay_tree.add(replay_row, [&] {
+    Widget w;
+    w.id = kIdBack;
+    w.kind = Kind::Button;
+    w.text = "Back";
+    w.grow = 1.0;
+    return w;
+  }());
+  replay_tree.add(replay_row, [&] {
+    Widget w;
+    w.id = kIdVerify;
+    w.kind = Kind::Button;
+    w.text = "Verify";
+    w.grow = 1.0;
+    return w;
+  }());
+  replay_tree.add(replay_row, [&] {
+    Widget w;
+    w.id = kIdLoad;
+    w.kind = Kind::Button;
+    w.text = "Load";
+    w.grow = 1.0;
+    return w;
+  }());
+
   App app;
   app.width = width;
   app.height = height;
@@ -149,10 +295,28 @@ App sandbox_app(int width, int height,
   app.scenario.width = width;
   app.scenario.height = height;
   app.battle = demo_state(width, height);
+  app.end.tree = std::move(end_tree);
+  app.end.width = width;
+  app.end.height = height;
+  app.replay.tree = std::move(replay_tree);
+  app.replay.width = width;
+  app.replay.height = height;
   for (std::size_t i = 0; i < app.menu.tree.size() && app.menu.focus < 0;
        ++i) {
     if (app.menu.tree.at(i).interactive()) {
       app.menu.focus = static_cast<std::int32_t>(i);
+    }
+  }
+  for (std::size_t i = 0; i < app.end.tree.size() && app.end.focus < 0;
+       ++i) {
+    if (app.end.tree.at(i).interactive()) {
+      app.end.focus = static_cast<std::int32_t>(i);
+    }
+  }
+  for (std::size_t i = 0; i < app.replay.tree.size() && app.replay.focus < 0;
+       ++i) {
+    if (app.replay.tree.at(i).interactive()) {
+      app.replay.focus = static_cast<std::int32_t>(i);
     }
   }
   for (std::size_t i = 0;
@@ -163,6 +327,8 @@ App sandbox_app(int width, int height,
   }
   layout(app.menu.tree, Rect{0, 0, width, height}, theme);
   layout(app.scenario.tree, Rect{0, 0, width, height}, theme);
+  layout(app.end.tree, Rect{0, 0, width, height}, theme);
+  layout(app.replay.tree, Rect{0, 0, width, height}, theme);
   return app;
 }
 
@@ -187,10 +353,26 @@ App reduce_app(App app, const Event& event,
     if (clicked == kIdNewBattle || clicked == kIdScenario) {
       app.screen = Screen::Scenario;
       consume();
+    } else if (clicked == kIdReplays) {
+      app.screen = Screen::Replay;
+      consume();
     } else if (clicked == kIdQuit) {
       app.quit = true;
       consume();
     }
+  } else if (app.screen == Screen::End) {
+    if (clicked == kIdBack) {
+      app.screen = Screen::Battle;
+      consume();
+    }
+    // Rematch / Save replay / Save report: window actions
+    // (render::ui::end_clicks); the click stays in active.clicked.
+  } else if (app.screen == Screen::Replay) {
+    if (clicked == kIdBack) {
+      app.screen = Screen::Menu;
+      consume();
+    }
+    // Load / Verify: window actions (render::ui::replay_clicks).
   } else if (app.screen == Screen::Scenario) {
     if (clicked == kIdBack) {
       app.screen = Screen::Menu;

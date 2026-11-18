@@ -23,6 +23,67 @@ std::vector<std::string> list_scenarios(const std::string& dir) {
   return names;
 }
 
+std::vector<std::string> list_replays(const std::string& dir) {
+  std::vector<std::string> names;
+  std::error_code ec;
+  for (const auto& entry :
+       std::filesystem::directory_iterator(dir, ec)) {
+    if (entry.path().extension() == ".replay") {
+      names.push_back(entry.path().stem().string());
+    }
+  }
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
+EndClicks end_clicks(const State& end) {
+  EndClicks clicks;
+  if (end.clicked == kIdRematch) {
+    clicks.rematch = true;
+  } else if (end.clicked == kIdSaveReplay) {
+    clicks.save_replay = true;
+  } else if (end.clicked == kIdSaveReport) {
+    clicks.save_report = true;
+  }
+  return clicks;
+}
+
+ReplayClicks replay_clicks(const State& replay) {
+  ReplayClicks clicks;
+  if (replay.clicked == kIdLoad) {
+    clicks.load = true;
+  } else if (replay.clicked == kIdVerify) {
+    clicks.verify = true;
+  }
+  if (clicks.load) {
+    for (const Widget& widget : replay.tree.widgets) {
+      if (widget.id == kIdReplayList) {
+        const std::string items = widget.text;
+        const int selected = std::max(0, widget.selected);
+        int index = 0;
+        std::size_t pos = 0;
+        while (pos <= items.size()) {
+          const std::size_t newline = items.find('\n', pos);
+          const std::string line =
+              items.substr(pos, newline == std::string::npos
+                                    ? std::string::npos
+                                    : newline - pos);
+          if (index == selected && line != "(no .replay files)") {
+            clicks.load_stem = line;
+            break;
+          }
+          if (newline == std::string::npos) {
+            break;
+          }
+          pos = newline + 1;
+          ++index;
+        }
+      }
+    }
+  }
+  return clicks;
+}
+
 bool ui_covers(const App& app, Point p) {
   const Tree& tree = app.active().tree;
   for (const Widget& widget : tree.widgets) {

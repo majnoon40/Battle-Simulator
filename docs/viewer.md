@@ -82,6 +82,25 @@ The terrain layer (M8 maps) is drawn first, in the terrain palette
 colors, and can be toggled with T; see docs/terrain.md. The sim runs at
 60 ticks/s at 1x.
 
+m13 item 5b adds the end screen and the replay viewer:
+
+- when the battle finishes the app switches to the **end screen**:
+  the result line (winner and termination reason), per-faction
+  casualties, and the alive-per-faction curves drawn over the final
+  battle frame; buttons: Back to battle, Rematch (reload, same seed),
+  Save replay (a `--record`-equivalent file: setup, the 5a orders you
+  issued, and state-hash checkpoints) and Save report (the markdown
+  report);
+- the menu's **Replays** opens the replay viewer: the `.replay` files
+  in the working directory, Verify (re-runs the recorded battle and
+  compares every checkpoint — the exact `--replay --verify`
+  semantics), and Load (rebuilds the battle from the recorded setup);
+- a loaded replay runs on the battle screen in **replay mode** (the
+  status bar shows the tick): `,` / `.` seek back/forward 25 ticks,
+  Home restarts, End runs to the end — a seek is a full re-run from
+  tick 0 (the `--seek` semantics; the playback buttons and issuing
+  orders are disabled so the recorded checkpoints stay meaningful).
+
 m13 item 5a adds the battle-view command layer: the minimap (bottom-
 left; terrain thumbnail when a map is loaded, unit dots, camera
 viewport outline — a click jumps the camera there), the multi-squad

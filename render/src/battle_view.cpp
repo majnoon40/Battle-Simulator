@@ -2,6 +2,7 @@
 #include "render/battle_view.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -559,6 +560,68 @@ DrawList build_battle_draw_list(const sim::Simulation& simulation,
   }
 
   return list;
+}
+
+void draw_end_curves(DrawList& list, double x, double y, double w,
+                     double h, const std::vector<std::uint32_t>& red,
+                     const std::vector<std::uint32_t>& blue) {
+  list.rect(x, y, w, h, game::panel_color(), true);
+  list.rect(x, y, w, h, game::text_color(), false);
+  list.text(x + 8.0, y + 6.0, 7, "alive per faction over ticks",
+            game::text_color());
+  list.rect(x + 8.0, y + 20.0, 6.0, 6.0,
+            game::faction_color(sim::Faction::Red), true);
+  list.text(x + 18.0, y + 18.0, 7, "red", game::text_color());
+  list.rect(x + 48.0, y + 20.0, 6.0, 6.0,
+            game::faction_color(sim::Faction::Blue), true);
+  list.text(x + 58.0, y + 18.0, 7, "blue", game::text_color());
+
+  if (red.empty() && blue.empty()) {
+    return;
+  }
+  const std::size_t ticks =
+      std::max(red.size(), blue.size());
+  std::uint32_t peak = 1;
+  for (const std::uint32_t value : red) {
+    peak = std::max(peak, value);
+  }
+  for (const std::uint32_t value : blue) {
+    peak = std::max(peak, value);
+  }
+  // The plot area sits under the title/legend strip.
+  const double plot_x = x + 8.0;
+  const double plot_y = y + 32.0;
+  const double plot_w = w - 16.0;
+  const double plot_h = h - 40.0;
+  const auto point_of = [&](std::size_t tick, std::uint32_t value) {
+    const double fx = ticks <= 1
+                          ? 0.0
+                          : static_cast<double>(tick) /
+                                static_cast<double>(ticks - 1);
+    const double fy = static_cast<double>(value) /
+                      static_cast<double>(peak);
+    return std::pair<double, double>{
+        plot_x + fx * plot_w, plot_y + (1.0 - fy) * plot_h};
+  };
+  const auto draw_series = [&](const std::vector<std::uint32_t>& series,
+                               game::Color color) {
+    if (series.empty()) {
+      return;
+    }
+    const std::size_t step = std::max<std::size_t>(1, ticks / 120);
+    std::size_t previous = 0;
+    for (std::size_t tick = step; tick < series.size(); tick += step) {
+      const auto [x0, y0] = point_of(previous, series[previous]);
+      const auto [x1, y1] = point_of(tick, series[tick]);
+      list.line(x0, y0, x1, y1, 2.0, color);
+      previous = tick;
+    }
+    const auto [x0, y0] = point_of(previous, series[previous]);
+    const auto [x1, y1] = point_of(series.size() - 1, series.back());
+    list.line(x0, y0, x1, y1, 2.0, color);
+  };
+  draw_series(red, game::faction_color(sim::Faction::Red));
+  draw_series(blue, game::faction_color(sim::Faction::Blue));
 }
 
 }  // namespace render

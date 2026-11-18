@@ -13,7 +13,8 @@ target_link_libraries(cli_args PUBLIC sim stb_headers nlohmann_json::nlohmann_js
 
 # M10 Part 2a: the battle report generators (markdown/JSON/CSV/PNG),
 # shared by battle_cli and the test suite.
-add_library(cli_report STATIC src/report.cpp src/report_png.cpp src/replay.cpp)
+add_library(cli_report STATIC src/report.cpp src/report_png.cpp src/replay.cpp
+  src/replay_runtime.cpp)
 target_include_directories(cli_report PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(cli_report PUBLIC cxx_std_20)
 target_link_libraries(cli_report PUBLIC sim render game_core)
