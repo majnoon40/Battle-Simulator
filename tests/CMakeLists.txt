@@ -22,6 +22,7 @@ add_executable(battle_tests
   test_spatial_hash.cpp
   test_ai.cpp
   test_morale.cpp
+  test_battle_input.cpp
   test_squads.cpp
   test_viewer.cpp
   test_terrain.cpp
