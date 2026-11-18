@@ -356,6 +356,10 @@ int run_with_replay(const cli::Arguments& args,
   config.battlefield_width = scenario.battlefield_width;
   config.battlefield_height = scenario.battlefield_height;
   config.spawn_band_fraction = scenario.spawn_band_fraction;
+  for (sim::Faction faction : sim::kAllFactions) {
+    config.spawn_anchors[static_cast<std::size_t>(faction)] =
+        scenario.anchors[static_cast<std::size_t>(faction)];
+  }
   if (scenario.map.has_value()) {
     // The map defines the battlefield: map size x cell_size.
     config.battlefield_width = terrain_grid.width * terrain_grid.cell_size;
@@ -539,6 +543,7 @@ int run_with_replay(const cli::Arguments& args,
         const std::size_t index = static_cast<std::size_t>(faction);
         const std::size_t other = 1 - index;
         std::swap(config.spawn_patterns[index], config.spawn_patterns[other]);
+        std::swap(config.spawn_anchors[index], config.spawn_anchors[other]);
       }
     }
   }

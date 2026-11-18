@@ -86,6 +86,11 @@ struct Theme {
 
 [[nodiscard]] Theme default_theme();
 
+// m13 item 5c: scales a theme's metrics (font, padding, gaps, row and
+// slider sizes) by `factor` — the settings screen's UI scale. Colors
+// pass through untouched; the factor is clamped to [0.75, 2.0].
+[[nodiscard]] Theme scale_theme(const Theme& theme, double factor);
+
 // ---------------------------------------------------------------------------
 // Shared text metrics (the rasterizer's built-in 5x7 font: glyph
 // 5x7*scale, one scale-unit space, advance 6*scale per character).

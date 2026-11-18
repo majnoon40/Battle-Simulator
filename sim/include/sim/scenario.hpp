@@ -40,6 +40,16 @@ struct ScenarioBudget {
   std::vector<ScenarioEntry> mix;  // type_id + weight (count reused)
 };
 
+// m13 item 5c: an optional per-army spawn anchor ("anchor": [x, y] in
+// the army object). Without one, a faction spawns in its full-height
+// side band (the historical rule, byte-identical); with one, the spawn
+// region becomes a band-by-band window centered on the anchor and
+// clamped to the battlefield — the army editor's drag-to-place.
+struct SpawnAnchor {
+  double x = 0.0;
+  double y = 0.0;
+};
+
 // A per-faction objective point (M4), as written in a scenario file.
 struct ScenarioObjective {
   double x = 0.0;
@@ -80,6 +90,8 @@ struct Scenario {
   // faction's `armies` entry list is empty and the composition comes
   // from the budget fill in build_composition().
   std::array<std::optional<ScenarioBudget>, kFactionCount> budgets{};
+  // m13 item 5c: optional spawn anchors (drag-to-place in the editor).
+  std::array<std::optional<SpawnAnchor>, kFactionCount> anchors{};
   std::array<std::optional<ScenarioObjective>, kFactionCount> objectives{};
   std::array<std::optional<ScenarioSquads>, kFactionCount> squads{};
   // M10 spawn patterns: Band (default) keeps the M1-M9 uniform random
@@ -103,6 +115,13 @@ struct Scenario {
 // silently defaults (beyond the documented squad-size default). Performs no
 // file I/O.
 [[nodiscard]] Scenario parse_scenario(std::string_view json_text);
+
+// m13 item 5c: serializes a Scenario back into the file format
+// (battlefield, spawn band, per-faction armies — count or budget form,
+// each with its optional anchor — objectives, squad plans, spawn
+// patterns and the map reference). parse(write(s)) round-trips: every
+// field the editor edits survives a save + reload.
+[[nodiscard]] std::string write_scenario(const Scenario& scenario);
 
 // Same parsing and validation, reading from any std::istream.
 [[nodiscard]] Scenario parse_scenario(std::istream& stream);

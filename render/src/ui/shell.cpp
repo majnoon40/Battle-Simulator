@@ -36,6 +36,55 @@ std::vector<std::string> list_replays(const std::string& dir) {
   return names;
 }
 
+game::Settings settings_from(const State& settings) {
+  game::Settings out;
+  for (const Widget& widget : settings.tree.widgets) {
+    if (widget.id == kIdResolution) {
+      switch (widget.selected) {
+        case 1:
+          out.width = 1600;
+          out.height = 900;
+          break;
+        case 2:
+          out.width = 1920;
+          out.height = 1080;
+          break;
+        default:
+          out.width = 1280;
+          out.height = 720;
+          break;
+      }
+    } else if (widget.id == kIdFullscreen) {
+      out.fullscreen = widget.on;
+    } else if (widget.id == kIdVsync) {
+      out.vsync = widget.on;
+    } else if (widget.id == kIdColorblind) {
+      out.colorblind = widget.on;
+    } else if (widget.id == kIdUiScale) {
+      out.ui_scale = 0.75 + 1.25 * std::clamp(widget.value, 0.0, 1.0);
+    }
+  }
+  return out;
+}
+
+bool settings_apply_clicked(const State& settings) {
+  return settings.clicked == kIdSettingsApply;
+}
+
+SetupClicks setup_clicks(const State& setup) {
+  SetupClicks clicks;
+  if (setup.clicked == kIdSetupSave) {
+    clicks.save = true;
+  } else if (setup.clicked == kIdSetupStart) {
+    clicks.start = true;
+  } else if (setup.clicked.rfind("plus-", 0) == 0) {
+    clicks.plus_type = setup.clicked.substr(5);
+  } else if (setup.clicked.rfind("minus-", 0) == 0) {
+    clicks.minus_type = setup.clicked.substr(6);
+  }
+  return clicks;
+}
+
 EndClicks end_clicks(const State& end) {
   EndClicks clicks;
   if (end.clicked == kIdRematch) {
