@@ -30,5 +30,6 @@ if(BUILD_GAME)
   FetchContent_MakeAvailable(raylib)
   add_executable(battle_game src/main.cpp)
   target_compile_features(battle_game PRIVATE cxx_std_20)
-  target_link_libraries(battle_game PRIVATE sim render game_core cli_args raylib)
+  target_link_libraries(battle_game PRIVATE sim render game_core cli_args
+  cli_report raylib)
 endif()
