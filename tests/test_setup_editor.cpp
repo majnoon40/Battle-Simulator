@@ -335,14 +335,19 @@ TEST(SetupEditTest, ToScenarioWritesCountsAndAnchors) {
 TEST(Ui5cTest, MenuNavigatesToSetupAndSettingsAndBack) {
   render::ui::App app =
       render::ui::sandbox_app(1280, 720, test_scenarios(), {});
-  app = click_at(std::move(app), center_of(app.menu, "setup"));
+  const render::ui::Point point_1 = center_of(app.menu, "setup");
+  app = click_at(std::move(app), point_1);
   EXPECT_EQ(app.screen, render::ui::Screen::Setup);
-  app = click_at(std::move(app), center_of(app.setup, "back"));
+  const render::ui::Point point_2 = center_of(app.setup, "back");
+  app = click_at(std::move(app), point_2);
   EXPECT_EQ(app.screen, render::ui::Screen::Menu);
 
-  app = click_at(std::move(app), center_of(app.menu, "settings"));
+  const render::ui::Point point_3 = center_of(app.menu, "settings");
+
+  app = click_at(std::move(app), point_3);
   EXPECT_EQ(app.screen, render::ui::Screen::Settings);
-  app = click_at(std::move(app), center_of(app.settings, "back"));
+  const render::ui::Point point_4 = center_of(app.settings, "back");
+  app = click_at(std::move(app), point_4);
   EXPECT_EQ(app.screen, render::ui::Screen::Menu);
 }
 

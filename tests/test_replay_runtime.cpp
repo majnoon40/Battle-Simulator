@@ -239,9 +239,11 @@ TEST(ReplayListTest, SortedReplayStemsOnly) {
 TEST(Ui5bTest, MenuReplaysNavigatesAndBackReturns) {
   render::ui::App app =
       render::ui::sandbox_app(1280, 720, test_scenarios(), {"one"});
-  app = click_at(std::move(app), center_of(app.menu, "replays"));
+  const render::ui::Point point_1 = center_of(app.menu, "replays");
+  app = click_at(std::move(app), point_1);
   EXPECT_EQ(app.screen, render::ui::Screen::Replay);
-  app = click_at(std::move(app), center_of(app.replay, "back"));
+  const render::ui::Point point_2 = center_of(app.replay, "back");
+  app = click_at(std::move(app), point_2);
   EXPECT_EQ(app.screen, render::ui::Screen::Menu);
 }
 
@@ -250,7 +252,8 @@ TEST(Ui5bTest, EndScreenClicksAndBackToBattle) {
       render::ui::sandbox_app(1280, 720, test_scenarios(), {});
   app.screen = render::ui::Screen::End;
   // Back navigates; the action buttons stay in clicked for the window.
-  app = click_at(std::move(app), center_of(app.end, "back"));
+  const render::ui::Point point_3 = center_of(app.end, "back");
+  app = click_at(std::move(app), point_3);
   EXPECT_EQ(app.screen, render::ui::Screen::Battle);
 
   app.screen = render::ui::Screen::End;
