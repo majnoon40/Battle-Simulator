@@ -991,6 +991,102 @@ TEST(HelpTest, RoutedAllyFarFromCombatIsNeverHelped) {
             sim::Action::Help);
 }
 
+TEST(HelpTest, RoutedAllyNearEnemyIsStillHelpedUnderV2) {
+  const sim::UnitTypeTable types = infantry_types();
+  sim::TacticsConfig tactics = quick_tactics();
+  // The complement of RoutedAllyFarFromCombatIsNeverHelped: a routed,
+  // badly hurt ally WITH a living enemy within routed_help_enemy_distance
+  // (29 < 30) stays a Help target under v2. The enemy sits behind the
+  // ally, outside every helper's sight (each helper is more than 40 from
+  // it, so the helpers see no enemy and Help is available), and three
+  // helpers share the same answer for the same ally — m13 item P probes
+  // once per routed unit per tick, not once per helper. The per-ally cap
+  // (2 of 3 helpers) still applies.
+  std::vector<sim::Personality> personalities = {
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},  // routed ally
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},  // helpers
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.5, 0.5, 0.5, 0.5, sim::kCustomArchetype},  // enemy
+  };
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 100.0, 100.0, 5.0),  // routed ally
+      make_unit(2, sim::Faction::Red, 100.0, 66.0),        // helper 1
+      make_unit(3, sim::Faction::Red, 104.0, 66.0),        // helper 2
+      make_unit(4, sim::Faction::Red, 96.0, 66.0),         // helper 3
+      make_unit(5, sim::Faction::Blue, 129.0, 100.0, 1000000.0),
+  };
+  units[0].routed = true;
+  units[0].morale = 5.0;
+  for (std::size_t i = 1; i <= 3; ++i) {
+    units[i].morale = 60.0;  // make_unit presets morale 0: would Flee
+  }
+  units[4].morale = 60.0;
+  sim::SimulationConfig config = tactics_config(types, 3);
+  config.tactics = &tactics;
+  // Morale on: the preset routed flag only persists with morale.
+  config.morale_enabled = true;
+  config.ai_avail_v2 = true;
+  sim::Simulation v2(config, units, personalities);
+  v2.tick();
+  int helping = 0;
+  for (std::size_t i = 1; i <= 3; ++i) {
+    if (v2.world().units[i].last_action ==
+        static_cast<std::uint8_t>(sim::Action::Help)) {
+      ++helping;
+    }
+  }
+  EXPECT_GE(helping, 1) << "the gate excluded the near-combat routed ally";
+  EXPECT_LE(helping, 2) << "the per-ally cap was not enforced";
+}
+
+TEST(HelpTest, RoutedAllyExclusionPicksTheNearCombatAlly) {
+  const sim::UnitTypeTable types = infantry_types();
+  sim::TacticsConfig tactics = quick_tactics();
+  // Two routed, badly hurt allies: the western one (id 2) is needier
+  // (health 2.0 vs 5.0) but has no enemy within
+  // routed_help_enemy_distance (52.9 > 30); the eastern one (id 1) sits
+  // 29 from the enemy. Under v2 only the near-combat ally is a Help
+  // target, so the helper marches straight north to it (x stays exactly
+  // 100.0); under v1 the needier western ally wins the choice and the
+  // helper veers west. Pins that the memoized probe answer is per routed
+  // ALLY (m13 item P), never a per-tick or per-faction answer.
+  std::vector<sim::Personality> personalities = {
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},  // routed allies
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},
+      {0.9, 0.9, 0.1, 0.5, sim::kCustomArchetype},  // helper
+      {0.5, 0.5, 0.5, 0.5, sim::kCustomArchetype},  // enemy
+  };
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 100.0, 100.0, 5.0),  // near combat
+      make_unit(2, sim::Faction::Red, 80.0, 80.0, 2.0),    // needier, far
+      make_unit(3, sim::Faction::Red, 100.0, 66.0),        // helper
+      make_unit(4, sim::Faction::Blue, 129.0, 100.0, 1000000.0),
+  };
+  units[0].routed = true;
+  units[1].routed = true;
+  units[0].morale = 5.0;
+  units[1].morale = 5.0;
+  units[2].morale = 60.0;
+  units[3].morale = 60.0;
+  sim::SimulationConfig config = tactics_config(types, 3);
+  config.tactics = &tactics;
+  config.morale_enabled = true;
+  config.ai_avail_v2 = true;
+  sim::Simulation v2(config, units, personalities);
+  v2.tick();
+  const sim::Unit& helper = v2.world().units[2];
+  EXPECT_EQ(static_cast<sim::Action>(helper.last_action), sim::Action::Help);
+  EXPECT_DOUBLE_EQ(helper.x, 100.0)
+      << "the helper veered off the near-combat ally";
+  EXPECT_GT(helper.y, 66.0) << "the helper did not move toward the ally";
+  config.ai_avail_v2 = false;
+  sim::Simulation v1(config, units, personalities);
+  v1.tick();
+  EXPECT_LT(v1.world().units[2].x, 100.0)
+      << "v1 should help the needier far ally and move west";
+}
+
 TEST(ContactSeekTest, ReachedEstimateWithNoEnemyDecays) {
   const sim::UnitTypeTable types = infantry_types();
   sim::TacticsConfig tactics = quick_tactics();

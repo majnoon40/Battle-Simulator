@@ -268,12 +268,8 @@ void Simulation::init_threading() {
   const std::size_t buffers =
       thread_pool_ != nullptr ? thread_pool_->worker_count() : 1;
   worker_perceive_.assign(buffers, {});
-  worker_probe_.assign(buffers, {});
   for (std::vector<std::uint32_t>& buffer : worker_perceive_) {
     buffer.reserve(256);
-  }
-  for (std::vector<std::uint32_t>& buffer : worker_probe_) {
-    buffer.reserve(64);
   }
   decide_inputs_.resize(world_.units.size());
 }
@@ -1209,13 +1205,53 @@ void Simulation::decide_targets() {
         phase_profiling_ ? std::chrono::steady_clock::now()
                          : std::chrono::steady_clock::time_point{};
     const std::size_t unit_count = world_.units.size();
+    // m13 item P: pre-pass for the avail-v2 routed-ally Help gate. The
+    // gate asks, per helper and visible routed ally, "is any living enemy
+    // within help.routed_help_enemy_distance of this ally?" — and the
+    // answer depends only on the routed ally and the tick-start grid, not
+    // on the helper. Computing it inline cost one radius query per
+    // (helper, ally) pair (perf-5000: ~5,081 queries per tick, ~37% of
+    // the whole tick); computing it here costs one per routed in-need
+    // unit. The gate below mirrors compute_decision_inputs exactly
+    // (alive, routed, hurt below ally_health_below or damaged this tick),
+    // the grid is not modified until the later spatial-index phase, and
+    // radius_query is const — so every memoized answer equals the inline
+    // query it replaces, and pass A (single- or multi-threaded) only
+    // reads routed_probe_ after this loop completes on this thread.
+    routed_probe_.assign(unit_count, 0);
+    if (config_.ai_avail_v2 && tactics_active_) {
+      const double reach =
+          effective_tactics_->help.routed_help_enemy_distance;
+      for (std::size_t i = 0; i < unit_count; ++i) {
+        const Unit& routed = world_.units[i];
+        if (!routed.alive || !routed.routed) {
+          continue;
+        }
+        const double fraction = std::clamp(
+            routed.health / routed.stats.max_health, 0.0, 1.0);
+        if (fraction >= effective_tactics_->help.ally_health_below &&
+            damage_this_tick_[i] <= 0.0) {
+          continue;  // never in need, so no helper ever probes this ally
+        }
+        grid_.radius_query(world_.units, routed.x, routed.y, reach,
+                           routed_probe_buffer_);
+        bool near_enemy = false;
+        for (std::uint32_t probe : routed_probe_buffer_) {
+          const Unit& probe_unit = world_.units[probe];
+          if (probe_unit.alive && probe_unit.faction != routed.faction) {
+            near_enemy = true;
+            break;
+          }
+        }
+        routed_probe_[i] = near_enemy ? 2 : 1;
+      }
+    }
     auto pass_a = [&](std::size_t worker, std::size_t begin,
                       std::size_t end) {
       std::vector<std::uint32_t>& perceive = worker_perceive_[worker];
-      std::vector<std::uint32_t>& probe = worker_probe_[worker];
       for (std::size_t i = begin; i < end; ++i) {
         if (world_.units[i].alive) {
-          compute_decision_inputs(i, decide_inputs_[i], perceive, probe);
+          compute_decision_inputs(i, decide_inputs_[i], perceive);
         }
       }
     };
@@ -1358,8 +1394,7 @@ void Simulation::decide_targets() {
 // this unit's own slot (memory, streak, the DecisionInputs record).
 void Simulation::compute_decision_inputs(
     std::size_t index, DecisionInputs& out,
-    std::vector<std::uint32_t>& perceive_buffer,
-    std::vector<std::uint32_t>& probe_buffer) {
+    std::vector<std::uint32_t>& perceive_buffer) {
   const Unit& unit = world_.units[index];
   const double sight = effective_sight(unit);
 
@@ -1548,20 +1583,13 @@ void Simulation::compute_decision_inputs(
       }
       // m13 item 2 (--ai-avail v2): a routed ally far from any living
       // enemy is out of the fight, not in danger — never a Help target.
+      // (m13 item P: the answer depends only on the routed ally and the
+      // tick-start grid, so the pre-pass in decide_targets memoizes it
+      // once per routed unit per tick in routed_probe_ — value 2 means a
+      // living enemy is within routed_help_enemy_distance — instead of
+      // every helper that sees the ally re-running the radius query.)
       if (config_.ai_avail_v2 && other.routed) {
-        const double reach =
-            effective_tactics_->help.routed_help_enemy_distance;
-        grid_.radius_query(world_.units, other.x, other.y, reach,
-                           probe_buffer);
-        bool near_enemy = false;
-        for (std::uint32_t probe : probe_buffer) {
-          const Unit& probe_unit = world_.units[probe];
-          if (probe_unit.alive && probe_unit.faction != unit.faction) {
-            near_enemy = true;
-            break;
-          }
-        }
-        if (!near_enemy) {
+        if (routed_probe_[candidate] != 2) {
           continue;
         }
       }
