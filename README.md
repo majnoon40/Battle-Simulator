@@ -258,8 +258,17 @@ and download URLs listed in
 Measured on main (M13 item 0 state check; full method and tables in
 [docs/milestone-13.md](docs/milestone-13.md)):
 
-- **Hold on open ground still loses (measured again under combat depth,
-  m13 item 3).** The m13 defensive stance (a Hold-ordered squad with
+- **Hold is not currently a viable order.** The m13 item H(a) study
+  made this final with numbers: 20 probe seeds, 0/20 holder wins, every
+  battle a STALEMATE (mean 972.5 ticks), 62.1 vs 6.1 dead per seed —
+  and every one of the 1,243 holder deaths happened at melee distance
+  (100.0% within 2.0 world units; killers 97.8% infantry, 2.2%
+  commanders): the "sniping ring" is a melee ring of
+  Approach/Attack/Retreat cycling, not ranged fire. The cause is
+  structural — holders never pursue disengaging attackers — so it is
+  documented, not patched (full evidence: docs/milestone-13.md item
+  H(a); the fix candidates stand in item 3). History from the item 3
+  rounds: the m13 defensive stance (a Hold-ordered squad with
   cohesion > 0.6 takes x0.8 incoming damage, +20% morale-loss resistance
   and the charge reduction, `--combat v2`) now genuinely engages — 350-980
   hits absorbed per probe battle (an action-keyed variant absorbed 3 of
