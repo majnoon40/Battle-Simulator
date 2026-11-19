@@ -26,17 +26,45 @@
 //               chooses Hold) with cohesion above cohesion_min takes a
 //               defensive stance: incoming damage x damage_factor,
 //               morale-loss resistance, and the charge reduction above.
+//   counters  — m14 item 0: attacker unit type -> defender unit type
+//               damage multipliers (the rock-paper-scissors layer).
+//               Unlisted pairs fight at x1. The type names are
+//               cross-checked against the battle's unit-type table when
+//               the simulation is built (the parser only sees the combat
+//               file). The product of all attacker-side multipliers
+//               (charge x facing x fatigue x aura x counter) is capped
+//               at counters.multiplier_cap, so stacking can never
+//               explode; the shipped cap 4.0 never binds without
+//               counters (the previous maximum was charge x rear x aura
+//               = 1.5 x 1.5 x 1.05 = 2.3625), so every pre-counters v2
+//               battle is bit-identical. v1 does not apply counters.
 //
 // All hooks are pure functions of unit state; no RNG is added, so v2
 // stays exactly as deterministic as v1 (same seed, same bytes; --threads
 // and --replay keep working unchanged).
 
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace sim {
 
 struct CombatConfig {
+  struct Counter {
+    std::string attacker;      // unit type id (must exist in the table)
+    std::string defender;      // unit type id (must exist in the table)
+    double multiplier = 1.0;   // damage multiplier attacker -> defender
+  };
+  struct Counters {
+    // Pairs not listed here fight at x1.0.
+    std::vector<Counter> list;
+    // Cap on the product of all attacker-side multipliers (charge,
+    // facing, fatigue, aura, counter). Defender-side reductions (stance,
+    // terrain) are not part of the product. >= 1.0 so it only clamps
+    // stacking, never boosts.
+    double multiplier_cap = 3.0;
+  } counters;
   struct Facing {
     double flank_degrees = 60.0;   // front | flank boundary (from front)
     double rear_degrees = 120.0;   // flank | rear boundary

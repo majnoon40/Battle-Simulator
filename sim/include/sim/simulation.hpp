@@ -722,6 +722,13 @@ class Simulation {
   std::vector<double> charge_ring_{};
   std::vector<std::uint32_t> charge_ring_pos_{};
   std::vector<std::uint32_t> combat_probe_buffer_{};
+  // m14 item 0: the counter matrix (attacker-major,
+  // counter_types_ x counter_types_, all 1.0 except the configured
+  // pairs) built in initialize() when combat v2 has counters.
+  // counter_types_ == 0 means the layer is off (no counters configured,
+  // or v1) and the attack loop skips it entirely.
+  std::vector<double> counter_matrix_{};
+  std::size_t counter_types_ = 0;
   std::size_t charge_window_ = 0;      // ring window per unit
   const CombatConfig* effective_combat_ = nullptr;
   bool combat_v2_ = false;

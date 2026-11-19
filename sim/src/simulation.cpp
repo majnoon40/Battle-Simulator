@@ -190,6 +190,47 @@ Simulation::Simulation(SimulationConfig config,
   charge_ring_.assign(2 * charge_window_ * world_.units.size(), 0.0);
   charge_ring_pos_.assign(world_.units.size(), 0);
   combat_probe_buffer_.clear();
+  // m14 item 0: the type-pair counter matrix. parse_combat only sees the
+  // combat file, so this is where the counter type names meet the
+  // battle's unit-type table — an unknown name is an error listing the
+  // known types, never a silent default. The matrix is attacker-major
+  // and all 1.0 by default; the attack loop looks up
+  // [attacker][defender] and skips the whole layer when no counters are
+  // configured (matrix empty). v1 does not build it, like every other
+  // v2 section.
+  counter_types_ = 0;
+  counter_matrix_.clear();
+  if (combat_v2_ && !effective_combat_->counters.list.empty()) {
+    if (config_.unit_types == nullptr || config_.unit_types->empty()) {
+      throw std::invalid_argument(
+          "counters: the battle has no unit-type table to resolve "
+          "counter type names");
+    }
+    const std::size_t type_count = config_.unit_types->size();
+    counter_matrix_.assign(type_count * type_count, 1.0);
+    for (const CombatConfig::Counter& entry :
+         effective_combat_->counters.list) {
+      const int attacker = config_.unit_types->index_of(entry.attacker);
+      const int defender = config_.unit_types->index_of(entry.defender);
+      if (attacker < 0 || defender < 0) {
+        std::string known;
+        for (const UnitType& type : config_.unit_types->types) {
+          if (!known.empty()) {
+            known += ", ";
+          }
+          known += type.id;
+        }
+        throw std::invalid_argument(
+            "counters: unknown unit type '" +
+            (attacker < 0 ? entry.attacker : entry.defender) +
+            "' (known types: " + known + ")");
+      }
+      counter_matrix_[static_cast<std::size_t>(attacker) * type_count +
+                      static_cast<std::size_t>(defender)] =
+          entry.multiplier;
+    }
+    counter_types_ = type_count;
+  }
   if (combat_v2_) {
     // Every unit starts facing its faction's objective (across the
     // field, toward the enemy).
@@ -2909,6 +2950,19 @@ void Simulation::resolve_combat() {
       if (aura_active_[i] != 0) {
         multiplier *= 1.0 + effective_combat_->aura.damage_bonus;
       }
+      // m14 item 0: the counter multiplier (attacker type -> defender
+      // type), then the cap on the product of all attacker-side
+      // multipliers (charge x facing x fatigue x aura x counter). The
+      // defender-side reductions (stance, terrain) are applied below and
+      // are not part of the capped product.
+      if (counter_types_ != 0) {
+        multiplier *=
+            counter_matrix_[static_cast<std::size_t>(unit.type_index) *
+                                counter_types_ +
+                            static_cast<std::size_t>(goal.type_index)];
+      }
+      multiplier = std::min(multiplier,
+                            effective_combat_->counters.multiplier_cap);
       attack.damage *= multiplier;
       // The defender's high-cohesion Hold stance.
       if (defensive_stance_[static_cast<std::size_t>(target)] != 0) {

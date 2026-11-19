@@ -12,7 +12,7 @@ runs fully headless.
 The project was developed milestone-by-milestone (M1–M10); each milestone
 has a design report under `docs/`.
 
-## Features (through milestone M13)
+## Features (through milestone M14 item 0)
 
 - **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
   of randomness; the same seed reproduces the same battle byte-for-byte,
@@ -46,6 +46,15 @@ has a design report under `docs/`.
   deterministic largest-remainder fill); the tuned
   `data/units-balanced.json` makes every matchup competitive; the
   legacy `data/units.json` is untouched (`docs/data-reference.md`).
+- **Type counters (M14 item 0)** — `data/combat.json` gains a validated
+  `counters` list: attacker type -> defender type -> damage multiplier
+  (default 1.0, both directions listed separately, the product of all
+  attacker-side multipliers capped). With `--combat v2` (the default) the
+  tuned table makes equal-budget pure-type armies cycle — cavalry beat
+  archers 0.640, archers beat infantry 0.695, infantry beat cavalry 0.585
+  win share over 100 paired seeds x 2 orientations
+  (`tools/analysis/m14_counters_rps.py`); `--combat v1` ignores counters
+  and stays byte-identical.
 - **The sandbox window (M13 items 1, 5a-5c)** — the raylib window runs
   the same deterministic battle with the full UI: scenario picker,
   battle controls, minimap, multi-squad selection and player orders
