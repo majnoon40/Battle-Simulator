@@ -1,5 +1,15 @@
 # Architecture
 
+## Newer modules (M13 items P-7)
+
+- `game/battle_input` — the pure battle-view input policy: multi-squad
+  selection, order intents, minimap geometry (item 5a).
+- `cli/replay_runtime` — the shared record/replay/seek/verify driver
+  (the CLI and the window run the same loop; item 5b).
+- `game/setup_edit`, `game/settings` — the army-editor model and the
+  window settings (item 5c).
+- `fuzz/` — the libFuzzer harnesses (item 6).
+
 ## Build targets
 
 | Target       | Type         | Responsibility                                        |

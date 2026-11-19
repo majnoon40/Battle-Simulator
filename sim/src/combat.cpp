@@ -41,6 +41,14 @@ std::uint32_t get_uint(const nlohmann::json& object, const char* section,
   return static_cast<std::uint32_t>(value);
 }
 
+std::string get_string(const nlohmann::json& object, const char* section,
+                       const char* field) {
+  if (!object.contains(field) || !object.at(field).is_string()) {
+    fail(std::string(section) + "." + field + " must be a string");
+  }
+  return object.at(field).get<std::string>();
+}
+
 void reject_unknown(const nlohmann::json& object, const char* section,
                     std::initializer_list<const char*> allowed) {
   for (const auto& [key, value] : object.items()) {
@@ -71,7 +79,7 @@ CombatConfig parse_combat(std::string_view json_text) {
   }
   reject_unknown(root, "combat config",
                  {"facing", "charge", "fatigue", "experience", "aura",
-                  "stance"});
+                  "stance", "counters"});
 
   CombatConfig config;
   {
@@ -214,6 +222,62 @@ CombatConfig parse_combat(std::string_view json_text) {
         config.stance.morale_resist > 1.0) {
       fail("stance values out of range (cohesion_min in [0, 1], "
            "damage_factor in (0, 1], morale_resist in [0, 1])");
+    }
+  }
+  // m14 item 0: the counters section is optional (a combat file without
+  // it fights every pair at x1) and carries the type-pair damage
+  // multipliers plus the product cap. Type names are only checked for
+  // being non-empty strings here; the cross-check against the battle's
+  // unit-type table happens when the simulation is built.
+  if (root.contains("counters")) {
+    const nlohmann::json& counters = root.at("counters");
+    if (!counters.is_object()) {
+      fail("'counters' must be an object");
+    }
+    reject_unknown(counters, "counters", {"multiplier_cap", "list"});
+    if (counters.contains("multiplier_cap")) {
+      config.counters.multiplier_cap =
+          get_number(counters, "counters", "multiplier_cap");
+      if (!(config.counters.multiplier_cap >= 1.0) ||
+          config.counters.multiplier_cap > 8.0) {
+        fail("counters.multiplier_cap must be in [1, 8]");
+      }
+    }
+    if (counters.contains("list")) {
+      const nlohmann::json& list = counters.at("list");
+      if (!list.is_array()) {
+        fail("counters.list must be an array");
+      }
+      for (const nlohmann::json& entry : list) {
+        if (!entry.is_object()) {
+          fail("counters.list entries must be objects");
+        }
+        reject_unknown(entry, "counters.list entry",
+                       {"attacker", "defender", "multiplier"});
+        CombatConfig::Counter counter;
+        counter.attacker = get_string(entry, "counters.list entry",
+                                      "attacker");
+        counter.defender = get_string(entry, "counters.list entry",
+                                      "defender");
+        if (counter.attacker.empty() || counter.defender.empty()) {
+          fail("counters.list entries need non-empty 'attacker' and "
+               "'defender' type ids");
+        }
+        counter.multiplier =
+            get_number(entry, "counters.list entry", "multiplier");
+        if (counter.multiplier < 0.25 || counter.multiplier > 4.0) {
+          fail("counters.list entry multiplier must be in [0.25, 4] (got " +
+               std::to_string(counter.multiplier) + ")");
+        }
+        for (const CombatConfig::Counter& seen : config.counters.list) {
+          if (seen.attacker == counter.attacker &&
+              seen.defender == counter.defender) {
+            fail("duplicate counters entry for " + counter.attacker +
+                 " -> " + counter.defender);
+          }
+        }
+        config.counters.list.push_back(std::move(counter));
+      }
     }
   }
   return config;

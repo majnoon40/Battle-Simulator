@@ -163,3 +163,41 @@ jobs:
             echo "=== fuzz_${target} ==="
             ./build-fuzz/fuzz_${target} -max_total_time=60 -rss_limit_mb=2560 -timeout=25 -print_final_stats=1 fuzz/corpus/${target}
           done
+
+  # m13 item 7: cross-platform builds. macOS runs the full suite (same
+  # IEEE doubles + the forced -ffp-contract=off keep the determinism
+  # pins platform-independent); Windows is compile + smoke only — MSVC
+  # is not built with the pinned FP flags (they are gcc/clang-only),
+  # so cross-platform hash equality is not claimed there.
+  macos-build-test:
+    name: macOS build and test
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Release)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows-build:
+    name: Windows build (compile + smoke)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Release)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build battle_cli
+        run: cmake --build build --target battle_cli --config Release
+
+      - name: Smoke run
+        shell: bash
+        run: ./build/Release/battle_cli --scenario data/scenarios/default.json --seed 42 --ticks 10

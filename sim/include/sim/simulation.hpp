@@ -600,6 +600,19 @@ class Simulation {
   std::unique_ptr<ThreadPool> thread_pool_;
   std::vector<std::vector<std::uint32_t>> worker_perceive_{};
   std::vector<DecisionInputs> decide_inputs_{};
+  // m14 item 1: pass-A shadow of the candidate fields the perception
+  // aggregation and the Help scan read that the grid shadow does not
+  // carry (health, max_health, routed — all stable from the start of the
+  // tick until resolve_combat/update_morale mutate them later in the
+  // pipeline). Refreshed once at the start of decide_targets; the values
+  // are copies, so results are bit-identical to reading the unit array,
+  // without touching the 232-byte Unit structs per candidate.
+  struct CandidateShadow {
+    double health = 0.0;
+    double max_health = 0.0;
+    bool routed = false;
+  };
+  std::vector<CandidateShadow> candidate_shadow_{};
   // m13 item P: per-tick memo of the avail-v2 routed-ally Help gate. The
   // gate asks, per helper and visible routed ally, "does this routed ally
   // have a living enemy within help.routed_help_enemy_distance?" — the
@@ -722,6 +735,13 @@ class Simulation {
   std::vector<double> charge_ring_{};
   std::vector<std::uint32_t> charge_ring_pos_{};
   std::vector<std::uint32_t> combat_probe_buffer_{};
+  // m14 item 0: the counter matrix (attacker-major,
+  // counter_types_ x counter_types_, all 1.0 except the configured
+  // pairs) built in initialize() when combat v2 has counters.
+  // counter_types_ == 0 means the layer is off (no counters configured,
+  // or v1) and the attack loop skips it entirely.
+  std::vector<double> counter_matrix_{};
+  std::size_t counter_types_ = 0;
   std::size_t charge_window_ = 0;      // ring window per unit
   const CombatConfig* effective_combat_ = nullptr;
   bool combat_v2_ = false;

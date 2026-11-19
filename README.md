@@ -12,7 +12,7 @@ runs fully headless.
 The project was developed milestone-by-milestone (M1–M10); each milestone
 has a design report under `docs/`.
 
-## Features (through milestone M11d)
+## Features (through milestone M14 item 0)
 
 - **Deterministic simulation** — a seeded SplitMix64 RNG is the only source
   of randomness; the same seed reproduces the same battle byte-for-byte,
@@ -33,6 +33,43 @@ has a design report under `docs/`.
 - **Terrain from maps** — PNG maps with a per-terrain palette: movement
   costs, line of sight, defense modifiers, impassable water with fords,
   flow-field pathing, stuck detection and recovery (M8).
+- **Battle reports, replays and events (M10)** — `--report out.md`
+  (outcome, casualties, morale timeline, squads, turning points),
+  `--record` / `--replay --verify` with canonical state hashes every
+  25 ticks, `--events` JSONL and `--export-csv` timelines.
+- **Performance (M13 item P, M14 item 1)** — the whole regression chain
+  from the initial release is measured in `docs/milestone-13.md` and
+  `docs/milestone-14.md`; the routed-ally Help probe is memoized per
+  tick, and the spatial-hash queries read a per-unit shadow instead of
+  the unit structs: 5,000 units run at 93 t/s with 2 threads and 20,000
+  at 23 t/s single-threaded on 2 cores, all byte-identical (verified by
+  replay hashes and pinned exports).
+- **Unit balance data (M13 item H)** — optional `cost` field on unit
+  types and budget-form scenario armies (`{"budget": 300, "mix": ...}`,
+  deterministic largest-remainder fill); the tuned
+  `data/units-balanced.json` makes every matchup competitive; the
+  legacy `data/units.json` is untouched (`docs/data-reference.md`).
+- **Type counters (M14 item 0)** — `data/combat.json` gains a validated
+  `counters` list: attacker type -> defender type -> damage multiplier
+  (default 1.0, both directions listed separately, the product of all
+  attacker-side multipliers capped). With `--combat v2` (the default) the
+  tuned table makes equal-budget pure-type armies cycle — cavalry beat
+  archers 0.640, archers beat infantry 0.695, infantry beat cavalry 0.585
+  win share over 100 paired seeds x 2 orientations
+  (`tools/analysis/m14_counters_rps.py`); `--combat v1` ignores counters
+  and stays byte-identical.
+- **The sandbox window (M13 items 1, 5a-5c)** — the raylib window runs
+  the same deterministic battle with the full UI: scenario picker,
+  battle controls, minimap, multi-squad selection and player orders
+  (right-click / hotkeys, the same courier-delay path as `--script`),
+  order markers, an end screen with casualty curves and save
+  replay/report, a replay viewer with verify + scrub, an army editor
+  with drag-to-place spawn anchors, and settings (resolution,
+  fullscreen, vsync, UI scale, colorblind palette) —
+  `docs/viewer.md`.
+- **Fuzzing (M13 item 6)** — 13 libFuzzer harnesses over every parser
+  plus a bounded simulation harness; a 60s-per-push CI job, a nightly
+  10-minute run and a committed seed corpus (`docs/fuzzing.md`).
 - **Navigation v2** — `--nav v2` (default): the `--swap-sides`
   explicit-objective swap actually happens, and formation members far
   from their slot march along the flow field instead of beelining into
@@ -233,8 +270,17 @@ and download URLs listed in
 Measured on main (M13 item 0 state check; full method and tables in
 [docs/milestone-13.md](docs/milestone-13.md)):
 
-- **Hold on open ground still loses (measured again under combat depth,
-  m13 item 3).** The m13 defensive stance (a Hold-ordered squad with
+- **Hold is not currently a viable order.** The m13 item H(a) study
+  made this final with numbers: 20 probe seeds, 0/20 holder wins, every
+  battle a STALEMATE (mean 972.5 ticks), 62.1 vs 6.1 dead per seed —
+  and every one of the 1,243 holder deaths happened at melee distance
+  (100.0% within 2.0 world units; killers 97.8% infantry, 2.2%
+  commanders): the "sniping ring" is a melee ring of
+  Approach/Attack/Retreat cycling, not ranged fire. The cause is
+  structural — holders never pursue disengaging attackers — so it is
+  documented, not patched (full evidence: docs/milestone-13.md item
+  H(a); the fix candidates stand in item 3). History from the item 3
+  rounds: the m13 defensive stance (a Hold-ordered squad with
   cohesion > 0.6 takes x0.8 incoming damage, +20% morale-loss resistance
   and the charge reduction, `--combat v2`) now genuinely engages — 350-980
   hits absorbed per probe battle (an action-keyed variant absorbed 3 of
@@ -289,3 +335,17 @@ Measured on main (M13 item 0 state check; full method and tables in
 MIT — see [LICENSE](LICENSE). Third-party licenses (nlohmann/json,
 GoogleTest, stb, raylib) are reproduced in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Packaging (M13 item 7)
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cpack --config build/CPackConfig.cmake   # TGZ + ZIP with bin/, data/, docs/
+```
+
+The archive name carries the sim version (`battle-simulator-13.1-...`).
+`cmake --install` lays out the same tree. Pushing a `v*` tag runs the
+Release workflow: archives built on Linux, macOS and Windows, attached
+to the GitHub release. CI builds and tests on all three platforms
+(Windows: compile + smoke — see `.github/workflows/ci.yml`).

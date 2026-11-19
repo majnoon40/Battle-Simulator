@@ -99,3 +99,37 @@ re-equalizes from the current costs. The demo fields no squads:
 budget armies are size-elastic (the fill follows the costs) while
 squad plans pin exact soldier counts, so the two forms do not
 compose.
+
+## Counters (m14 item 0)
+
+`data/combat.json` carries an optional `counters` object: a
+`multiplier_cap` (default 3.0, validated in [1, 8]) and a `list` of
+`{"attacker": type, "defender": type, "multiplier": m}` entries
+(validated in [0.25, 4]; unlisted pairs fight at x1; duplicate pairs are
+rejected; the type names are cross-checked against the unit-type table
+when the battle is built). Under `--combat v2` the attacker's damage
+into the listed defender type is multiplied by `m`, and the product of
+all attacker-side multipliers (charge x facing x fatigue x aura x
+counter) is capped at `multiplier_cap` — the shipped 4.0 never binds
+without counters (the pre-counters maximum was 1.5 x 1.5 x 1.05 =
+2.3625), so every pre-counters v2 battle is bit-identical. `--combat
+v1` ignores counters entirely.
+
+The shipped table (tuned against `data/units-balanced.json`, equal
+600-point 19:1 body:commander armies, squad-less, 100 paired seeds x 2
+orientations per round, `tools/analysis/m14_counters_rps.py`):
+
+| attacker | defender | multiplier |
+| --- | --- | --- |
+| cavalry | archer | 0.90 |
+| archer | cavalry | 1.15 |
+| archer | infantry | 2.15 |
+| infantry | archer | 0.95 |
+| infantry | cavalry | 0.50 |
+| cavalry | infantry | 2.25 |
+
+Measured win shares (round 3 of 3): cavalry > archer 0.640
+[0.571, 0.703], archer > infantry 0.695 [0.628, 0.755], infantry >
+cavalry 0.585 [0.516, 0.651] — every Wilson lower bound above 0.5, no
+matchup above 0.70. The baseline without counters was 0.800 / 0.070 /
+1.000: the multipliers pull in both directions, not only up.

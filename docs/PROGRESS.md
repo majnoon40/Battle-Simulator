@@ -22,7 +22,9 @@ milestone-N.md files); this table is the index.
 | m13 item H(a) — hold arm kill attribution + Search analysis (report, tool) | in this PR | #13 | 2026-11-18 |
 | m13 item H(b) — cost field + budget armies + 3 measured tuning rounds (balanced, not cyclic — honest miss on the strict RPS cycle) | in this PR | #14 | 2026-11-18 |
 | m13 item 5a — battle view: minimap, squad selection, orders UI, markers | in this PR | #15 | 2026-11-18 |
-| m13 item 5b — end screen (result, curves, save replay/report, rematch) + replay viewer (list, verify, scrub) | on branch m13-end-replay (PR follows when #14/#15 merge) | — | 2026-11-18 |
-| m13 item 5c — setup editor (anchor spawn, steppers, save) + settings + scenario writer | on branch m13-setup-settings (PR follows) | — | 2026-11-18 |
-| m13 item 6 — fuzzing (13 libFuzzer harnesses, seed corpus, CI 60s job, nightly 10min) | in this PR | — | 2026-11-18 |
-| m13 item 7 — packaging, cross-platform CI, docs | pending | — | — |
+| m13 item 5b — end screen (result, curves, save replay/report, rematch) + replay viewer (list, verify, scrub) | merged via #16 | #16 | 2026-11-18 |
+| m13 item 5c — setup editor (anchor spawn, steppers, save) + settings + scenario writer | in PR #18 (stranded by merge order; rides the fuzzing PR) | #18 | 2026-11-18 |
+| m13 item 6 — fuzzing (13 libFuzzer harnesses, seed corpus, CI 60s job, nightly 10min) | in PR #18 | #18 | 2026-11-18 |
+| m13 item 7 — packaging (CPack/install + Release workflow), macOS/Windows CI, README/architecture refresh | in PR #19 | #19 | 2026-11-18 |
+| m14 item 0 — type counters (validated combat.json list, capped product, v2-only; RPS acceptance PASS 0.640/0.695/0.585) | merged | #20 | 2026-11-19 |
+| m14 item 1 — scale: query shadow + O(1) remove + faction-scoped query + fused termination sweeps (byte-identical, 487/487; perf-20000 +42% t1, perf-20000-squads +34% t2) | in this PR | — | 2026-11-19 |

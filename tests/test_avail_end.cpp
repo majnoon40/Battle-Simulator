@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "wait_status.hpp"
+
 #include <sys/wait.h>
 
 #include <gtest/gtest.h>
@@ -32,7 +34,7 @@ int run_cli(const std::string& arguments) {
   while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
   }
   const int code = pclose(pipe);
-  return WEXITSTATUS(code);
+  return exit_status_of(code);
 }
 
 std::string read_bytes(const std::string& path) {

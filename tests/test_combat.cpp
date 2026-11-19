@@ -4,12 +4,16 @@
 // shape (format 9), determinism, grid == brute and the v1 byte-identity
 // baselines. Crafted battles use zero-variance, accuracy-1 types and
 // customized CombatConfigs so the arithmetic is exact.
+// m14 item 0 adds the type-pair counters: parse validation, the paired
+// damage scaling, the product cap and v1's immunity.
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "wait_status.hpp"
 
 #include <sys/wait.h>
 
@@ -97,7 +101,7 @@ int run_cli(const std::string& arguments) {
   char buffer[512];
   while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
   }
-  return WEXITSTATUS(pclose(pipe));
+  return exit_status_of(pclose(pipe));
 }
 
 std::string read_bytes(const std::string& path) {
@@ -578,6 +582,34 @@ TEST(CombatConfigTest, ParsesShippedFileAndRejectsBadValues) {
   EXPECT_EQ(shipped.charge.window_ticks, 10u);
   EXPECT_DOUBLE_EQ(shipped.fatigue.speed_factor, 0.7);
   EXPECT_DOUBLE_EQ(shipped.stance.damage_factor, 0.8);
+  // m14 item 0: the shipped counters must name types that exist in BOTH
+  // shipped unit tables (a typo here breaks every CLI battle at load
+  // time; this pins it at test time instead).
+  {
+    const auto table_for = [](const char* name) {
+      std::ifstream units(std::string(TEST_DATA_DIR) + "/" + name);
+      std::stringstream text;
+      text << units.rdbuf();
+      return sim::parse_unit_types(text.str());
+    };
+    const sim::UnitTypeTable units = table_for("units.json");
+    const sim::UnitTypeTable balanced = table_for("units-balanced.json");
+    EXPECT_FALSE(shipped.counters.list.empty())
+        << "the shipped combat.json carries no counters";
+    for (const sim::CombatConfig::Counter& counter :
+         shipped.counters.list) {
+      EXPECT_GE(units.index_of(counter.attacker), 0)
+          << counter.attacker << " is not a type in units.json";
+      EXPECT_GE(units.index_of(counter.defender), 0)
+          << counter.defender << " is not a type in units.json";
+      EXPECT_GE(balanced.index_of(counter.attacker), 0)
+          << counter.attacker << " is not a type in units-balanced.json";
+      EXPECT_GE(balanced.index_of(counter.defender), 0)
+          << counter.defender << " is not a type in units-balanced.json";
+    }
+    EXPECT_GE(shipped.counters.multiplier_cap, 1.0);
+    EXPECT_LE(shipped.counters.multiplier_cap, 8.0);
+  }
   // Bad values are rejected with a message naming the section.
   bool threw = false;
   try {
@@ -624,4 +656,233 @@ TEST(CombatConfigTest, ParsesShippedFileAndRejectsBadValues) {
     EXPECT_NE(std::string(error.what()).find("fatigue"), std::string::npos);
   }
   EXPECT_TRUE(threw) << "a negative gain was accepted";
+}
+
+// ---------------------------------------------------------------------------
+// m14 item 0: the type-pair counters.
+
+namespace {
+
+// All six required sections with the shipped values (no counters section
+// — that one is optional). Callers close the object, optionally adding
+// the counters section first.
+const char* kAllCombatSections =
+    R"json({"facing": {"flank_degrees": 60.0, "rear_degrees": 120.0,
+                       "flank_multiplier": 1.25, "rear_multiplier": 1.5,
+                       "rear_morale_loss": 2.0},
+            "charge": {"min_speed": 4.0, "window_ticks": 10,
+                       "min_distance": 20.0, "multiplier": 1.5,
+                       "held_reduction": 0.5, "dense_line_radius": 3.0,
+                       "dense_line_allies": 3},
+            "fatigue": {"move_gain_per_tick": 0.002,
+                        "fight_gain_per_attack": 0.025,
+                        "recover_per_tick": 0.0033333333333333335,
+                        "exhausted_level": 1.0, "speed_factor": 0.7,
+                        "damage_factor": 0.85, "accuracy_factor": 0.85},
+            "experience": {"gain_per_kill": 0.05,
+                           "gain_per_engaged_tick": 0.0005,
+                           "accuracy_bonus_max": 0.1,
+                           "morale_resist_max": 0.1},
+            "aura": {"damage_bonus": 0.05, "morale_reduction": 0.25},
+            "stance": {"cohesion_min": 0.6, "damage_factor": 0.8,
+                       "morale_resist": 0.2})json";
+
+std::string combat_with_counters(const std::string& counters) {
+  return std::string(kAllCombatSections) + ", \"counters\": " + counters +
+         "}";
+}
+
+// A two-type table: "spear" (speed 2, approaches) and "rider" (speed 0,
+// pinned). Zero variance, accuracy 1: exact arithmetic.
+sim::UnitTypeTable two_type_table() {
+  return sim::parse_unit_types(nlohmann::json::array({
+      nlohmann::json{{"id", "spear"},
+                     {"health", 1000000.0},
+                     {"damage", 20.0},
+                     {"speed", 2.0},
+                     {"range", 2.0},
+                     {"cooldown", 1},
+                     {"sight_radius", 80.0},
+                     {"accuracy", 1.0},
+                     {"damage_variance", 0.0}},
+      nlohmann::json{{"id", "rider"},
+                     {"health", 1000000.0},
+                     {"damage", 20.0},
+                     {"speed", 2.0},
+                     {"range", 2.0},
+                     {"cooldown", 1},
+                     {"sight_radius", 80.0},
+                     {"accuracy", 1.0},
+                     {"damage_variance", 0.0}},
+  }).dump());
+}
+
+// One spear east of one rider at melee range, both huge-health: a fixed
+// number of frontal hits over the ticks, nothing else in play (no
+// charge — spear speed 2 < 4; no aura, no fatigue bite, no stance).
+double spear_damage_dealt(const sim::CombatConfig& combat, bool v2,
+                          double* rider_damage = nullptr) {
+  const sim::UnitTypeTable types = two_type_table();
+  sim::SimulationConfig config = base_config(types, 6, combat);
+  config.combat_v2 = v2;
+  config.composition[kRed] = {{0, 1}};
+  config.composition[kBlue] = {{1, 1}};
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 500.0, 500.0, 1000000.0),
+      make_unit(2, sim::Faction::Blue, 502.0, 500.0, 1000000.0),
+  };
+  units[0].stats = types.types[0].stats;  // spear
+  units[1].stats = types.types[1].stats;
+  units[1].stats.speed = 0.0;  // rider pinned (table speeds must be > 0)
+  units[0].type_index = 0;
+  units[1].type_index = 1;
+  sim::Simulation simulation(config, units);
+  for (int i = 0; i < 6; ++i) {
+    simulation.tick();
+  }
+  const double spear_hits =
+      1000000.0 - simulation.world().units[1].health;
+  if (rider_damage != nullptr) {
+    *rider_damage = 1000000.0 - simulation.world().units[0].health;
+  }
+  return spear_hits;
+}
+
+}  // namespace
+
+TEST(CombatCountersTest, ParseDefaultsValuesAndRejections) {
+  // Without the section: empty list, the default cap.
+  const sim::CombatConfig plain =
+      sim::parse_combat(std::string(kAllCombatSections) + "}");
+  EXPECT_TRUE(plain.counters.list.empty());
+  EXPECT_DOUBLE_EQ(plain.counters.multiplier_cap, 3.0);
+
+  // Values land in order.
+  const sim::CombatConfig with_list = sim::parse_combat(combat_with_counters(
+      R"json({"multiplier_cap": 2.5,
+               "list": [{"attacker": "cavalry", "defender": "archer",
+                         "multiplier": 1.2},
+                        {"attacker": "archer", "defender": "infantry",
+                         "multiplier": 1.25},
+                        {"attacker": "infantry", "defender": "cavalry",
+                         "multiplier": 1.15}]})json"));
+  ASSERT_EQ(with_list.counters.list.size(), 3u);
+  EXPECT_EQ(with_list.counters.list[0].attacker, "cavalry");
+  EXPECT_EQ(with_list.counters.list[0].defender, "archer");
+  EXPECT_DOUBLE_EQ(with_list.counters.list[0].multiplier, 1.2);
+  EXPECT_EQ(with_list.counters.list[2].defender, "cavalry");
+  EXPECT_DOUBLE_EQ(with_list.counters.multiplier_cap, 2.5);
+  // The section is optional per part: a list alone keeps the default cap.
+  const sim::CombatConfig list_only = sim::parse_combat(combat_with_counters(
+      R"json({"list": [{"attacker": "a", "defender": "b",
+                        "multiplier": 1.0}]})json"));
+  EXPECT_EQ(list_only.counters.list.size(), 1u);
+  EXPECT_DOUBLE_EQ(list_only.counters.multiplier_cap, 3.0);
+
+  // Each malformed shape is rejected with a message naming the problem.
+  const auto rejects = [&](const std::string& counters,
+                           const std::string& needle) {
+    bool threw = false;
+    try {
+      sim::parse_combat(combat_with_counters(counters));
+    } catch (const std::invalid_argument& error) {
+      threw = true;
+      EXPECT_NE(std::string(error.what()).find(needle), std::string::npos)
+          << "message '" << error.what() << "' lacks '" << needle << "'";
+    }
+    EXPECT_TRUE(threw) << "accepted: " << counters;
+  };
+  rejects(R"json({"list": [{"attacker": "a", "defender": "b",
+                             "multiplier": 0.1}]})json",
+          "multiplier");
+  rejects(R"json({"list": [{"attacker": "a", "defender": "b",
+                             "multiplier": 5.0}]})json",
+          "multiplier");
+  rejects(R"json({"list": [{"attacker": "", "defender": "b",
+                             "multiplier": 1.0}]})json",
+          "non-empty");
+  rejects(R"json({"list": [{"attacker": 3, "defender": "b",
+                             "multiplier": 1.0}]})json",
+          "attacker");
+  rejects(R"json({"list": [{"attacker": "a", "defender": "b",
+                             "multiplier": 1.0},
+                            {"attacker": "a", "defender": "b",
+                             "multiplier": 1.1}]})json",
+          "duplicate");
+  rejects(R"json({"list": [{"attacker": "a", "defender": "b",
+                             "mult": 1.0}]})json",
+          "unknown field");
+  rejects(R"json({"multiplier_cap": 0.5})json", "multiplier_cap");
+  rejects(R"json({"multiplier_cap": 9.0})json", "multiplier_cap");
+  rejects(R"json({"list": 5})json", "array");
+  rejects(R"json([1, 2])json", "object");
+}
+
+TEST(CombatCountersTest, CountersScaleThePairedDamage) {
+  sim::CombatConfig combat;  // no counters
+  const double baseline = spear_damage_dealt(combat, true);
+  EXPECT_GT(baseline, 0.0) << "the duel never connected";
+
+  combat.counters.list.push_back({"spear", "rider", 2.0});
+  const double boosted = spear_damage_dealt(combat, true);
+  // Only the spear -> rider direction is listed: the spear's damage
+  // doubles exactly, and the rider's unlisted return damage is unchanged.
+  double rider_with = 0.0;
+  const double rider_baseline = [&] {
+    sim::CombatConfig plain;
+    double back = 0.0;
+    spear_damage_dealt(plain, true, &back);
+    return back;
+  }();
+  spear_damage_dealt(combat, true, &rider_with);
+  EXPECT_NEAR(boosted / baseline, 2.0, 0.01);
+  EXPECT_NEAR(rider_with / rider_baseline, 1.0, 0.01);
+}
+
+TEST(CombatCountersTest, CapClampsTheProduct) {
+  sim::CombatConfig combat;
+  combat.counters.list.push_back({"spear", "rider", 4.0});
+  combat.counters.multiplier_cap = 2.0;
+  const sim::CombatConfig plain;
+  const double baseline = spear_damage_dealt(plain, true);
+  const double clamped = spear_damage_dealt(combat, true);
+  // The counter alone would give x4; the cap holds the product at 2.0.
+  EXPECT_NEAR(clamped / baseline, 2.0, 0.01);
+  // The shipped cap never binds without counters: charge x rear x aura
+  // peaks at 2.3625 < 4.0, so no pre-counters v2 battle changes.
+  EXPECT_GT(1.5 * 1.5 * 1.05, 2.36);
+  EXPECT_LT(1.5 * 1.5 * 1.05, 4.0);
+}
+
+TEST(CombatCountersTest, V1IgnoresCounters) {
+  sim::CombatConfig plain;
+  sim::CombatConfig countered;
+  countered.counters.list.push_back({"spear", "rider", 2.0});
+  const double v1_plain = spear_damage_dealt(plain, false);
+  const double v1_countered = spear_damage_dealt(countered, false);
+  EXPECT_DOUBLE_EQ(v1_plain, v1_countered)
+      << "v1 must not apply counters (byte-identity)";
+}
+
+TEST(CombatCountersTest, UnknownCounterTypeIsRejectedAtBuild) {
+  const sim::UnitTypeTable types = two_type_table();
+  sim::CombatConfig combat;
+  combat.counters.list.push_back({"spear", "ghost", 1.5});
+  sim::SimulationConfig config = base_config(types, 6, combat);
+  std::vector<sim::Unit> units{
+      make_unit(1, sim::Faction::Red, 500.0, 500.0, 1000000.0),
+  };
+  units[0].stats = types.types[0].stats;
+  bool threw = false;
+  try {
+    sim::Simulation simulation(config, units);
+  } catch (const std::invalid_argument& error) {
+    threw = true;
+    const std::string message = error.what();
+    EXPECT_NE(message.find("ghost"), std::string::npos);
+    EXPECT_NE(message.find("spear"), std::string::npos)
+        << "the error must list the known types";
+    EXPECT_NE(message.find("rider"), std::string::npos);
+  }
+  EXPECT_TRUE(threw) << "an unknown counter type was silently ignored";
 }

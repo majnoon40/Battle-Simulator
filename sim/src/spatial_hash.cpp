@@ -75,6 +75,8 @@ void SpatialHashGrid::configure(double width, double height, double cell_size,
     per_faction[1].assign(col_words_ * cols_, 0);
   }
   unit_cell_.clear();
+  unit_slot_.clear();
+  shadow_.clear();
   tracked_count_ = 0;
 }
 
@@ -157,6 +159,20 @@ bool SpatialHashGrid::segment_has_units(Faction faction, bool column,
   return false;
 }
 
+void SpatialHashGrid::refresh_shadow(const std::vector<Unit>& units,
+                                     std::uint32_t index) {
+  if (shadow_.size() < units.size()) {
+    shadow_.resize(units.size());
+  }
+  const Unit& unit = units[index];
+  Shadow& s = shadow_[index];
+  s.x = unit.x;
+  s.y = unit.y;
+  s.id = unit.id;
+  s.faction = static_cast<std::uint8_t>(unit.faction);
+  s.alive = unit.alive;
+}
+
 void SpatialHashGrid::insert_into_cell(std::uint32_t index, std::size_t cell,
                                        Faction faction) {
   if (cells_.empty()) {
@@ -170,8 +186,10 @@ void SpatialHashGrid::insert_into_cell(std::uint32_t index, std::size_t cell,
   bucket.push_back(index);
   if (index >= unit_cell_.size()) {
     unit_cell_.resize(static_cast<std::size_t>(index) + 1, kUntracked);
+    unit_slot_.resize(static_cast<std::size_t>(index) + 1, 0u);
   }
   unit_cell_[index] = static_cast<std::int32_t>(cell);
+  unit_slot_[index] = static_cast<std::uint32_t>(bucket.size() - 1);
   ++tracked_count_;
 }
 
@@ -189,8 +207,15 @@ void SpatialHashGrid::build(const std::vector<Unit>& units) {
   occupancy_[1][0].assign(row_words_ * rows_, 0);
   occupancy_[1][1].assign(col_words_ * cols_, 0);
   unit_cell_.assign(units.size(), kUntracked);
+  unit_slot_.assign(units.size(), 0u);
+  // The shadow covers every unit, alive or not: dead records are never
+  // returned by a query (dead units are not tracked), but keeping the
+  // array in lockstep with `units` makes shadow_of() valid for any index
+  // the caller can name.
+  shadow_.resize(units.size());
   tracked_count_ = 0;
   for (std::size_t i = 0; i < units.size(); ++i) {
+    refresh_shadow(units, static_cast<std::uint32_t>(i));
     if (units[i].alive) {
       insert_into_cell(static_cast<std::uint32_t>(i),
                        cell_of(units[i].x, units[i].y), units[i].faction);
@@ -207,12 +232,14 @@ void SpatialHashGrid::insert(const std::vector<Unit>& units,
     return;  // already tracked
   }
   const Unit& unit = units[index];
+  refresh_shadow(units, index);
   insert_into_cell(index, cell_of(unit.x, unit.y), unit.faction);
 }
 
 void SpatialHashGrid::remove(const std::vector<Unit>& units,
                              std::uint32_t index) {
-  if (index >= units.size() || index >= unit_cell_.size()) {
+  if (index >= units.size() || index >= unit_cell_.size() ||
+      index >= unit_slot_.size()) {
     return;
   }
   const std::int32_t cell = unit_cell_[index];
@@ -222,11 +249,18 @@ void SpatialHashGrid::remove(const std::vector<Unit>& units,
   std::vector<std::uint32_t>& bucket =
       cells_[static_cast<std::size_t>(cell)].by_faction[static_cast<std::size_t>(
           units[index].faction)];
-  const auto it = std::find(bucket.begin(), bucket.end(), index);
-  if (it != bucket.end()) {
-    // Swap-remove: O(1). Bucket order changes, but query results do not
-    // depend on it (see the class comment).
-    *it = bucket.back();
+  const std::uint32_t slot = unit_slot_[index];
+  if (slot < bucket.size() && bucket[slot] == index) {
+    // Swap-remove through the tracked slot: the identical writes the
+    // std::find-based removal performed (bucket order changes, but query
+    // results do not depend on it — see the class comment). The displaced
+    // tail element's slot is corrected; when the removed element IS the
+    // tail, the write is the same self-assignment the old code did.
+    const std::uint32_t moved = bucket.back();
+    bucket[slot] = moved;
+    if (slot + 1 < bucket.size()) {
+      unit_slot_[moved] = slot;
+    }
     bucket.pop_back();
     if (bucket.empty()) {
       set_cell_occupancy(static_cast<std::size_t>(cell), units[index].faction,
@@ -235,6 +269,7 @@ void SpatialHashGrid::remove(const std::vector<Unit>& units,
   }
   unit_cell_[index] = kUntracked;
   --tracked_count_;
+  refresh_shadow(units, index);
 }
 
 void SpatialHashGrid::update(const std::vector<Unit>& units,
@@ -242,6 +277,10 @@ void SpatialHashGrid::update(const std::vector<Unit>& units,
   if (index >= units.size() || !units[index].alive) {
     return;  // dead units are never tracked
   }
+  // The shadow follows the authoritative position even when the cell did
+  // not change — a within-cell move still moves the unit, and the next
+  // query in the same tick must see the new position.
+  refresh_shadow(units, index);
   if (index >= unit_cell_.size() || unit_cell_[index] == kUntracked) {
     const Unit& unit = units[index];
     insert_into_cell(index, cell_of(unit.x, unit.y), unit.faction);
@@ -351,15 +390,31 @@ int SpatialHashGrid::nearest_enemy(const std::vector<Unit>& units,
   return best;
 }
 
-void SpatialHashGrid::radius_query(const std::vector<Unit>& units, double x,
-                                   double y, double radius,
+void SpatialHashGrid::append_within_radius(
+    const std::vector<std::uint32_t>& bucket, double x, double y,
+    double radius_sq, std::vector<std::uint32_t>& out) const {
+  for (std::uint32_t candidate : bucket) {
+    const Shadow& s = shadow_[candidate];
+    if (!s.alive) {
+      continue;  // shadow liveness: see the class comment
+    }
+    const double dx = s.x - x;
+    const double dy = s.y - y;
+    if (dx * dx + dy * dy <= radius_sq) {
+      out.push_back(candidate);
+    }
+  }
+}
+
+void SpatialHashGrid::radius_query(double x, double y, double radius,
                                    std::vector<std::uint32_t>& out) const {
   out.clear();
   if (cells_.empty() || !(radius >= 0.0)) {
     return;
   }
   // Cells overlapping the circle's bounding box (clamped); every candidate
-  // is then checked against the exact inclusive radius.
+  // is then checked against the exact inclusive radius, reading the
+  // per-unit shadow instead of the unit array (see the class comment).
   const std::int64_t cx =
       static_cast<std::int64_t>(clamp_to_index(x / cell_size_, cols_));
   const std::int64_t cy =
@@ -379,18 +434,43 @@ void SpatialHashGrid::radius_query(const std::vector<Unit>& units, double x,
           cells_[static_cast<std::size_t>(cell_x) * rows_ +
                 static_cast<std::size_t>(cell_y)];
       for (const std::vector<std::uint32_t>& bucket : cell.by_faction) {
-        for (std::uint32_t candidate : bucket) {
-          const Unit& other = units[candidate];
-          if (!other.alive) {
-            continue;  // defense in depth: see the class comment
-          }
-          const double dx = other.x - x;
-          const double dy = other.y - y;
-          if (dx * dx + dy * dy <= radius_sq) {
-            out.push_back(candidate);
-          }
-        }
+        append_within_radius(bucket, x, y, radius_sq, out);
       }
+    }
+  }
+}
+
+void SpatialHashGrid::radius_query_faction(double x, double y, double radius,
+                                           Faction faction,
+                                           std::vector<std::uint32_t>& out) const {
+  out.clear();
+  if (cells_.empty() || !(radius >= 0.0)) {
+    return;
+  }
+  // Identical to radius_query but only the one faction's bucket per cell:
+  // the result is the same subsequence the both-faction scan would have
+  // produced for that faction, so a caller that filters by faction gets
+  // the identical sequence without touching the other buckets.
+  const std::int64_t cx =
+      static_cast<std::int64_t>(clamp_to_index(x / cell_size_, cols_));
+  const std::int64_t cy =
+      static_cast<std::int64_t>(clamp_to_index(y / cell_size_, rows_));
+  const std::int64_t span =
+      static_cast<std::int64_t>(std::ceil(radius / cell_size_));
+  const std::int64_t x_from = std::max<std::int64_t>(cx - span, 0);
+  const std::int64_t x_to =
+      std::min<std::int64_t>(cx + span, static_cast<std::int64_t>(cols_) - 1);
+  const std::int64_t y_from = std::max<std::int64_t>(cy - span, 0);
+  const std::int64_t y_to =
+      std::min<std::int64_t>(cy + span, static_cast<std::int64_t>(rows_) - 1);
+  const double radius_sq = radius * radius;
+  const std::size_t f = static_cast<std::size_t>(faction);
+  for (std::int64_t cell_x = x_from; cell_x <= x_to; ++cell_x) {
+    for (std::int64_t cell_y = y_from; cell_y <= y_to; ++cell_y) {
+      const Cell& cell =
+          cells_[static_cast<std::size_t>(cell_x) * rows_ +
+                static_cast<std::size_t>(cell_y)];
+      append_within_radius(cell.by_faction[f], x, y, radius_sq, out);
     }
   }
 }
