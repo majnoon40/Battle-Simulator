@@ -129,12 +129,15 @@ Simulation::Simulation(SimulationConfig config,
   }
 
   // Faction axes (formation forward/lateral + the multi-faction retreat
-  // direction): computed once, right after the objectives exist — squads
-  // use them, and so do the Retreat/Flee/Flank fallbacks in battles
-  // without squads (M14 item 2). At two factions the AI fallbacks keep
-  // their historical +/-1 literals; the axes only take over in
-  // multi-faction battles.
-  compute_faction_axes();
+  // direction). At two factions the historical rule stays: the axes are
+  // zero until assign_squads computes them (squads on), and the AI's
+  // Retreat/Flee/Flank fallbacks use the +/-1 literals — the state hash
+  // covers these arrays, so battles without squads must keep the zeros.
+  // A multi-faction battle computes them here: every faction's AI needs
+  // them, squads or not.
+  if (faction_count_ > kFactionCount) {
+    compute_faction_axes();
+  }
 
   // Squads (M6): assignment happens once, after the armies exist and the
   // objectives are known (the formation axes point at them). Pure extra

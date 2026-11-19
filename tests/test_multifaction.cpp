@@ -270,15 +270,18 @@ TEST(MultiFactionBattleTest, ThreeFactionBattleRunsToTermination) {
     survivors += result.factions[f].survivors;
     EXPECT_GT(result.factions[f].initial, 0u);
   }
-  // The elimination rule ends with at most one standing faction; whoever
-  // remains has survivors.
-  std::size_t with_survivors = 0;
-  for (std::size_t f = 0; f < result.faction_count; ++f) {
-    if (result.factions[f].survivors > 0) {
-      ++with_survivors;
+  // Elimination ends with at most one standing faction; a tick-limit
+  // three-way grind may legitimately leave several (the winner, if any,
+  // is the most-survivors rule).
+  if (result.reason == sim::TerminationReason::FactionEliminated) {
+    std::size_t with_survivors = 0;
+    for (std::size_t f = 0; f < result.faction_count; ++f) {
+      if (result.factions[f].survivors > 0) {
+        ++with_survivors;
+      }
     }
+    EXPECT_LE(with_survivors, 1u);
   }
-  EXPECT_LE(with_survivors, 1u);
   if (result.has_winner) {
     EXPECT_GT(result.factions[static_cast<std::size_t>(result.winner)]
                   .survivors,
