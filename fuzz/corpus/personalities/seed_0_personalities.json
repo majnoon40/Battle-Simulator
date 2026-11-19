@@ -1,0 +1,44 @@
+{
+  "archetypes": [
+    {
+      "id": "brave",
+      "traits": {
+        "bravery": [0.75, 1.0],
+        "caution": [0.0, 0.25],
+        "aggression": [0.5, 1.0],
+        "discipline": [0.4, 0.8]
+      },
+      "spawn_weight": 1.0
+    },
+    {
+      "id": "cautious",
+      "traits": {
+        "bravery": [0.0, 0.25],
+        "caution": [0.75, 1.0],
+        "aggression": [0.0, 0.4],
+        "discipline": [0.6, 1.0]
+      },
+      "spawn_weight": 1.0
+    },
+    {
+      "id": "aggressive",
+      "traits": {
+        "bravery": [0.5, 0.9],
+        "caution": [0.0, 0.3],
+        "aggression": [0.8, 1.0],
+        "discipline": [0.3, 0.7]
+      },
+      "spawn_weight": 1.0
+    },
+    {
+      "id": "balanced",
+      "traits": {
+        "bravery": [0.35, 0.65],
+        "caution": [0.35, 0.65],
+        "aggression": [0.35, 0.65],
+        "discipline": [0.35, 0.65]
+      },
+      "spawn_weight": 1.0
+    }
+  ]
+}

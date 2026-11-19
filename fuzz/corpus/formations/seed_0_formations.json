@@ -1,0 +1,22 @@
+{
+  "formations": {
+    "line": {
+      "spacing": 3.0
+    },
+    "column": {
+      "spacing": 4.0
+    },
+    "loose": {
+      "spacing": 6.0
+    }
+  },
+  "default_formation": "line",
+  "steering": {
+    "separation": 1.5,
+    "cohesion": 0.1,
+    "alignment": 0.05,
+    "slot_seeking": 0.35,
+    "separation_radius": 3.0,
+    "cohesion_reference": 60.0
+  }
+}

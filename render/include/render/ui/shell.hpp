@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "game/settings.hpp"
 #include "game/view.hpp"
 #include "render/ui/screens.hpp"
 
@@ -89,6 +90,22 @@ struct ReplayClicks {
   std::string load_stem;
 };
 [[nodiscard]] ReplayClicks replay_clicks(const State& replay);
+
+// m13 item 5c: the settings screen's widgets read back as a
+// game::Settings (resolution select index, checkboxes, the UI-scale
+// slider mapped [0,1] -> [0.75, 2.0]).
+[[nodiscard]] game::Settings settings_from(const State& settings);
+[[nodiscard]] bool settings_apply_clicked(const State& settings);
+
+// m13 item 5c: the setup screen's window actions: a stepper click
+// carries the type it steps ("" = none), Save and Start.
+struct SetupClicks {
+  bool save = false;
+  bool start = false;
+  std::string plus_type;
+  std::string minus_type;
+};
+[[nodiscard]] SetupClicks setup_clicks(const State& setup);
 
 // The viewer state the battle screen implies: the view options and
 // pause/speed follow the widgets; zoom is the slider's mapping around

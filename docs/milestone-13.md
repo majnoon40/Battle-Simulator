@@ -933,3 +933,68 @@ lines + determinism for real ones. `battle_game` syntax-checked
 against the full raylib API surface (the sandbox lacks libxrandr-dev;
 CI's game-build job compiles it for real). docs/viewer.md documents
 every new control.
+
+## Item 5c — the setup editor and the settings screen (branch
+m13-setup-settings)
+
+- **Spawn anchors** (engine): scenario armies accept an optional
+  `"anchor": [x, y]` (count and budget forms) — the faction's spawn
+  region becomes a band-by-band window centered on the anchor and
+  clamped to the battlefield, for every spawn pattern; without an
+  anchor the historical full-height side band is used and every
+  existing battle is byte-identical (the no-anchor formulas degenerate
+  to exactly the old math; the era baselines prove it). Anchors follow
+  `--swap-sides`. Validated on the battlefield like objectives.
+- **The scenario writer**: `sim::write_scenario` serializes a Scenario
+  back into the file format (ordered_json, so army entries keep
+  scenario order — nlohmann's sorted objects would reorder them);
+  parse(write(parse(x))) round-trips every field the editor edits, and
+  the shipped scenarios round-trip (tested).
+- **The army editor** (`Screen::Setup`): built per scenario
+  (`render::ui::setup_state`) with per-type steppers for the edited
+  faction, the anchor drag on a field preview (bands + both anchors),
+  Save (`<name>-setup.json`) and Start. The edit model is pure
+  (`game/setup_edit`: steps respect the per-faction minimum and the
+  20k cap; anchors clamp; `to_scenario` produces the savable file).
+- **The settings screen** (`Screen::Settings`): resolution, fullscreen,
+  vsync, UI scale (theme metrics rescale via `render::ui::scale_theme`
+  — colors untouched, 1px borders stay crisp) and the colorblind
+  palette (`game::set_colorblind_palette`: red/blue -> orange/sky-blue
+  in faction_color/routed_color — a viewer-global, never simulation
+  state). Apply takes effect immediately and persists to settings.json
+  (`game::Settings` parse/write with the never-silently-default
+  validation rules).
+
+Verification: 13 new tests (479 total) — anchor window placement (all
+40 units inside), no-anchor byte-identity, anchor parse/validation,
+writer round-trips (the edited fields and the shipped scenarios),
+settings parse/write + validation + the palette swap, theme scaling
+with clamping, the setup-edit step/cap/clamp/to_scenario rules, setup +
+settings navigation and click reading. The window wiring is
+syntax-checked against the full raylib API surface (CI's game-build
+job compiles it for real).
+
+## Item 6 — fuzzing (branch m13-fuzzing, stacked on item 5c)
+
+Thirteen libFuzzer harnesses (`fuzz/harnesses.cpp`, plain functions —
+no libFuzzer dependency in the logic): the eight data parsers (unit
+types, scenario, personalities, morale, tactics, formations,
+commanders, combat), the JSON terrain grid, the window settings, the
+file-based replay and order-script parsers (through a scratch file —
+exactly how untrusted input reaches them), and a bounded simulation
+harness (valid scenario -> at most 1,000 units, 10 ticks) that fuzzes
+the state machine, not just the parsers. The contract — never crash,
+never hang, never escape an exception — is pinned twice: the clang
+builds (`BUILD_FUZZING=ON`, `-fsanitize=fuzzer,address,undefined`)
+wrap each harness in a libFuzzer target, and
+`tests/test_fuzz_harnesses.cpp` runs every harness over the committed
+seed corpus (plus every other harness's seeds — parsers face mixed
+directories through `--mod`) inside the normal suite, so the ASan/UBSan
+job covers the harness paths too.
+
+The corpus (`fuzz/corpus/<target>/`, committed) seeds each target with
+the shipped data files and shared edge cases, plus a recorded replay
+and an order script for the file-based harnesses. CI: the `Fuzzing`
+job runs every target 60s per push; a nightly workflow (03:00 UTC)
+runs 10 minutes per target and uploads crash artifacts. docs/fuzzing.md
+documents the flow.

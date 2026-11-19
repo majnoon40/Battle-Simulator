@@ -607,25 +607,40 @@ void Simulation::spawn_armies() {
       // exactly as in M1-M9.
       const SpawnPattern pattern = config_.spawn_patterns[index];
       const bool west_band = (faction == Faction::Red) != config_.swap_sides;
-      const double band_lo = west_band ? 0.0 : world_.width - band;
-      const double band_hi = west_band ? band : world_.width;
+      double band_lo = west_band ? 0.0 : world_.width - band;
+      double band_hi = west_band ? band : world_.width;
+      // m13 item 5c: an anchor moves the spawn window — a band-by-band
+      // region centered on the anchor (clamped), instead of the
+      // full-height side band. No anchor: the historical window, and
+      // every formula below degenerates to exactly the old math.
+      double y_lo = 0.0;
+      double y_hi = world_.height;
+      if (const auto& anchor = config_.spawn_anchors[index]) {
+        band_lo = std::clamp(anchor->x - band / 2.0, 0.0,
+                             std::max(0.0, world_.width - band));
+        band_hi = band_lo + band;
+        y_lo = std::clamp(anchor->y - band / 2.0, 0.0,
+                          std::max(0.0, world_.height - band));
+        y_hi = y_lo + band;
+      }
+      const double band_span = band_hi - band_lo;
       if (pattern == SpawnPattern::Band) {
-        unit.x = band_lo + rng_.next_double() * band;
-        unit.y = rng_.next_double() * world_.height;
+        unit.x = band_lo + rng_.next_double() * band_span;
+        unit.y = y_lo + rng_.next_double() * (y_hi - y_lo);
       } else {
         // Deterministic pattern placement inside the band (docs/ai.md).
         const std::uint32_t n = to_spawn > 1 ? to_spawn : 1;
         const double t = static_cast<double>(i) / static_cast<double>(n - 1);
         if (pattern == SpawnPattern::Line) {
           unit.x = (band_lo + band_hi) / 2.0;
-          unit.y = world_.height * (0.10 + 0.80 * t);
+          unit.y = y_lo + (y_hi - y_lo) * (0.10 + 0.80 * t);
         } else if (pattern == SpawnPattern::Columns) {
           const std::uint32_t per_col = (to_spawn + 3) / 4;
           const std::uint32_t col = i / per_col;
           const std::uint32_t row = i % per_col;
           const std::uint32_t rows = per_col > 1 ? per_col : 1;
-          unit.x = band_lo + (0.5 + col) * band / 4.0;
-          unit.y = world_.height *
+          unit.x = band_lo + (0.5 + col) * band_span / 4.0;
+          unit.y = y_lo + (y_hi - y_lo) *
                    (0.10 + 0.80 * static_cast<double>(row) / rows);
         } else if (pattern == SpawnPattern::Echelon) {
           const std::uint32_t rank = i / 8;
@@ -634,20 +649,20 @@ void Simulation::spawn_armies() {
           // ranks never spill out of the band.
           const double fraction =
               std::min(1.0, 0.15 + 0.70 * pos / 8.0 + 0.08 * rank / 8.0);
-          unit.x = band_lo + band * fraction;
-          unit.y = world_.height * (0.85 - 0.75 * t);
+          unit.x = band_lo + band_span * fraction;
+          unit.y = y_lo + (y_hi - y_lo) * (0.85 - 0.75 * t);
         } else {  // Cluster: five groups at counter-RNG band centers.
           const std::uint32_t cluster = i % 5;
-          const double cx = band_lo + band *
+          const double cx = band_lo + band_span *
               tactics_roll(config_.seed, 1000 + cluster, 0, 5);
-          const double cy = world_.height *
+          const double cy = y_lo + (y_hi - y_lo) *
               (0.15 + 0.70 * tactics_roll(config_.seed, 2000 + cluster, 0, 5));
           const double jx = (tactics_roll(config_.seed, unit.id, 0, 5) - 0.5) *
-                            band * 0.5;
+                            band_span * 0.5;
           const double jy = (tactics_roll(config_.seed, unit.id, 1, 5) - 0.5) *
-                            band * 0.5;
+                            band_span * 0.5;
           unit.x = std::clamp(cx + jx, band_lo, band_hi);
-          unit.y = std::clamp(cy + jy, 0.0, world_.height);
+          unit.y = std::clamp(cy + jy, y_lo, y_hi);
         }
         unit.x = std::clamp(unit.x, 1.0, world_.width - 1.0);
         unit.y = std::clamp(unit.y, 1.0, world_.height - 1.0);

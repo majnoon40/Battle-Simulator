@@ -9,6 +9,7 @@
 #include "sim/factions.hpp"
 #include "sim/morale.hpp"
 #include "sim/personalities.hpp"
+#include "sim/scenario.hpp"
 #include "sim/squads.hpp"
 #include "sim/unit.hpp"
 #include "sim/unit_types.hpp"
@@ -161,6 +162,9 @@ struct SimulationConfig {
   // deterministically inside the band (counter RNG channel 5); scenarios
   // opt in per faction.
   std::array<SpawnPattern, kFactionCount> spawn_patterns{};
+  // m13 item 5c: optional spawn anchors (drag-to-place; see
+  // sim/scenario.hpp). Unset = the historical full-height side band.
+  std::array<std::optional<SpawnAnchor>, kFactionCount> spawn_anchors{};
 
   // Side swap (M10, --swap-sides): Red spawns in the eastern band and
   // Blue in the western one (the band contents, default objectives and

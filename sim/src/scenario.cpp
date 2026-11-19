@@ -111,9 +111,10 @@ std::uint32_t positive_count(const OrderedJson& value, const std::string& type_i
   return static_cast<std::uint32_t>(count);
 }
 
-std::vector<ScenarioEntry> parse_army(const OrderedJson& armies,
-                                      std::string_view key,
-                                      std::optional<ScenarioBudget>& budget) {
+std::vector<ScenarioEntry> parse_army(
+    const OrderedJson& armies, std::string_view key,
+    std::optional<ScenarioBudget>& budget,
+    std::optional<SpawnAnchor>& anchor, double world_w, double world_h) {
   const std::string name(key);
   const OrderedJson& army = required_field(armies, key, "'armies'");
   if (!army.is_object()) {
@@ -127,15 +128,36 @@ std::vector<ScenarioEntry> parse_army(const OrderedJson& armies,
   // exclusive so a scenario never has two ways to say the same thing.
   const bool has_budget = army.contains("budget");
   const bool has_mix = army.contains("mix");
+  // m13 item 5c: the optional spawn anchor works in both army forms.
+  if (const auto anchor_field = army.find("anchor");
+      anchor_field != army.end()) {
+    if (!anchor_field->is_array() || anchor_field->size() != 2 ||
+        !(*anchor_field)[0].is_number() || !(*anchor_field)[1].is_number()) {
+      fail("army '" + name + "': field 'anchor' must be [x, y] numbers");
+    }
+    SpawnAnchor parsed;
+    parsed.x = (*anchor_field)[0].get<double>();
+    parsed.y = (*anchor_field)[1].get<double>();
+    if (!std::isfinite(parsed.x) || !std::isfinite(parsed.y) ||
+        parsed.x < 0.0 || parsed.x > world_w ||
+        parsed.y < 0.0 || parsed.y > world_h) {
+      fail("army '" + name +
+           "': anchor must lie on the battlefield (got " +
+           anchor_field->dump() + ")");
+    }
+    anchor = parsed;
+  }
   if (has_budget || has_mix) {
     if (!has_budget || !has_mix) {
       fail("army '" + name +
            "': budget-form armies need both 'budget' and 'mix'");
     }
-    if (army.size() != 2) {
+    if (army.size() != 2 &&
+        !(army.size() == 3 && army.contains("anchor"))) {
       fail("army '" + name +
            "': budget-form armies take exactly 'budget' and 'mix' "
-           "(counts and budget are mutually exclusive)");
+           "(plus the optional 'anchor'; counts and budget are mutually "
+           "exclusive)");
     }
     const OrderedJson& budget_value = army.at("budget");
     if (!budget_value.is_number()) {
@@ -174,6 +196,9 @@ std::vector<ScenarioEntry> parse_army(const OrderedJson& armies,
   entries.reserve(army.size());
   std::uint64_t army_total = 0;
   for (auto it = army.begin(); it != army.end(); ++it) {
+    if (it.key() == "anchor") {
+      continue;  // m13 item 5c: handled above / below for both forms
+    }
     if (it.key().empty()) {
       fail("army '" + name + "' has an empty unit type id");
     }
@@ -264,12 +289,14 @@ Scenario parse_scenario_document(const OrderedJson& root) {
   if (!armies.is_object()) {
     fail("scenario field 'armies' must be a JSON object");
   }
-  scenario.armies[static_cast<std::size_t>(Faction::Red)] =
-      parse_army(armies, "red", scenario.budgets[static_cast<std::size_t>(
-                                   Faction::Red)]);
-  scenario.armies[static_cast<std::size_t>(Faction::Blue)] =
-      parse_army(armies, "blue", scenario.budgets[static_cast<std::size_t>(
-                                    Faction::Blue)]);
+  scenario.armies[static_cast<std::size_t>(Faction::Red)] = parse_army(
+      armies, "red", scenario.budgets[static_cast<std::size_t>(Faction::Red)],
+      scenario.anchors[static_cast<std::size_t>(Faction::Red)],
+      scenario.battlefield_width, scenario.battlefield_height);
+  scenario.armies[static_cast<std::size_t>(Faction::Blue)] = parse_army(
+      armies, "blue", scenario.budgets[static_cast<std::size_t>(Faction::Blue)],
+      scenario.anchors[static_cast<std::size_t>(Faction::Blue)],
+      scenario.battlefield_width, scenario.battlefield_height);
 
   // Optional per-faction objectives (M4): {"red": {"x": .., "y": ..},
   // "blue": {...}}. Factions may be omitted individually; both default to
@@ -464,6 +491,81 @@ Scenario parse_scenario(std::istream& stream) {
     fail(std::string("not valid JSON: ") + error.what());
   }
   return parse_scenario_document(root);
+}
+
+std::string write_scenario(const Scenario& scenario) {
+  // ordered_json keeps army entries in scenario order — the parser
+  // preserves file order, so the writer must too (round-trip).
+  nlohmann::ordered_json out;
+  out["battlefield"] = {{"width", scenario.battlefield_width},
+                        {"height", scenario.battlefield_height}};
+  out["spawn_band_fraction"] = scenario.spawn_band_fraction;
+  nlohmann::ordered_json armies;
+  for (Faction faction : kAllFactions) {
+    const std::size_t index = static_cast<std::size_t>(faction);
+    nlohmann::ordered_json army = nlohmann::ordered_json::object();
+    if (const auto& budget = scenario.budgets[index]) {
+      army["budget"] = budget->budget;
+      nlohmann::ordered_json mix = nlohmann::ordered_json::object();
+      for (const ScenarioEntry& entry : budget->mix) {
+        mix[entry.type_id] = entry.count;
+      }
+      army["mix"] = mix;
+    } else {
+      for (const ScenarioEntry& entry : scenario.armies[index]) {
+        army[entry.type_id] = entry.count_max > 0
+                                  ? nlohmann::json::array(
+                                        {entry.count_min, entry.count_max})
+                                  : nlohmann::json(entry.count);
+      }
+    }
+    if (const auto& anchor = scenario.anchors[index]) {
+      army["anchor"] = nlohmann::json::array({anchor->x, anchor->y});
+    }
+    armies[faction == Faction::Red ? "red" : "blue"] = std::move(army);
+  }
+  out["armies"] = std::move(armies);
+  if (scenario.objectives[static_cast<std::size_t>(Faction::Red)] ||
+      scenario.objectives[static_cast<std::size_t>(Faction::Blue)]) {
+    nlohmann::ordered_json objectives;
+    for (Faction faction : kAllFactions) {
+      const auto& objective =
+          scenario.objectives[static_cast<std::size_t>(faction)];
+      if (objective) {
+        objectives[faction == Faction::Red ? "red" : "blue"] =
+            {{"x", objective->x}, {"y", objective->y}};
+      }
+    }
+    out["objectives"] = std::move(objectives);
+  }
+  if (scenario.squads[static_cast<std::size_t>(Faction::Red)] ||
+      scenario.squads[static_cast<std::size_t>(Faction::Blue)]) {
+    nlohmann::ordered_json squads;
+    for (Faction faction : kAllFactions) {
+      const auto& plan = scenario.squads[static_cast<std::size_t>(faction)];
+      if (plan) {
+        squads[faction == Faction::Red ? "red" : "blue"] = {
+            {"count", plan->count}, {"size", plan->size}};
+      }
+    }
+    out["squads"] = std::move(squads);
+  }
+  if (scenario.map) {
+    out["map"] = {{"file", scenario.map->file},
+                  {"cell_size", scenario.map->cell_size}};
+  }
+  if (scenario.spawn_patterns[static_cast<std::size_t>(Faction::Red)] ==
+          scenario.spawn_patterns[static_cast<std::size_t>(Faction::Blue)]) {
+    out["spawn_pattern"] = to_string(
+        scenario.spawn_patterns[static_cast<std::size_t>(Faction::Red)]);
+  } else {
+    out["spawn_patterns"] = {
+        {"red", to_string(scenario.spawn_patterns[static_cast<std::size_t>(
+                     Faction::Red)])},
+        {"blue", to_string(scenario.spawn_patterns[static_cast<std::size_t>(
+                     Faction::Blue)])}};
+  }
+  return out.dump(2) + "\n";
 }
 
 std::array<std::vector<TypeCount>, kFactionCount> build_composition(

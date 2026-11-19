@@ -57,8 +57,8 @@ namespace {
 
 App sandbox_app(int width, int height,
                 const std::vector<std::string>& scenarios,
-                const std::vector<std::string>& replays) {
-  const Theme theme = default_theme();
+                const std::vector<std::string>& replays,
+                const Theme& theme) {
 
   // --- The menu: a centered column of buttons. ---
   std::int32_t menu_box = 0;
@@ -74,7 +74,8 @@ App sandbox_app(int width, int height,
   for (const auto& [id, label] :
        std::initializer_list<std::pair<const char*, const char*>>{
            {kIdNewBattle, "New battle"}, {kIdScenario, "Scenarios"},
-           {kIdReplays, "Replays"}, {kIdQuit, "Quit"}}) {
+           {kIdReplays, "Replays"}, {kIdSetup, "Army editor"},
+           {kIdSettings, "Settings"}, {kIdQuit, "Quit"}}) {
     menu_tree.add(menu_box, [&] {
       Widget w;
       w.id = id;
@@ -285,6 +286,110 @@ App sandbox_app(int width, int height,
     return w;
   }());
 
+  // --- m13 item 5c: the settings screen (resolution / fullscreen /
+  // vsync / UI scale / colorblind; Apply is a window action). ---
+  std::int32_t settings_box = 0;
+  Tree settings_tree =
+      centered_root(width, height, 300, "settings", settings_box);
+  settings_tree.add(settings_box, [&] {
+    Widget w;
+    w.id = "settings-title";
+    w.kind = Kind::Label;
+    w.text = "Settings";
+    return w;
+  }());
+  settings_tree.add(settings_box, [&] {
+    Widget w;
+    w.id = kIdResolution;
+    w.kind = Kind::Select;
+    w.text = "1280x720\n1600x900\n1920x1080";
+    w.grow = 1.0;
+    return w;
+  }());
+  for (const auto& [id, label] :
+       std::initializer_list<std::pair<const char*, const char*>>{
+           {kIdFullscreen, "Fullscreen"},
+           {kIdVsync, "Vsync"},
+           {kIdColorblind, "Colorblind palette"}}) {
+    settings_tree.add(settings_box, [&] {
+      Widget w;
+      w.id = id;
+      w.kind = Kind::Checkbox;
+      w.text = label;
+      return w;
+    }());
+  }
+  settings_tree.add(settings_box, [&] {
+    Widget w;
+    w.id = kIdUiScale;
+    w.kind = Kind::Slider;
+    w.value = 0.2;  // 1.0x on the [0.75, 2.0] mapping
+    w.grow = 1.0;
+    return w;
+  }());
+  const std::int32_t settings_row =
+      static_cast<std::int32_t>(settings_tree.add(
+          settings_box, [&] {
+            Widget w;
+            w.id = "settings-row";
+            w.kind = Kind::Panel;
+            w.box = Box::Row;
+            return w;
+          }()));
+  settings_tree.add(settings_row, [&] {
+    Widget w;
+    w.id = kIdBack;
+    w.kind = Kind::Button;
+    w.text = "Back";
+    w.grow = 1.0;
+    return w;
+  }());
+  settings_tree.add(settings_row, [&] {
+    Widget w;
+    w.id = kIdSettingsApply;
+    w.kind = Kind::Button;
+    w.text = "Apply";
+    w.grow = 1.0;
+    return w;
+  }());
+
+  // --- m13 item 5c: a placeholder setup screen (title + hint + Back).
+  // The window replaces it with the scenario's real stepper rows on
+  // entering the editor (setup_state); navigating there without the
+  // window still works. ---
+  std::int32_t setup_box = 0;
+  Tree setup_tree = centered_root(width, height, 340, "setup", setup_box);
+  setup_tree.add(setup_box, [&] {
+    Widget w;
+    w.id = "setup-title";
+    w.kind = Kind::Label;
+    w.text = "Army editor";
+    return w;
+  }());
+  setup_tree.add(setup_box, [&] {
+    Widget w;
+    w.id = kIdSetupFaction;
+    w.kind = Kind::Select;
+    w.text = "edit: red\nedit: blue";
+    w.grow = 1.0;
+    return w;
+  }());
+  setup_tree.add(setup_box, [&] {
+    Widget w;
+    w.id = "setup-hint";
+    w.kind = Kind::Label;
+    w.text = "the window fills the type steppers here";
+    return w;
+  }());
+  setup_tree.add(setup_box, [&] {
+    Widget w;
+    w.id = kIdBack;
+    w.kind = Kind::Button;
+    w.text = "Back";
+    w.grow = 1.0;
+    return w;
+  }());
+
   App app;
   app.width = width;
   app.height = height;
@@ -301,6 +406,12 @@ App sandbox_app(int width, int height,
   app.replay.tree = std::move(replay_tree);
   app.replay.width = width;
   app.replay.height = height;
+  app.settings.tree = std::move(settings_tree);
+  app.settings.width = width;
+  app.settings.height = height;
+  app.setup.tree = std::move(setup_tree);
+  app.setup.width = width;
+  app.setup.height = height;
   for (std::size_t i = 0; i < app.menu.tree.size() && app.menu.focus < 0;
        ++i) {
     if (app.menu.tree.at(i).interactive()) {
@@ -329,12 +440,141 @@ App sandbox_app(int width, int height,
   layout(app.scenario.tree, Rect{0, 0, width, height}, theme);
   layout(app.end.tree, Rect{0, 0, width, height}, theme);
   layout(app.replay.tree, Rect{0, 0, width, height}, theme);
+  layout(app.settings.tree, Rect{0, 0, width, height}, theme);
+  layout(app.setup.tree, Rect{0, 0, width, height}, theme);
   return app;
 }
 
+State setup_state(int width, int height, const Theme& theme,
+                  const std::vector<std::string>& type_names) {
+  std::int32_t box = 0;
+  Tree tree = centered_root(width, height, 340, "setup", box);
+  tree.add(box, [&] {
+    Widget w;
+    w.id = "setup-title";
+    w.kind = Kind::Label;
+    w.text = "Army editor";
+    return w;
+  }());
+  tree.add(box, [&] {
+    Widget w;
+    w.id = kIdSetupFaction;
+    w.kind = Kind::Select;
+    w.text = "edit: red\nedit: blue";
+    w.grow = 1.0;
+    return w;
+  }());
+  tree.add(box, [&] {
+    Widget w;
+    w.id = "setup-sep";
+    w.kind = Kind::Separator;
+    return w;
+  }());
+  // One stepper row per type: label, -, count, +.
+  for (const std::string& type : type_names) {
+    const std::int32_t row = static_cast<std::int32_t>(tree.add(
+        box, [&] {
+          Widget w;
+          w.id = "setup-row-" + type;
+          w.kind = Kind::Panel;
+          w.box = Box::Row;
+          w.grow = 1.0;
+          return w;
+        }()));
+    tree.add(row, [&] {
+      Widget w;
+      w.id = "label-" + type;
+      w.kind = Kind::Label;
+      w.text = type;
+      w.grow = 1.0;
+      return w;
+    }());
+    tree.add(row, [&] {
+      Widget w;
+      w.id = "minus-" + type;
+      w.kind = Kind::Button;
+      w.text = "-";
+      w.fixed_w = 36;
+      return w;
+    }());
+    tree.add(row, [&] {
+      Widget w;
+      w.id = "count-" + type;
+      w.kind = Kind::Label;
+      w.text = "0";
+      w.fixed_w = 56;
+      return w;
+    }());
+    tree.add(row, [&] {
+      Widget w;
+      w.id = "plus-" + type;
+      w.kind = Kind::Button;
+      w.text = "+";
+      w.fixed_w = 36;
+      return w;
+    }());
+  }
+  tree.add(box, [&] {
+    Widget w;
+    w.id = "setup-sep-2";
+    w.kind = Kind::Separator;
+    return w;
+  }());
+  tree.add(box, [&] {
+    Widget w;
+    w.id = "setup-hint";
+    w.kind = Kind::Label;
+    w.text = "drag the field to place the spawn anchor";
+    return w;
+  }());
+  const std::int32_t row = static_cast<std::int32_t>(tree.add(
+      box, [&] {
+        Widget w;
+        w.id = "setup-actions";
+        w.kind = Kind::Panel;
+        w.box = Box::Row;
+        return w;
+      }()));
+  tree.add(row, [&] {
+    Widget w;
+    w.id = kIdBack;
+    w.kind = Kind::Button;
+    w.text = "Back";
+    w.grow = 1.0;
+    return w;
+  }());
+  tree.add(row, [&] {
+    Widget w;
+    w.id = kIdSetupSave;
+    w.kind = Kind::Button;
+    w.text = "Save";
+    w.grow = 1.0;
+    return w;
+  }());
+  tree.add(row, [&] {
+    Widget w;
+    w.id = kIdSetupStart;
+    w.kind = Kind::Button;
+    w.text = "Start";
+    w.grow = 1.0;
+    return w;
+  }());
+  State state;
+  state.tree = std::move(tree);
+  state.width = width;
+  state.height = height;
+  for (std::size_t i = 0; i < state.tree.size() && state.focus < 0; ++i) {
+    if (state.tree.at(i).interactive()) {
+      state.focus = static_cast<std::int32_t>(i);
+    }
+  }
+  layout(state.tree, Rect{0, 0, width, height}, theme);
+  return state;
+}
+
 App reduce_app(App app, const Event& event,
-               const std::vector<std::string>& scenarios) {
-  const Theme theme = default_theme();
+               const std::vector<std::string>& scenarios,
+               const Theme& theme) {
   State& active = app.active();
   const std::string clicked_before = active.clicked;
   active = reduce(std::move(active), event, theme);
@@ -356,6 +596,12 @@ App reduce_app(App app, const Event& event,
     } else if (clicked == kIdReplays) {
       app.screen = Screen::Replay;
       consume();
+    } else if (clicked == kIdSetup) {
+      app.screen = Screen::Setup;
+      consume();
+    } else if (clicked == kIdSettings) {
+      app.screen = Screen::Settings;
+      consume();
     } else if (clicked == kIdQuit) {
       app.quit = true;
       consume();
@@ -373,6 +619,18 @@ App reduce_app(App app, const Event& event,
       consume();
     }
     // Load / Verify: window actions (render::ui::replay_clicks).
+  } else if (app.screen == Screen::Setup) {
+    if (clicked == kIdBack) {
+      app.screen = Screen::Menu;
+      consume();
+    }
+    // Steppers / Save / Start: window actions.
+  } else if (app.screen == Screen::Settings) {
+    if (clicked == kIdBack) {
+      app.screen = Screen::Menu;
+      consume();
+    }
+    // Apply: window action.
   } else if (app.screen == Screen::Scenario) {
     if (clicked == kIdBack) {
       app.screen = Screen::Menu;

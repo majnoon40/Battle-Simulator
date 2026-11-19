@@ -24,6 +24,9 @@ add_executable(battle_tests
   test_morale.cpp
   test_battle_input.cpp
   test_replay_runtime.cpp
+  test_fuzz_harnesses.cpp
+  test_setup_editor.cpp
+  ../fuzz/harnesses.cpp
   test_squads.cpp
   test_viewer.cpp
   test_terrain.cpp
@@ -41,7 +44,11 @@ add_executable(battle_tests
   test_thread_pool.cpp
   test_threads.cpp)
 target_compile_features(battle_tests PRIVATE cxx_std_20)
-target_link_libraries(battle_tests PRIVATE sim render game_core cli_args cli_report gtest_main)
+target_include_directories(battle_tests PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_definitions(battle_tests PRIVATE
+  FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/fuzz/corpus")
+target_link_libraries(battle_tests PRIVATE sim render game_core cli_args
+  cli_report gtest_main)
 # The committed data files are validated by the loader tests.
 target_compile_definitions(battle_tests PRIVATE
   TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../data"

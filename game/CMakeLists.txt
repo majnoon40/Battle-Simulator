@@ -8,6 +8,8 @@ add_library(game_core STATIC
   core/src/battle_input.cpp
   core/src/theme.cpp
   core/src/picking.cpp
+  core/src/settings.cpp
+  core/src/setup_edit.cpp
   core/src/ascii.cpp)
 add_library(game::game_core ALIAS game_core)
 target_include_directories(game_core PUBLIC

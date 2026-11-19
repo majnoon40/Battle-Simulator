@@ -39,6 +39,8 @@
 #include "cli/replay_runtime.hpp"
 #include "cli/report.hpp"
 #include "game/battle_input.hpp"
+#include "game/settings.hpp"
+#include "game/setup_edit.hpp"
 #include "game/camera.hpp"
 #include "game/picking.hpp"
 #include "game/theme.hpp"
@@ -100,6 +102,10 @@ sim::SimulationConfig build_config(const cli::Arguments& args,
   config.battlefield_width = scenario.battlefield_width;
   config.battlefield_height = scenario.battlefield_height;
   config.spawn_band_fraction = scenario.spawn_band_fraction;
+  for (sim::Faction faction : sim::kAllFactions) {
+    config.spawn_anchors[static_cast<std::size_t>(faction)] =
+        scenario.anchors[static_cast<std::size_t>(faction)];
+  }
   config.unit_types = &types;
   config.personalities = &personalities;
   config.morale = &morale;
@@ -252,9 +258,28 @@ int main(int argc, char** argv) {
   if (scenario_names.empty()) {
     scenario_names.push_back("default");
   }
+  std::vector<std::string> replay_names = render::ui::list_replays(".");
+  // m13 item 5c: settings (settings.json in the working directory;
+  // missing file = defaults). Applied before the first frame.
+  game::Settings settings;
+  if (std::ifstream settings_file("settings.json"); settings_file) {
+    std::string text((std::istreambuf_iterator<char>(settings_file)),
+                     std::istreambuf_iterator<char>());
+    std::string settings_error;
+    game::Settings parsed;
+    if (game::parse_settings(text, parsed, settings_error)) {
+      settings = parsed;
+    } else {
+      std::cerr << "warning: settings.json ignored: " << settings_error
+                << "\n";
+    }
+  }
+  game::set_colorblind_palette(settings.colorblind);
+  render::ui::Theme ui_theme =
+      render::ui::scale_theme(render::ui::default_theme(), settings.ui_scale);
   render::ui::App app = render::ui::sandbox_app(
-      GetRenderWidth(), GetRenderHeight(), scenario_names);
-  const render::ui::Theme ui_theme = render::ui::default_theme();
+      GetRenderWidth(), GetRenderHeight(), scenario_names, replay_names,
+      ui_theme);
   render::ui::BattleView view;  // pause/speed/options/zoom from the UI
   std::string loaded_scenario = scenario_name;  // what the sim runs now
   // m13 item 5a: multi-squad selection + click/drag bookkeeping. The
@@ -338,7 +363,7 @@ int main(int argc, char** argv) {
           render::ui::list_replays(".");
       const render::ui::Screen target = app.screen;
       app = render::ui::sandbox_app(screen_width, screen_height,
-                                    scenario_names, replay_names);
+                                    scenario_names, replay_names, ui_theme);
       app.screen = target;
     }
     previous_screen = app.screen;
@@ -417,7 +442,7 @@ int main(int argc, char** argv) {
       }
       for (const render::ui::Event& event : events) {
         app = render::ui::reduce_app(std::move(app), event,
-                                     scenario_names);
+                                     scenario_names, ui_theme);
       }
       if (app.quit) {
         break;
@@ -529,6 +554,119 @@ int main(int argc, char** argv) {
           }
         }
       }
+    }
+
+    // --- m13 item 5c: the army editor -----------------------------------
+    static game::SetupEdit setup_edit;
+    static bool setup_loaded = false;
+    if (app.screen == render::ui::Screen::Setup) {
+      // Entering the editor (or after a reload): build the screen for
+      // the loaded scenario's types and snapshot the current armies.
+      if (!setup_loaded) {
+        setup_loaded = true;
+        std::vector<std::string> type_names;
+        for (const sim::UnitType& type : types.types) {
+          type_names.push_back(type.id);
+        }
+        app.setup = render::ui::setup_state(screen_width, screen_height,
+                                            ui_theme, type_names);
+        const sim::Scenario current = sim::parse_scenario(
+            read_file("data/scenarios/" + loaded_scenario + ".json",
+                      "scenario"));
+        setup_edit = game::setup_from_scenario(
+            current, types, sim::build_composition(current, types));
+        // Fill the count labels with the edited faction's live counts
+        // (the stepper branch below rewrites them after every step).
+        std::size_t initial_faction = 0;
+        for (const render::ui::Widget& widget : app.setup.tree.widgets) {
+          if (widget.id == render::ui::kIdSetupFaction) {
+            initial_faction = widget.selected == 0 ? 0 : 1;
+          }
+        }
+        for (render::ui::Widget& widget : app.setup.tree.widgets) {
+          if (widget.id.rfind("count-", 0) == 0) {
+            const int index = types.index_of(widget.id.substr(6));
+            if (index >= 0) {
+              widget.text = std::to_string(
+                  setup_edit.counts[initial_faction]
+                                [static_cast<std::size_t>(index)]);
+            }
+          }
+        }
+      }
+      const render::ui::SetupClicks clicks =
+          render::ui::setup_clicks(app.setup);
+      std::size_t edited_faction = 0;
+      for (const render::ui::Widget& widget : app.setup.tree.widgets) {
+        if (widget.id == render::ui::kIdSetupFaction) {
+          edited_faction = widget.selected == 0 ? 0 : 1;
+        }
+      }
+      int stepped_type = -1;
+      int step_delta = 0;
+      if (!clicks.plus_type.empty()) {
+        stepped_type = types.index_of(clicks.plus_type);
+        step_delta = 1;
+      } else if (!clicks.minus_type.empty()) {
+        stepped_type = types.index_of(clicks.minus_type);
+        step_delta = -1;
+      }
+      if (stepped_type >= 0) {
+        static_cast<void>(game::setup_step(
+            setup_edit, edited_faction,
+            static_cast<std::size_t>(stepped_type), step_delta, 20000));
+        for (render::ui::Widget& widget : app.setup.tree.widgets) {
+          if (widget.id.rfind("count-", 0) == 0) {
+            const int index = types.index_of(widget.id.substr(6));
+            if (index >= 0) {
+              widget.text = std::to_string(
+                  setup_edit.counts[edited_faction]
+                                [static_cast<std::size_t>(index)]);
+            }
+          }
+        }
+      } else if (clicks.save || clicks.start) {
+        const sim::Scenario base = sim::parse_scenario(
+            read_file("data/scenarios/" + loaded_scenario + ".json",
+                      "scenario"));
+        const sim::Scenario edited =
+            game::to_scenario(base, setup_edit, types);
+        const std::string stem = loaded_scenario + "-setup";
+        const std::string path = "data/scenarios/" + stem + ".json";
+        std::ofstream out(path);
+        out << sim::write_scenario(edited);
+        if (clicks.start && out.good()) {
+          load_scenario(stem);
+          scenario_names = render::ui::list_scenarios("data/scenarios");
+          app.screen = render::ui::Screen::Battle;
+        }
+      }
+    } else {
+      setup_loaded = false;  // re-entering rebuilds from the live scenario
+    }
+
+    // --- m13 item 5c: the settings screen --------------------------------
+    if (app.screen == render::ui::Screen::Settings &&
+        render::ui::settings_apply_clicked(app.settings)) {
+      settings = render::ui::settings_from(app.settings);
+      game::set_colorblind_palette(settings.colorblind);
+      ui_theme = render::ui::scale_theme(render::ui::default_theme(),
+                                         settings.ui_scale);
+      SetWindowSize(settings.width, settings.height);
+      if (settings.vsync) {
+        SetWindowState(FLAG_VSYNC_HINT);
+      } else {
+        ClearWindowState(FLAG_VSYNC_HINT);
+      }
+      const bool fullscreen_now = IsWindowFullscreen();
+      if (settings.fullscreen != fullscreen_now) {
+        ToggleFullscreen();
+      }
+      std::ofstream out("settings.json");
+      out << game::write_settings(settings);
+      app = render::ui::sandbox_app(GetRenderWidth(), GetRenderHeight(),
+                                    scenario_names, replay_names, ui_theme);
+      app.screen = render::ui::Screen::Settings;
     }
 
     // --- battle-screen controls from the UI ---------------------------
@@ -984,6 +1122,44 @@ int main(int argc, char** argv) {
     if (!in_battle && app.screen != render::ui::Screen::End) {
       list.background = game::background_color();
       list.cmds.clear();
+    }
+    if (app.screen == render::ui::Screen::Setup) {
+      // The battlefield preview: the field, the default side bands and
+      // both anchors (the edited faction's at full alpha).
+      const double fx = static_cast<double>(screen_width) / 2.0 - 200.0;
+      const double fy = 120.0;
+      const double fw = 400.0;
+      const double fh = 400.0;
+      const double world = std::max(simulation.world().width,
+                                    simulation.world().height);
+      const double scale = fw / world;
+      const auto to_screen = [&](double wx, double wy) {
+        return std::pair<double, double>{
+            fx + wx * scale + (fw - simulation.world().width * scale) / 2.0,
+            fy + wy * scale +
+                (fh - simulation.world().height * scale) / 2.0};
+      };
+      list.rect(fx, fy, fw, fh, game::Color{24, 30, 38, 255}, true);
+      list.rect(fx, fy, fw, fh, game::text_color(), false);
+      const double band_px = 0.15 * simulation.world().width * scale;
+      game::Color west = game::faction_color(sim::Faction::Red);
+      west.a = 36;
+      game::Color east = game::faction_color(sim::Faction::Blue);
+      east.a = 36;
+      list.rect(fx, fy, band_px, fh, west, true);
+      list.rect(fx + fw - band_px, fy, band_px, fh, east, true);
+      for (std::size_t faction = 0; faction < 2; ++faction) {
+        if (const auto& anchor = setup_edit.anchors[faction]) {
+          const auto [ax, ay] = to_screen(anchor->x, anchor->y);
+          game::Color color = game::faction_color(
+              faction == 0 ? sim::Faction::Red : sim::Faction::Blue);
+          color.a = 220;
+          list.circle(ax, ay, 5.0, color, game::Color{});
+          list.text(ax + 8.0, ay - 3.0, 7,
+                    faction == 0 ? "red anchor" : "blue anchor",
+                    game::text_color());
+        }
+      }
     }
     if (app.screen == render::ui::Screen::End) {
       render::draw_end_curves(list, 8.0, 64.0,

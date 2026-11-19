@@ -82,6 +82,24 @@ The terrain layer (M8 maps) is drawn first, in the terrain palette
 colors, and can be toggled with T; see docs/terrain.md. The sim runs at
 60 ticks/s at 1x.
 
+m13 item 5c adds the army editor and the settings screen:
+
+- the menu's **Army editor** edits the loaded scenario before battle:
+  per-type count steppers for the edited faction (a select switches
+  red/blue), drag-to-place spawns (hold the left button over the field
+  preview to set that faction's spawn anchor — the scenario's armies
+  accept an optional `"anchor": [x, y]`, a band-sized spawn window
+  centered there; without one the historical side band is used and
+  every existing scenario is byte-identical), Save (writes
+  `data/scenarios/<name>-setup.json` via the scenario writer) and
+  Start (loads the edited scenario into battle);
+- the menu's **Settings**: resolution (1280x720 / 1600x900 /
+  1920x1080), fullscreen, vsync, UI scale (0.75-2.0x — the whole widget
+  theme rescales), and the colorblind palette (red/blue ->
+  orange/sky-blue, deuteranopia-safe); Apply takes effect immediately
+  and persists to `settings.json` in the working directory (a missing
+  or invalid file means the defaults, with a warning).
+
 m13 item 5b adds the end screen and the replay viewer:
 
 - when the battle finishes the app switches to the **end screen**:

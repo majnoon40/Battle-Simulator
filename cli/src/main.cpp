@@ -16,7 +16,11 @@
 #include <thread>
 #include <vector>
 
+// Peak-memory reporting uses getrusage (POSIX); MSVC has no
+// sys/resource.h — the Windows build reports 0 MiB there.
+#if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
+#endif
 
 #include "cli/cli_args.hpp"
 #include "cli/replay.hpp"
@@ -62,12 +66,16 @@ constexpr const char* kDefaultCommandersPath = "data/commanders.json";
 // Peak resident set size of this process in MiB, via getrusage; used for the
 // performance report ("memory consumption when measurable").
 double peak_rss_mib() {
+#if defined(__unix__) || defined(__APPLE__)
   rusage usage{};
   if (getrusage(RUSAGE_SELF, &usage) != 0) {
     return -1.0;
   }
   // ru_maxrss is in KiB on Linux.
   return static_cast<double>(usage.ru_maxrss) / 1024.0;
+#else
+  return 0.0;  // MSVC: no getrusage; the report line reads 0 MiB
+#endif
 }
 
 // Reads a whole file. All file I/O lives in the CLI; sim only parses text or
@@ -356,6 +364,10 @@ int run_with_replay(const cli::Arguments& args,
   config.battlefield_width = scenario.battlefield_width;
   config.battlefield_height = scenario.battlefield_height;
   config.spawn_band_fraction = scenario.spawn_band_fraction;
+  for (sim::Faction faction : sim::kAllFactions) {
+    config.spawn_anchors[static_cast<std::size_t>(faction)] =
+        scenario.anchors[static_cast<std::size_t>(faction)];
+  }
   if (scenario.map.has_value()) {
     // The map defines the battlefield: map size x cell_size.
     config.battlefield_width = terrain_grid.width * terrain_grid.cell_size;
@@ -539,6 +551,7 @@ int run_with_replay(const cli::Arguments& args,
         const std::size_t index = static_cast<std::size_t>(faction);
         const std::size_t other = 1 - index;
         std::swap(config.spawn_patterns[index], config.spawn_patterns[other]);
+        std::swap(config.spawn_anchors[index], config.spawn_anchors[other]);
       }
     }
   }

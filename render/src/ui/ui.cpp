@@ -4,6 +4,7 @@
 #include "render/ui/ui.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cassert>
 
 namespace render::ui {
@@ -36,6 +37,21 @@ namespace {
 }
 
 }  // namespace
+
+Theme scale_theme(const Theme& theme, double factor) {
+  Theme out = theme;
+  factor = std::clamp(factor, 0.75, 2.0);
+  out.font_px = static_cast<int>(std::lround(theme.font_px * factor));
+  out.pad = static_cast<int>(std::lround(theme.pad * factor));
+  out.gap = static_cast<int>(std::lround(theme.gap * factor));
+  out.border_w = theme.border_w;  // 1 px stays 1 px (crisp outlines)
+  out.slider_track_h =
+      static_cast<int>(std::lround(theme.slider_track_h * factor));
+  out.slider_thumb_w =
+      static_cast<int>(std::lround(theme.slider_thumb_w * factor));
+  out.row_height = static_cast<int>(std::lround(theme.row_height * factor));
+  return out;
+}
 
 Theme default_theme() {
   Theme theme;

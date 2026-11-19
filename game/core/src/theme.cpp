@@ -1,3 +1,4 @@
+#include "game/settings.hpp"
 #include "game/theme.hpp"
 
 #include <algorithm>
@@ -62,9 +63,15 @@ UnitShape shape_of(const std::string& type_id) {
 
 Color faction_color(sim::Faction faction) {
   if (faction == sim::Faction::Red) {
-    return Color{217, 60, 62, 255};
+    // m13 item 5c: the colorblind palette swaps red/blue for the
+    // deuteranopia-safe orange/blue pair (game/settings.cpp owns the
+    // toggle; colors never feed simulation state).
+    return colorblind_palette()
+               ? Color{230, 159, 0, 255}
+               : Color{217, 60, 62, 255};
   }
-  return Color{62, 120, 216, 255};
+  return colorblind_palette() ? Color{86, 180, 233, 255}
+                              : Color{62, 120, 216, 255};
 }
 
 Color routed_color(sim::Faction faction) {

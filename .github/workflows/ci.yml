@@ -135,3 +135,31 @@ jobs:
           --gtest_break_on_failure
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+
+  # m13 item 6: 60 seconds of libFuzzer per harness on every push. The
+  # nightly workflow runs the long version; the corpus lives in
+  # fuzz/corpus and grows from findings.
+  fuzzing:
+    name: Fuzzing (libFuzzer, 60s per target)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Configure (clang, BUILD_FUZZING=ON)
+        run: >
+          CC=clang CXX=clang++ cmake -S . -B build-fuzz
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_FUZZING=ON
+
+      - name: Build the fuzz targets
+        run: cmake --build build-fuzz -j"$(nproc)"
+
+      - name: Fuzz every harness (60s each, seed corpus)
+        run: |
+          for target in unit_types scenario personalities morale tactics formations commanders combat terrain_grid settings replay order_script simulation; do
+            echo "=== fuzz_${target} ==="
+            ./build-fuzz/fuzz_${target} -max_total_time=60 -rss_limit_mb=2560 -timeout=25 -print_final_stats=1 fuzz/corpus/${target}
+          done
