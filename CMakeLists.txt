@@ -40,10 +40,13 @@ FetchContent_MakeAvailable(json)
 
 # stb (single-header libraries) — pinned to an exact commit; only
 # stb_image_write.h is used, by render/ (the headless PNG backend).
+# No GIT_SHALLOW: on 2026-11-19 GitHub's shallow fetch of this pinned
+# commit started failing ("fatal: unable to read tree <sha>" after a
+# full object transfer) on both local machines and CI runners; a full
+# clone fetches the commit fine and costs ~7 MB.
 FetchContent_Declare(stb
   GIT_REPOSITORY https://github.com/nothings/stb.git
   GIT_TAG 9600522de53973336fa033a289858a4354cbb04c
-  GIT_SHALLOW TRUE
   GIT_PROGRESS TRUE)
 FetchContent_MakeAvailable(stb)
 # m13 item 4: the deterministic worker pool (sim/thread_pool.hpp) needs
