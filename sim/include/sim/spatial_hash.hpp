@@ -33,10 +33,15 @@ inline constexpr std::size_t kMaxGridCells = 1'048'576;
 // nearest-enemy minimum over (squared distance, unit id) is unique because
 // ids are unique, so bucket layout can never change an answer.
 //
-// Liveness: the simulation removes dead units from the grid on death, but
-// queries still re-check the `alive` flag of every candidate (it sits on the
-// same cache line as the position) — so even state mutated behind the
-// simulation's back yields exactly the brute-force answer.
+// Liveness: the simulation removes dead units from the grid on death.
+// nearest_enemy additionally re-checks the `alive` flag of every candidate
+// against the authoritative unit array (it sits on the same cache line as
+// the position) — so even state mutated behind the simulation's back yields
+// exactly the brute-force answer. radius_query instead reads the
+// grid-maintained shadow record (see the query-shadow note below), whose
+// liveness is exactly as current as the buckets themselves — which, in the
+// simulation, is always: every death flows through remove() in the same
+// apply_deaths() iteration that clears the flag.
 //
 // Exactness: nearest_enemy returns the same unit as the brute-force
 // sim::nearest_enemy_index — nearest squared distance, ties broken by the
@@ -55,8 +60,32 @@ inline constexpr std::size_t kMaxGridCells = 1'048'576;
 // (`reserve_per_cell`) and reuse their capacity afterwards; swap-remove and
 // push_back never shrink, so a warmed-up grid stops allocating. This is
 // verified by an allocation-counting test and the benchmark harness.
+//
+// Query shadow (m14 item 1): every radius_query reads its candidates from a
+// per-unit shadow record maintained by the grid itself (build/insert/update/
+// remove copy the fields queries test — position, id, faction, alive — from
+// the caller's unit array on every operation for that unit). The
+// simulation funnels every position change through update() (once per moved
+// unit, after the movement commit) and every death through remove(), so the
+// shadow is current whenever a query runs, and a query never touches the
+// 232-byte Unit struct: it reads this 24-byte record instead. The values
+// are copies and the bucket iteration order is unchanged, so query outputs
+// are bit-identical to reading the unit array directly. The liveness
+// contract above (re-checking the authoritative array) is kept by
+// nearest_enemy, which still reads the unit array; radius_query's liveness
+// is the shadow, which is exactly as current as the buckets are.
 class SpatialHashGrid {
  public:
+  // The per-unit query shadow (see the class comment). `faction` is the
+  // numeric faction value; compare against static_cast<std::uint8_t>(...).
+  struct Shadow {
+    double x = 0.0;
+    double y = 0.0;
+    std::uint32_t id = 0;
+    std::uint8_t faction = 0;
+    bool alive = false;
+  };
+
   SpatialHashGrid() = default;
 
   // (Re-)configures the grid for a battlefield. Throws std::invalid_argument
@@ -88,9 +117,25 @@ class SpatialHashGrid {
 
   // All tracked units within `radius` (inclusive) of (x, y), in fixed cell
   // order (row-major, then bucket order). Clears `out` first; the caller
-  // reuses the buffer, so repeated queries do not allocate.
-  void radius_query(const std::vector<Unit>& units, double x, double y,
-                    double radius, std::vector<std::uint32_t>& out) const;
+  // reuses the buffer, so repeated queries do not allocate. Reads candidates
+  // from the grid-maintained shadow (see the class comment).
+  void radius_query(double x, double y, double radius,
+                    std::vector<std::uint32_t>& out) const;
+
+  // Same, restricted to one faction's buckets. The result is exactly the
+  // subsequence of radius_query's output that carries `faction` — callers
+  // that filter by faction afterwards get the identical sequence, and the
+  // other faction's buckets are never touched.
+  void radius_query_faction(double x, double y, double radius, Faction faction,
+                            std::vector<std::uint32_t>& out) const;
+
+  // The shadow record for a unit index (see the class comment). Valid for
+  // any index below the unit count at the last build/insert; records for
+  // never-tracked indices carry the values copied when they were first seen
+  // (alive=false before that).
+  [[nodiscard]] const Shadow& shadow_of(std::uint32_t index) const {
+    return shadow_[index];
+  }
 
   [[nodiscard]] double cell_size() const noexcept { return cell_size_; }
   [[nodiscard]] std::size_t cols() const noexcept { return cols_; }
@@ -111,6 +156,13 @@ class SpatialHashGrid {
     std::array<std::vector<std::uint32_t>, kFactionCount> by_faction{};
   };
 
+  // Copies the query-relevant fields of units[index] into the shadow.
+  void refresh_shadow(const std::vector<Unit>& units, std::uint32_t index);
+  // Appends every alive bucket member within radius_sq of (x, y) to `out`,
+  // reading the per-unit shadow (shared by both radius queries).
+  void append_within_radius(const std::vector<std::uint32_t>& bucket,
+                            double x, double y, double radius_sq,
+                            std::vector<std::uint32_t>& out) const;
   void insert_into_cell(std::uint32_t index, std::size_t cell,
                         Faction faction);
   // Occupancy bitmaps, one per faction and orientation: bit (x, y) is set
@@ -134,6 +186,15 @@ class SpatialHashGrid {
 
   std::vector<Cell> cells_;
   std::vector<std::int32_t> unit_cell_;  // unit index -> cell id, -1 = untracked
+  // unit index -> slot inside its bucket (the position unit_cell_ points
+  // at), maintained on every insert/swap-remove so remove() is O(1) instead
+  // of scanning the bucket. Pure bookkeeping: the swap-remove performs the
+  // exact same writes as the old std::find-based one, so bucket layouts are
+  // identical.
+  std::vector<std::uint32_t> unit_slot_;
+  // The per-unit query shadow (see the class comment), parallel to the
+  // caller's unit vector.
+  std::vector<Shadow> shadow_;
   // Occupancy bitmaps per faction and orientation: [faction][0] row-major,
   // [faction][1] column-major. Bit (x, y) is set when cell (x, y) holds at
   // least one unit of that faction.

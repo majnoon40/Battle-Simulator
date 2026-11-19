@@ -175,7 +175,7 @@ TEST(SpatialHashPropertyTest, RadiusQueryMatchesBruteForce) {
     const double radius = radius_choices[trial % 5];
 
     std::vector<std::uint32_t> found;
-    grid.radius_query(state.units, cx, cy, radius, found);
+    grid.radius_query(cx, cy, radius, found);
     std::sort(found.begin(), found.end());
 
     std::vector<std::uint32_t> expected;
@@ -252,6 +252,119 @@ TEST(SpatialHashPropertyTest, IncrementalMaintenanceMatchesRebuildAndBrute) {
             << "maintained grid vs brute at step " << step << " unit " << i;
         ASSERT_EQ(fresh.nearest_enemy(state.units, state.units[i]), brute)
             << "rebuilt grid vs brute at step " << step << " unit " << i;
+      }
+    }
+  }
+}
+
+// m14 item 1: the query shadow and the slot-tracked swap-remove must keep
+// radius_query exact under incremental maintenance (the simulation reads
+// candidates from the shadow, so it must stay as current as the buckets),
+// and the faction-scoped query must return exactly the both-faction scan's
+// subsequence for its faction (four call sites rely on that identity).
+TEST(SpatialHashPropertyTest, RadiusQueryExactUnderIncrementalMaintenance) {
+  sim::Rng rng(0x5EED5EEDULL);
+  const double world = 200.0;
+  const double cell = 8.0;
+  std::vector<sim::Unit> units;
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    units.push_back(make_unit(
+        i + 1,
+        rng.next_uint32(2) == 0 ? sim::Faction::Red : sim::Faction::Blue,
+        rng.next_double() * world, rng.next_double() * world));
+  }
+  sim::SpatialHashGrid grid;
+  grid.configure(world, world, cell, 4);
+  grid.build(units);
+
+  const auto brute = [&](double x, double y, double radius,
+                         std::vector<std::uint32_t>& expected) {
+    expected.clear();
+    const double radius_sq = radius * radius;
+    for (std::size_t i = 0; i < units.size(); ++i) {
+      if (!units[i].alive) {
+        continue;
+      }
+      const double dx = units[i].x - x;
+      const double dy = units[i].y - y;
+      if (dx * dx + dy * dy <= radius_sq) {
+        expected.push_back(static_cast<std::uint32_t>(i));
+      }
+    }
+    std::sort(expected.begin(), expected.end());
+  };
+
+  std::vector<std::uint32_t> found;
+  std::vector<std::uint32_t> expected;
+  for (int step = 0; step < 300; ++step) {
+    const std::uint32_t index =
+        rng.next_uint32(static_cast<std::uint32_t>(units.size()));
+    const int op = static_cast<int>(rng.next_uint32(10));
+    if (op < 5) {
+      // Move — only alive units (the simulation never moves the dead),
+      // position change funneled through grid.update exactly like
+      // update_grid_after_movement does.
+      if (units[index].alive) {
+        sim::Unit& unit = units[index];
+        unit.x = std::clamp(unit.x + (rng.next_double() - 0.5) * 24.0, 0.0,
+                            world);
+        unit.y = std::clamp(unit.y + (rng.next_double() - 0.5) * 24.0, 0.0,
+                            world);
+        grid.update(units, index);
+      }
+    } else if (op < 8) {
+      // Kill — flag first, then grid.remove in the same step, exactly
+      // like apply_deaths.
+      if (units[index].alive) {
+        units[index].alive = false;
+        grid.remove(units, index);
+      }
+    } else {
+      // Revive — flag first, then grid.insert.
+      if (!units[index].alive) {
+        units[index].alive = true;
+        grid.insert(units, index);
+      }
+    }
+
+    if (step % 10 == 0) {
+      // The shadow invariant the queries rely on: every record equals
+      // the authoritative unit array.
+      for (std::size_t i = 0; i < units.size(); ++i) {
+        const auto& s = grid.shadow_of(static_cast<std::uint32_t>(i));
+        ASSERT_EQ(s.x, units[i].x) << "step " << step << " unit " << i;
+        ASSERT_EQ(s.y, units[i].y) << "step " << step << " unit " << i;
+        ASSERT_EQ(s.id, units[i].id) << "step " << step << " unit " << i;
+        ASSERT_EQ(s.faction, static_cast<std::uint8_t>(units[i].faction))
+            << "step " << step << " unit " << i;
+        ASSERT_EQ(s.alive, units[i].alive) << "step " << step << " unit " << i;
+      }
+      for (double radius : {0.0, 5.0, 16.0, 40.0, 200.0}) {
+        const double x = rng.next_double() * world;
+        const double y = rng.next_double() * world;
+        grid.radius_query(x, y, radius, found);
+        std::sort(found.begin(), found.end());
+        brute(x, y, radius, expected);
+        ASSERT_EQ(found, expected)
+            << "step " << step << " radius " << radius;
+        // The faction-scoped query returns exactly the both-faction
+        // scan's subsequence for that faction — the identity the four
+        // same-faction call sites rely on.
+        for (sim::Faction faction : sim::kAllFactions) {
+          std::vector<std::uint32_t> both;
+          grid.radius_query(x, y, radius, both);
+          std::vector<std::uint32_t> subsequence;
+          for (std::uint32_t candidate : both) {
+            if (grid.shadow_of(candidate).faction ==
+                static_cast<std::uint8_t>(faction)) {
+              subsequence.push_back(candidate);
+            }
+          }
+          std::vector<std::uint32_t> one;
+          grid.radius_query_faction(x, y, radius, faction, one);
+          ASSERT_EQ(one, subsequence)
+              << "step " << step << " radius " << radius;
+        }
       }
     }
   }
