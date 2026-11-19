@@ -1,5 +1,6 @@
 #include "sim/scenario.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <istream>
@@ -289,14 +290,28 @@ Scenario parse_scenario_document(const OrderedJson& root) {
   if (!armies.is_object()) {
     fail("scenario field 'armies' must be a JSON object");
   }
-  scenario.armies[static_cast<std::size_t>(Faction::Red)] = parse_army(
-      armies, "red", scenario.budgets[static_cast<std::size_t>(Faction::Red)],
-      scenario.anchors[static_cast<std::size_t>(Faction::Red)],
-      scenario.battlefield_width, scenario.battlefield_height);
-  scenario.armies[static_cast<std::size_t>(Faction::Blue)] = parse_army(
-      armies, "blue", scenario.budgets[static_cast<std::size_t>(Faction::Blue)],
-      scenario.anchors[static_cast<std::size_t>(Faction::Blue)],
-      scenario.battlefield_width, scenario.battlefield_height);
+  // M14 item 2: armies may field red and blue (always required) plus any
+  // contiguous set of the extra factions green..magenta. The keys map to
+  // fixed Faction indices (never file order); faction_count = highest
+  // index + 1, and every faction below it must have an army (a missing
+  // key fails in parse_army with a field-level message).
+  std::size_t max_index = static_cast<std::size_t>(Faction::Blue);
+  for (auto it = armies.begin(); it != armies.end(); ++it) {
+    const auto faction = faction_from_key(it.key());
+    if (!faction) {
+      fail("unknown armies faction '" + it.key() +
+           "' (expected red, blue, green, yellow, purple, orange, cyan, magenta)");
+    }
+    max_index = std::max(max_index, static_cast<std::size_t>(*faction));
+  }
+  scenario.faction_count = static_cast<std::uint8_t>(max_index + 1);
+  for (std::size_t index = 0; index <= max_index; ++index) {
+    const std::string key{faction_key(static_cast<Faction>(index))};
+    scenario.armies[index] =
+        parse_army(armies, key, scenario.budgets[index],
+                   scenario.anchors[index], scenario.battlefield_width,
+                   scenario.battlefield_height);
+  }
 
   // Optional per-faction objectives (M4): {"red": {"x": .., "y": ..},
   // "blue": {...}}. Factions may be omitted individually; both default to
@@ -307,12 +322,13 @@ Scenario parse_scenario_document(const OrderedJson& root) {
       fail("scenario field 'objectives' must be a JSON object");
     }
     for (auto it = objectives->begin(); it != objectives->end(); ++it) {
-      if (it.key() != "red" && it.key() != "blue") {
-        fail("unknown objectives faction '" + it.key() + "' (expected red, blue)");
+      const auto faction = faction_from_key(it.key());
+      if (!faction ||
+          static_cast<std::size_t>(*faction) >= scenario.faction_count) {
+        fail("unknown objectives faction '" + it.key() +
+             "' (expected the scenario's army factions)");
       }
-      const std::size_t index = it.key() == "red"
-                                    ? static_cast<std::size_t>(Faction::Red)
-                                    : static_cast<std::size_t>(Faction::Blue);
+      const std::size_t index = static_cast<std::size_t>(*faction);
       const OrderedJson& point = *it;
       if (!point.is_object()) {
         fail("objective '" + it.key() + "' must be a JSON object {x, y}");
@@ -349,12 +365,13 @@ Scenario parse_scenario_document(const OrderedJson& root) {
       fail("scenario field 'squads' must be a JSON object");
     }
     for (auto it = squads->begin(); it != squads->end(); ++it) {
-      if (it.key() != "red" && it.key() != "blue") {
-        fail("unknown squads faction '" + it.key() + "' (expected red, blue)");
+      const auto faction = faction_from_key(it.key());
+      if (!faction ||
+          static_cast<std::size_t>(*faction) >= scenario.faction_count) {
+        fail("unknown squads faction '" + it.key() +
+             "' (expected the scenario's army factions)");
       }
-      const std::size_t index = it.key() == "red"
-                                    ? static_cast<std::size_t>(Faction::Red)
-                                    : static_cast<std::size_t>(Faction::Blue);
+      const std::size_t index = static_cast<std::size_t>(*faction);
       const OrderedJson& plan = *it;
       if (!plan.is_object()) {
         fail("squad plan '" + it.key() + "' must be a JSON object");
@@ -445,24 +462,29 @@ Scenario parse_scenario_document(const OrderedJson& root) {
          "-unit cap");
   }
   // M10 spawn patterns (optional; Band default). "spawn_pattern" sets
-  // both factions, "spawn_patterns" sets them individually.
+  // every fielded faction, "spawn_patterns" sets them individually.
   if (auto it = root.find("spawn_pattern"); it != root.end()) {
     const SpawnPattern pattern =
         parse_spawn_pattern(*it, "scenario field 'spawn_pattern'");
-    scenario.spawn_patterns[static_cast<std::size_t>(Faction::Red)] = pattern;
-    scenario.spawn_patterns[static_cast<std::size_t>(Faction::Blue)] = pattern;
+    for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+      scenario.spawn_patterns[index] = pattern;
+    }
   }
   if (auto it = root.find("spawn_patterns"); it != root.end()) {
     if (!it->is_object()) {
-      fail("scenario field 'spawn_patterns' must be an object {red, blue}");
+      fail("scenario field 'spawn_patterns' must be an object of faction "
+           "keys");
     }
-    for (const char* faction_key : {"red", "blue"}) {
-      if (auto entry = it->find(faction_key); entry != it->end()) {
-        scenario.spawn_patterns[static_cast<std::size_t>(
-            faction_key == std::string("red") ? Faction::Red : Faction::Blue)] =
-            parse_spawn_pattern(*entry,
-                                std::string("spawn_patterns.") + faction_key);
+    for (auto entry = it->begin(); entry != it->end(); ++entry) {
+      const auto faction = faction_from_key(entry.key());
+      if (!faction ||
+          static_cast<std::size_t>(*faction) >= scenario.faction_count) {
+        fail("unknown spawn_patterns faction '" + entry.key() +
+             "' (expected the scenario's army factions)");
       }
+      scenario.spawn_patterns[static_cast<std::size_t>(*faction)] =
+          parse_spawn_pattern(*entry,
+                              "spawn_patterns." + entry.key());
     }
   }
   return scenario;
@@ -501,8 +523,7 @@ std::string write_scenario(const Scenario& scenario) {
                         {"height", scenario.battlefield_height}};
   out["spawn_band_fraction"] = scenario.spawn_band_fraction;
   nlohmann::ordered_json armies;
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = static_cast<std::size_t>(faction);
+  for (std::size_t index = 0; index < scenario.faction_count; ++index) {
     nlohmann::ordered_json army = nlohmann::ordered_json::object();
     if (const auto& budget = scenario.budgets[index]) {
       army["budget"] = budget->budget;
@@ -522,29 +543,33 @@ std::string write_scenario(const Scenario& scenario) {
     if (const auto& anchor = scenario.anchors[index]) {
       army["anchor"] = nlohmann::json::array({anchor->x, anchor->y});
     }
-    armies[faction == Faction::Red ? "red" : "blue"] = std::move(army);
+    armies[std::string(faction_key(static_cast<Faction>(index)))] =
+        std::move(army);
   }
   out["armies"] = std::move(armies);
-  if (scenario.objectives[static_cast<std::size_t>(Faction::Red)] ||
-      scenario.objectives[static_cast<std::size_t>(Faction::Blue)]) {
+  bool any_objective = false;
+  bool any_squad = false;
+  for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+    any_objective = any_objective || scenario.objectives[index].has_value();
+    any_squad = any_squad || scenario.squads[index].has_value();
+  }
+  if (any_objective) {
     nlohmann::ordered_json objectives;
-    for (Faction faction : kAllFactions) {
-      const auto& objective =
-          scenario.objectives[static_cast<std::size_t>(faction)];
+    for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+      const auto& objective = scenario.objectives[index];
       if (objective) {
-        objectives[faction == Faction::Red ? "red" : "blue"] =
+        objectives[std::string(faction_key(static_cast<Faction>(index)))] =
             {{"x", objective->x}, {"y", objective->y}};
       }
     }
     out["objectives"] = std::move(objectives);
   }
-  if (scenario.squads[static_cast<std::size_t>(Faction::Red)] ||
-      scenario.squads[static_cast<std::size_t>(Faction::Blue)]) {
+  if (any_squad) {
     nlohmann::ordered_json squads;
-    for (Faction faction : kAllFactions) {
-      const auto& plan = scenario.squads[static_cast<std::size_t>(faction)];
+    for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+      const auto& plan = scenario.squads[index];
       if (plan) {
-        squads[faction == Faction::Red ? "red" : "blue"] = {
+        squads[std::string(faction_key(static_cast<Faction>(index)))] = {
             {"count", plan->count}, {"size", plan->size}};
       }
     }
@@ -554,26 +579,31 @@ std::string write_scenario(const Scenario& scenario) {
     out["map"] = {{"file", scenario.map->file},
                   {"cell_size", scenario.map->cell_size}};
   }
-  if (scenario.spawn_patterns[static_cast<std::size_t>(Faction::Red)] ==
-          scenario.spawn_patterns[static_cast<std::size_t>(Faction::Blue)]) {
-    out["spawn_pattern"] = to_string(
-        scenario.spawn_patterns[static_cast<std::size_t>(Faction::Red)]);
+  bool same_pattern = true;
+  for (std::size_t index = 1; index < scenario.faction_count; ++index) {
+    same_pattern = same_pattern &&
+                   scenario.spawn_patterns[index] ==
+                       scenario.spawn_patterns[0];
+  }
+  if (same_pattern) {
+    out["spawn_pattern"] = to_string(scenario.spawn_patterns[0]);
   } else {
-    out["spawn_patterns"] = {
-        {"red", to_string(scenario.spawn_patterns[static_cast<std::size_t>(
-                     Faction::Red)])},
-        {"blue", to_string(scenario.spawn_patterns[static_cast<std::size_t>(
-                     Faction::Blue)])}};
+    nlohmann::ordered_json patterns;
+    for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+      patterns[std::string(faction_key(static_cast<Faction>(index)))] =
+          to_string(scenario.spawn_patterns[index]);
+    }
+    out["spawn_patterns"] = std::move(patterns);
   }
   return out.dump(2) + "\n";
 }
 
-std::array<std::vector<TypeCount>, kFactionCount> build_composition(
+std::array<std::vector<TypeCount>, kMaxFactions> build_composition(
     const Scenario& scenario, const UnitTypeTable& types,
     std::uint64_t seed) {
-  std::array<std::vector<TypeCount>, kFactionCount> composition{};
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = static_cast<std::size_t>(faction);
+  std::array<std::vector<TypeCount>, kMaxFactions> composition{};
+  for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+    const Faction faction = static_cast<Faction>(index);
     // m13 item H(b): budget-form army. Deterministic largest-remainder
     // fill — every number below depends only on the scenario, the type
     // table and exact double arithmetic, never on the seed.

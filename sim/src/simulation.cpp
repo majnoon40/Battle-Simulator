@@ -31,6 +31,7 @@ Simulation::Simulation(SimulationConfig config,
                        std::vector<Personality> explicit_personalities)
     : config_(std::move(config)), rng_(config_.seed) {
   validate_config(config_);
+  faction_count_ = config_.faction_count;
   // Remember whether this is an explicit initial state before the vector is
   // moved from below: explicit states keep their preset morale and routed
   // values (tests construct broken or recovering units that way).
@@ -43,10 +44,10 @@ Simulation::Simulation(SimulationConfig config,
   // Per-type reports exist exactly when a unit type table drives this battle.
   use_type_reports_ = config_.unit_types != nullptr;
   if (use_type_reports_) {
-    for (Faction faction : kAllFactions) {
-      type_reports_[faction_index(faction)].resize(config_.unit_types->size());
+    for (std::size_t index = 0; index < faction_count_; ++index) {
+      type_reports_[index].resize(config_.unit_types->size());
       for (std::size_t t = 0; t < config_.unit_types->size(); ++t) {
-        type_reports_[faction_index(faction)][t].type_id =
+        type_reports_[index][t].type_id =
             config_.unit_types->types[t].id;
       }
     }
@@ -104,21 +105,36 @@ Simulation::Simulation(SimulationConfig config,
   // Objective points (M4): each faction advances toward the center of the
   // opposing spawn band unless the configuration overrides the point.
   const double band = world_.width * config_.spawn_band_fraction;
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
+  for (std::size_t index = 0; index < faction_count_; ++index) {
     if (config_.objectives[index].explicit_set) {
       objective_x_[index] = config_.objectives[index].x;
       objective_y_[index] = config_.objectives[index].y;
-    } else if ((faction == Faction::Red) != config_.swap_sides) {
+    } else if (faction_count_ == kFactionCount &&
+               (static_cast<Faction>(index) == Faction::Red) !=
+                   config_.swap_sides) {
       // Default objective: the center of the opposing spawn band. With
       // --swap-sides (M10) Red holds the eastern band, so the sides flip.
       objective_x_[index] = world_.width - band / 2.0;
       objective_y_[index] = world_.height / 2.0;
-    } else {
+    } else if (faction_count_ == kFactionCount) {
       objective_x_[index] = band / 2.0;
+      objective_y_[index] = world_.height / 2.0;
+    } else {
+      // M14 item 2: in a multi-faction battle every un-set objective
+      // defaults to the field center — the one point every faction
+      // contests from its own sector.
+      objective_x_[index] = world_.width / 2.0;
       objective_y_[index] = world_.height / 2.0;
     }
   }
+
+  // Faction axes (formation forward/lateral + the multi-faction retreat
+  // direction): computed once, right after the objectives exist — squads
+  // use them, and so do the Retreat/Flee/Flank fallbacks in battles
+  // without squads (M14 item 2). At two factions the AI fallbacks keep
+  // their historical +/-1 literals; the axes only take over in
+  // multi-faction battles.
+  compute_faction_axes();
 
   // Squads (M6): assignment happens once, after the armies exist and the
   // objectives are known (the formation axes point at them). Pure extra
@@ -130,12 +146,19 @@ Simulation::Simulation(SimulationConfig config,
   // band center (the band it actually deploys in — with swap_sides Red
   // deploys in the east, so its HQ is the eastern band center); the
   // per-squad flow fields stay empty until a point order is delivered.
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
-    const bool west = (faction == Faction::Red) != config_.swap_sides;
-    const double band = world_.width * config_.spawn_band_fraction;
-    hq_x_[index] = west ? band / 2.0 : world_.width - band / 2.0;
-    hq_y_[index] = world_.height / 2.0;
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    if (faction_count_ == kFactionCount) {
+      const bool west =
+          (static_cast<Faction>(index) == Faction::Red) != config_.swap_sides;
+      const double band = world_.width * config_.spawn_band_fraction;
+      hq_x_[index] = west ? band / 2.0 : world_.width - band / 2.0;
+      hq_y_[index] = world_.height / 2.0;
+    } else {
+      // M14 item 2: an army's HQ is its (sector) spawn anchor center.
+      const SpawnAnchor anchor = effective_spawn_anchor(index);
+      hq_x_[index] = anchor.x;
+      hq_y_[index] = anchor.y;
+    }
   }
   squad_flow_.assign(squads_.size(), FlowField{});
   squad_flow_target_.assign(squads_.size(),
@@ -285,7 +308,7 @@ Simulation::Simulation(SimulationConfig config,
             band_cells)),
         4, 16384);
     grid_.configure(world_.width, world_.height, config_.grid_cell_size,
-                    bucket_reserve);
+                    bucket_reserve, faction_count_);
     grid_.build(world_.units);
   }
 
@@ -439,12 +462,63 @@ void Simulation::update_squad_metrics(Squad& squad) {
                  0.0, 1.0);
 }
 
+void Simulation::compute_faction_axes() {
+  // Formation axes per faction: forward points from the faction's spawn
+  // reference point toward its objective (straight across by default);
+  // lateral is the perpendicular (forward rotated +90 degrees). Degenerate
+  // axes (objective on the reference point) fall back to straight across —
+  // the historical +/-1 at 2 factions, east in a multi-faction battle.
+  const double band = world_.width * config_.spawn_band_fraction;
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    const Faction faction = static_cast<Faction>(index);
+    double ref_x;
+    double ref_y;
+    if (faction_count_ == kFactionCount) {
+      ref_x = faction == Faction::Red ? band / 2.0
+                                      : world_.width - band / 2.0;
+      ref_y = world_.height / 2.0;
+    } else {
+      // M14 item 2: axes root at the faction's (sector) spawn anchor.
+      const SpawnAnchor anchor = effective_spawn_anchor(index);
+      ref_x = anchor.x;
+      ref_y = anchor.y;
+    }
+    double forward_x = objective_x_[index] - ref_x;
+    double forward_y = objective_y_[index] - ref_y;
+    double length = std::sqrt(forward_x * forward_x + forward_y * forward_y);
+    if (!(length > 0.0)) {
+      if (faction_count_ == kFactionCount) {
+        forward_x = faction == Faction::Red ? 1.0 : -1.0;
+        forward_y = 0.0;
+      } else {
+        forward_x = 1.0;
+        forward_y = 0.0;
+      }
+      length = 1.0;
+    }
+    forward_x_[index] = forward_x / length;
+    forward_y_[index] = forward_y / length;
+    lateral_x_[index] = -forward_y_[index];
+    lateral_y_[index] = forward_x_[index];
+  }
+}
+
+void Simulation::retreat_axis(std::size_t index, double& x, double& y) const {
+  if (faction_count_ == kFactionCount) {
+    x = static_cast<Faction>(index) == Faction::Red ? -1.0 : 1.0;
+    y = 0.0;
+  } else {
+    // M14 item 2: home is the spawn anchor — the negated forward axis.
+    x = -forward_x_[index];
+    y = -forward_y_[index];
+  }
+}
+
 void Simulation::assign_squads() {
   squads_active_ = config_.ai_mode == AiMode::Utility && config_.squads_enabled;
   bool any_plan = false;
-  for (Faction faction : kAllFactions) {
-    any_plan = any_plan ||
-               config_.squad_plans[faction_index(faction)].has_value();
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    any_plan = any_plan || config_.squad_plans[index].has_value();
   }
   if (!squads_active_ || !any_plan) {
     squads_active_ = false;
@@ -474,34 +548,11 @@ void Simulation::assign_squads() {
         "' is not a defined formation");
   }
 
-  // Formation axes per faction: forward points from the faction's own spawn
-  // band center toward its objective (straight across by default); lateral
-  // is the perpendicular (forward rotated +90 degrees). Degenerate axes
-  // (objective on the band center) fall back to straight across.
-  const double band = world_.width * config_.spawn_band_fraction;
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
-    const double band_center_x =
-        faction == Faction::Red ? band / 2.0 : world_.width - band / 2.0;
-    double forward_x = objective_x_[index] - band_center_x;
-    double forward_y = objective_y_[index] - world_.height / 2.0;
-    double length = std::sqrt(forward_x * forward_x + forward_y * forward_y);
-    if (!(length > 0.0)) {
-      forward_x = faction == Faction::Red ? 1.0 : -1.0;
-      forward_y = 0.0;
-      length = 1.0;
-    }
-    forward_x_[index] = forward_x / length;
-    forward_y_[index] = forward_y / length;
-    lateral_x_[index] = -forward_y_[index];
-    lateral_y_[index] = forward_x_[index];
-  }
-
   unit_squad_.assign(world_.units.size(), -1);
   unit_member_.assign(world_.units.size(), 0);
   std::uint32_t next_squad_id = 0;
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    const Faction faction = static_cast<Faction>(index);
     const auto& plan = config_.squad_plans[index];
     if (!plan) {
       continue;
@@ -583,6 +634,29 @@ void Simulation::assign_squads() {
   squad_perceive_buffer_.reserve(64);
 }
 
+SpawnAnchor Simulation::effective_spawn_anchor(std::size_t index) const {
+  if (const auto& anchor = config_.spawn_anchors[index]) {
+    return *anchor;
+  }
+  // Sector default (M14 item 2): faction `index` deploys around the point
+  // at angle pi + 2*pi*index/n on a circle around the field center — Red
+  // starts at west; at n = 2 Blue lands exactly east; at n > 2 the
+  // factions are evenly distributed. The radius keeps a band-sized margin
+  // from the borders (clamped for very small fields).
+  const double n = static_cast<double>(faction_count_);
+  const double angle = M_PI + 2.0 * M_PI * static_cast<double>(index) / n;
+  const double band =
+      std::min(world_.width, world_.height) * config_.spawn_band_fraction;
+  const double radius =
+      std::min(world_.width, world_.height) / 2.0 - band / 2.0;
+  const double cx = world_.width / 2.0;
+  const double cy = world_.height / 2.0;
+  SpawnAnchor anchor;
+  anchor.x = std::clamp(cx + radius * std::cos(angle), 0.0, world_.width);
+  anchor.y = std::clamp(cy + radius * std::sin(angle), 0.0, world_.height);
+  return anchor;
+}
+
 void Simulation::spawn_armies() {
   const bool composed = uses_composition(config_);
   const double band = world_.width * config_.spawn_band_fraction;
@@ -607,8 +681,8 @@ void Simulation::spawn_armies() {
   // composition mode each faction spawns its types in composition (file)
   // order; every unit draws x then y exactly like M1, so an infantry-only
   // composition reproduces M1 positions bit for bit.
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    const Faction faction = static_cast<Faction>(index);
     const std::vector<TypeCount>& entries = config_.composition[index];
 
     std::uint32_t to_spawn = 0;
@@ -652,22 +726,38 @@ void Simulation::spawn_armies() {
       // stream itself is only ever touched by the default Band pattern,
       // exactly as in M1-M9.
       const SpawnPattern pattern = config_.spawn_patterns[index];
-      const bool west_band = (faction == Faction::Red) != config_.swap_sides;
-      double band_lo = west_band ? 0.0 : world_.width - band;
-      double band_hi = west_band ? band : world_.width;
+      double band_lo = 0.0;
+      double band_hi = 0.0;
       // m13 item 5c: an anchor moves the spawn window — a band-by-band
       // region centered on the anchor (clamped), instead of the
       // full-height side band. No anchor: the historical window, and
       // every formula below degenerates to exactly the old math.
+      // M14 item 2: in a multi-faction battle every faction (Red and
+      // Blue included) spawns in the anchor window around its sector
+      // anchor — the same window math and the same two RNG draws per
+      // unit (x then y), so the spawn stream stays seed-only.
       double y_lo = 0.0;
       double y_hi = world_.height;
-      if (const auto& anchor = config_.spawn_anchors[index]) {
-        band_lo = std::clamp(anchor->x - band / 2.0, 0.0,
+      if (faction_count_ > kFactionCount) {
+        const SpawnAnchor sector = effective_spawn_anchor(index);
+        band_lo = std::clamp(sector.x - band / 2.0, 0.0,
                              std::max(0.0, world_.width - band));
         band_hi = band_lo + band;
-        y_lo = std::clamp(anchor->y - band / 2.0, 0.0,
+        y_lo = std::clamp(sector.y - band / 2.0, 0.0,
                           std::max(0.0, world_.height - band));
         y_hi = y_lo + band;
+      } else {
+        const bool west_band = (faction == Faction::Red) != config_.swap_sides;
+        band_lo = west_band ? 0.0 : world_.width - band;
+        band_hi = west_band ? band : world_.width;
+        if (const auto& anchor = config_.spawn_anchors[index]) {
+          band_lo = std::clamp(anchor->x - band / 2.0, 0.0,
+                               std::max(0.0, world_.width - band));
+          band_hi = band_lo + band;
+          y_lo = std::clamp(anchor->y - band / 2.0, 0.0,
+                            std::max(0.0, world_.height - band));
+          y_hi = y_lo + band;
+        }
       }
       const double band_span = band_hi - band_lo;
       if (pattern == SpawnPattern::Band) {
@@ -1139,7 +1229,7 @@ void Simulation::sample_timeline() {
     }
     ++side.alive_by_type[unit.type_index];
   }
-  for (std::size_t f = 0; f < kFactionCount; ++f) {
+  for (std::size_t f = 0; f < faction_count_; ++f) {
     row.factions[f].dead = faction_reports_[f].deaths;
   }
   timeline_rows_.push_back(row);
@@ -1164,15 +1254,16 @@ BattleResult Simulation::result() const {
   out.has_winner = has_winner_;
   out.winner = winner_;
   out.ticks_elapsed = world_.tick_count;
-  for (Faction faction : kAllFactions) {
-    FactionReport& report = out.factions[faction_index(faction)];
-    report.initial = faction_reports_[faction_index(faction)].initial;
-    report.deaths = faction_reports_[faction_index(faction)].deaths;
-    report.survivors = world_.alive_count(faction);
-    report.action_counts = action_counts_[faction_index(faction)];
-    report.routing = routing_stats_[faction_index(faction)];
-    report.squad = squad_stats_[faction_index(faction)];
-    report.combat = faction_reports_[faction_index(faction)].combat;
+  out.faction_count = static_cast<std::uint8_t>(faction_count_);
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    FactionReport& report = out.factions[index];
+    report.initial = faction_reports_[index].initial;
+    report.deaths = faction_reports_[index].deaths;
+    report.survivors = world_.alive_count(static_cast<Faction>(index));
+    report.action_counts = action_counts_[index];
+    report.routing = routing_stats_[index];
+    report.squad = squad_stats_[index];
+    report.combat = faction_reports_[index].combat;
   }
   // Active units (M5): alive and not routed. With morale off (and in legacy
   // mode) routed is always false, so active == survivors.
@@ -1182,8 +1273,7 @@ BattleResult Simulation::result() const {
     }
   }
   if (use_type_reports_) {
-    for (Faction faction : kAllFactions) {
-      const std::size_t index = faction_index(faction);
+    for (std::size_t index = 0; index < faction_count_; ++index) {
       out.factions[index].by_type = type_reports_[index];
     }
     for (const Unit& unit : world_.units) {
@@ -1305,19 +1395,23 @@ void Simulation::decide_targets() {
             damage_this_tick_[i] <= 0.0) {
           continue;  // never in need, so no helper ever probes this ally
         }
-        // The probe only asks whether any LIVING ENEMY is within reach, so
-        // the faction-scoped query returns exactly the candidates the old
-        // both-faction scan kept (same order, same values — from the grid
-        // shadow).
-        const Faction probe_enemy =
-            routed.faction == Faction::Red ? Faction::Blue : Faction::Red;
-        grid_.radius_query_faction(routed.x, routed.y, reach, probe_enemy,
-                                   routed_probe_buffer_);
+        // The probe only asks whether any LIVING ENEMY is within reach.
+        // M14 item 2: every other faction is hostile — the faction-scoped
+        // query runs once per enemy faction (a 2-faction battle makes
+        // exactly the one call the old code made, with the same faction).
         bool near_enemy = false;
-        for (std::uint32_t probe : routed_probe_buffer_) {
-          if (grid_.shadow_of(probe).alive) {
-            near_enemy = true;
-            break;
+        for (std::size_t f = 0; f < faction_count_ && !near_enemy; ++f) {
+          if (f == static_cast<std::size_t>(routed.faction)) {
+            continue;
+          }
+          grid_.radius_query_faction(routed.x, routed.y, reach,
+                                     static_cast<Faction>(f),
+                                     routed_probe_buffer_);
+          for (std::uint32_t probe : routed_probe_buffer_) {
+            if (grid_.shadow_of(probe).alive) {
+              near_enemy = true;
+              break;
+            }
           }
         }
         routed_probe_[i] = near_enemy ? 2 : 1;
@@ -1341,7 +1435,7 @@ void Simulation::decide_targets() {
     // every seeker that reached the (tick-start) faction estimate; the
     // lowest index is the one that drops it, exactly as the serial scan
     // did — pass B replays the decay in that order.
-    std::array<std::size_t, kFactionCount> estimate_dropper{};
+    std::array<std::size_t, kMaxFactions> estimate_dropper{};
     for (std::size_t i = 0; i < unit_count; ++i) {
       if (decide_inputs_[i].drop_candidate) {
         const std::size_t faction =
@@ -1484,9 +1578,8 @@ void Simulation::compute_decision_inputs(
   Perception& perception = out.perception;
   grid_.radius_query(unit.x, unit.y, sight, perceive_buffer);
 
-  const Faction enemy =
-      unit.faction == Faction::Red ? Faction::Blue : Faction::Red;
-  const std::uint8_t enemy_faction = static_cast<std::uint8_t>(enemy);
+  // M14 item 2: any other faction is hostile. At two factions this is
+  // exactly the old single-enemy comparison (same candidates, same sums).
   const std::uint8_t own_faction = static_cast<std::uint8_t>(unit.faction);
   int best = -1;
   double best_d2 = 0.0;
@@ -1505,7 +1598,7 @@ void Simulation::compute_decision_inputs(
     // comparison and tie-break below is bit-identical to the version
     // that read the Unit structs.
     const SpatialHashGrid::Shadow& other = grid_.shadow_of(candidate);
-    if (other.faction == enemy_faction) {
+    if (other.faction != own_faction) {
       ++enemies;
       sum_x += other.x;
       sum_y += other.y;
@@ -1791,7 +1884,7 @@ void Simulation::compute_decision_inputs(
 // own-slot state.
 Action Simulation::finish_unit_decision(
     std::size_t index, const DecisionInputs& inputs,
-    const std::array<std::size_t, kFactionCount>& estimate_dropper,
+    const std::array<std::size_t, kMaxFactions>& estimate_dropper,
     Perception& perception, ActionScores& scores) {
   const Unit& unit = world_.units[index];
   const double sight = inputs.sight;
@@ -2115,9 +2208,15 @@ Action Simulation::finish_unit_decision(
         if (length > 1e-9) {
           axis_x /= length;
           axis_y /= length;
-        } else {
+        } else if (faction_count_ == kFactionCount) {
           axis_x = unit.faction == Faction::Red ? 1.0 : -1.0;
           axis_y = 0.0;
+        } else {
+          // M14 item 2: degenerate centroid — advance along the faction's
+          // forward axis (toward the objective).
+          const std::size_t fi = static_cast<std::size_t>(unit.faction);
+          axis_x = forward_x_[fi];
+          axis_y = forward_y_[fi];
         }
         const double side =
             (unit_member_[index] % 2 == 0) ? 1.0 : -1.0;
@@ -2401,19 +2500,26 @@ void Simulation::resolve_movement() {
         }
         double dx = unit.x - perception.enemy_centroid_x;
         double dy = unit.y - perception.enemy_centroid_y;
-        // Force the horizontal component toward the unit's own side (Red
-        // holds the left band, Blue the right band).
-        if (unit.faction == Faction::Red) {
-          dx = -std::fabs(dx);
-        } else {
-          dx = std::fabs(dx);
+        // Never retreat toward the enemy: force the component along the
+        // faction's home direction positive. At two factions this is
+        // exactly the historical Red=-x / Blue=+x sign force (the
+        // reflection along a purely horizontal home axis reduces to it,
+        // bit for bit); a multi-faction battle uses the spawn->objective
+        // axis as home.
+        double home_x;
+        double home_y;
+        retreat_axis(static_cast<std::size_t>(unit.faction), home_x, home_y);
+        const double retreat_dot = dx * home_x + dy * home_y;
+        if (retreat_dot < 0.0) {
+          dx -= 2.0 * retreat_dot * home_x;
+          dy -= 2.0 * retreat_dot * home_y;
         }
         double length = std::sqrt(dx * dx + dy * dy);
         if (!(length > 0.0)) {
           // Surrounded exactly at the centroid: fall back to straight toward
           // the unit's own side.
-          dx = unit.faction == Faction::Red ? -1.0 : 1.0;
-          dy = 0.0;
+          dx = home_x;
+          dy = home_y;
           length = 1.0;
         }
         // A fighting withdrawal at half speed: a full-speed retreat would
@@ -2431,23 +2537,28 @@ void Simulation::resolve_movement() {
         // boundaries is cornered and flees toward the nearest world edge.
         double dx;
         double dy;
+        double home_x;
+        double home_y;
+        retreat_axis(static_cast<std::size_t>(unit.faction), home_x, home_y);
         const Perception& perception = last_perception_[i];
         if (perception.visible_enemies > 0) {
           dx = unit.x - perception.enemy_centroid_x;
           dy = unit.y - perception.enemy_centroid_y;
-          if (unit.faction == Faction::Red) {
-            dx = -std::fabs(dx);
-          } else {
-            dx = std::fabs(dx);
+          // Same home-direction force as Retreat (identical to the
+          // historical horizontal sign force at two factions).
+          const double flee_dot = dx * home_x + dy * home_y;
+          if (flee_dot < 0.0) {
+            dx -= 2.0 * flee_dot * home_x;
+            dy -= 2.0 * flee_dot * home_y;
           }
         } else {
-          dx = unit.faction == Faction::Red ? -1.0 : 1.0;
-          dy = 0.0;
+          dx = home_x;
+          dy = home_y;
         }
         double length = std::sqrt(dx * dx + dy * dy);
         if (!(length > 0.0)) {
-          dx = unit.faction == Faction::Red ? -1.0 : 1.0;
-          dy = 0.0;
+          dx = home_x;
+          dy = home_y;
           length = 1.0;
         }
         const double raw_x = unit.x + dx / length * speed;
@@ -3353,8 +3464,7 @@ void Simulation::update_morale() {
       }
     }
 
-    for (Faction faction : kAllFactions) {
-      const std::size_t index = faction_index(faction);
+    for (std::size_t index = 0; index < faction_count_; ++index) {
       RoutingStats& stats = routing_stats_[index];
       stats.peak_routed =
           std::max(stats.peak_routed, routed_now[index]);
@@ -3572,56 +3682,67 @@ void Simulation::update_termination() {
   // routed threshold) and the stalemate attacker count. Five full
   // unit-array sweeps in one; all integer counters, so the fused pass
   // yields exactly the values the separate scans produced.
-  std::uint32_t red = 0;
-  std::uint32_t blue = 0;
-  std::uint32_t red_active = 0;
-  std::uint32_t blue_active = 0;
+  // m14 item 2: the counters are per-faction arrays; at two factions the
+  // rules below make exactly the decisions the Red/Blue branches made.
+  std::array<std::uint32_t, kMaxFactions> alive{};
+  std::array<std::uint32_t, kMaxFactions> active{};
   std::uint32_t attacking = 0;
   for (const Unit& unit : world_.units) {
     if (!unit.alive) {
       continue;
     }
-    if (unit.faction == Faction::Red) {
-      ++red;
-      if (!unit.routed) {
-        ++red_active;
-      }
-    } else {
-      ++blue;
-      if (!unit.routed) {
-        ++blue_active;
-      }
+    const std::size_t fi = static_cast<std::size_t>(unit.faction);
+    ++alive[fi];
+    if (!unit.routed) {
+      ++active[fi];
     }
     if (unit.last_action == static_cast<std::uint8_t>(Action::Attack)) {
       ++attacking;
     }
   }
 
-  if (red == 0 || blue == 0) {
+  // Elimination: the battle ends when at most one faction still has units
+  // (the survivor wins; none is mutual annihilation).
+  std::size_t standing = 0;
+  std::size_t last_standing = 0;
+  for (std::size_t i = 0; i < faction_count_; ++i) {
+    if (alive[i] > 0) {
+      ++standing;
+      last_standing = i;
+    }
+  }
+  if (standing <= 1) {
     finished_ = true;
     reason_ = TerminationReason::FactionEliminated;
-    if (red == 0 && blue == 0) {
+    if (standing == 0) {
       has_winner_ = false;  // mutual annihilation
     } else {
       has_winner_ = true;
-      winner_ = red > 0 ? Faction::Red : Faction::Blue;
+      winner_ = static_cast<Faction>(last_standing);
     }
     return;
   }
 
   if (morale_enabled_) {
     const std::uint64_t timeout = effective_morale_->rout_timeout_ticks;
-    const bool red_routed_out = inactive_ticks_[faction_index(Faction::Red)] >= timeout;
-    const bool blue_routed_out =
-        inactive_ticks_[faction_index(Faction::Blue)] >= timeout;
-    if (red_routed_out || blue_routed_out) {
+    // Rout timeout: a faction that has had no active units for the
+    // timeout is out; the battle ends when at most one faction remains.
+    std::size_t not_out = 0;
+    std::size_t last_not_out = 0;
+    for (std::size_t i = 0; i < faction_count_; ++i) {
+      if (inactive_ticks_[i] < timeout) {
+        ++not_out;
+        last_not_out = i;
+      }
+    }
+    if (not_out <= 1) {
       finished_ = true;
       reason_ = TerminationReason::FactionRouted;
-      if (red_routed_out && blue_routed_out) {
-        has_winner_ = false;  // both factions collapsed
+      if (not_out == 0) {
+        has_winner_ = false;  // every faction collapsed
       } else {
         has_winner_ = true;
-        winner_ = red_routed_out ? Faction::Blue : Faction::Red;
+        winner_ = static_cast<Faction>(last_not_out);
       }
       return;
     }
@@ -3632,35 +3753,40 @@ void Simulation::update_termination() {
   // strength) for routed_threshold_ticks consecutive ticks is routed —
   // the mass-rout tail the full-route timeout above never catches (the
   // M13 hold-arm study battles: >90% routed, ~20 fighting on, grinding
-  // to the tick limit).
+  // to the tick limit). m14 item 2: every faction is tested in index
+  // order (identical order and side effects to the old Red-then-Blue
+  // calls); the battle ends when at most one faction is not out.
   if (morale_enabled_ && config_.end_v2) {
-    const auto threshold_out = [&](Faction faction) {
-      const std::size_t index = faction_index(faction);
+    const auto threshold_out = [&](std::size_t index) {
       const auto& term = effective_morale_->termination;
       const std::uint32_t threshold = std::max(
           term.routed_threshold_min_units,
           static_cast<std::uint32_t>(
               term.routed_threshold_fraction *
               static_cast<double>(initial_alive_[index])));
-      const std::uint32_t active =
-          faction == Faction::Red ? red_active : blue_active;
-      if (active >= threshold) {
+      if (active[index] >= threshold) {
         below_threshold_ticks_[index] = 0;
         return false;
       }
       below_threshold_ticks_[index] += 1;
       return below_threshold_ticks_[index] >= term.routed_threshold_ticks;
     };
-    const bool red_threshold = threshold_out(Faction::Red);
-    const bool blue_threshold = threshold_out(Faction::Blue);
-    if (red_threshold || blue_threshold) {
+    std::size_t not_out = 0;
+    std::size_t last_not_out = 0;
+    for (std::size_t i = 0; i < faction_count_; ++i) {
+      if (!threshold_out(i)) {
+        ++not_out;
+        last_not_out = i;
+      }
+    }
+    if (not_out <= 1) {
       finished_ = true;
       reason_ = TerminationReason::RoutedThreshold;
-      if (red_threshold && blue_threshold) {
-        has_winner_ = false;  // both factions below the threshold
+      if (not_out == 0) {
+        has_winner_ = false;  // every faction below the threshold
       } else {
         has_winner_ = true;
-        winner_ = red_threshold ? Faction::Blue : Faction::Red;
+        winner_ = static_cast<Faction>(last_not_out);
       }
       return;
     }
@@ -3694,12 +3820,7 @@ void Simulation::update_termination() {
                        static_cast<std::uint64_t>(window)) {
         finished_ = true;
         reason_ = TerminationReason::Stalemate;
-        if (red != blue) {
-          has_winner_ = true;
-          winner_ = red > blue ? Faction::Red : Faction::Blue;
-        } else {
-          has_winner_ = false;
-        }
+        set_most_survivors_winner(alive);
         return;
       }
     }
@@ -3708,12 +3829,32 @@ void Simulation::update_termination() {
   if (world_.tick_count >= config_.max_ticks) {
     finished_ = true;
     reason_ = TerminationReason::TickLimit;
-    if (red != blue) {
-      has_winner_ = true;
-      winner_ = red > blue ? Faction::Red : Faction::Blue;
-    } else {
-      has_winner_ = false;  // even survivors: draw
+    set_most_survivors_winner(alive);
+  }
+}
+
+void Simulation::set_most_survivors_winner(
+    const std::array<std::uint32_t, kMaxFactions>& alive) {
+  // m14 item 2: the faction with the most survivors wins; an exact tie
+  // at the top is a draw. At two factions this is exactly the old
+  // red != blue / red > blue rule.
+  std::size_t best = 0;
+  std::uint32_t best_count = 0;
+  bool tie = false;
+  for (std::size_t i = 0; i < faction_count_; ++i) {
+    if (alive[i] > best_count) {
+      best_count = alive[i];
+      best = i;
+      tie = false;
+    } else if (alive[i] == best_count && best_count > 0) {
+      tie = true;
     }
+  }
+  if (best_count > 0 && !tie) {
+    has_winner_ = true;
+    winner_ = static_cast<Faction>(best);
+  } else {
+    has_winner_ = false;  // even survivors (or none): draw
   }
 }
 
@@ -3893,8 +4034,8 @@ double Simulation::commit_move_terrain(std::size_t index,
 }
 
 void Simulation::refresh_flow_fields() {
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    const Faction faction = static_cast<Faction>(index);
     const double ox = objective_x_[index];
     const double oy = objective_y_[index];
     if (!terrain_->in_bounds(ox, oy)) {
@@ -3943,31 +4084,56 @@ void Simulation::init_terrain() {
   refresh_flow_fields();
 
   // Objectives must sit on passable ground.
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    const Faction faction = static_cast<Faction>(index);
     if (!grid.passable_at(objective_x_[index], objective_y_[index])) {
       throw std::invalid_argument(std::string("objective for ") +
                                   to_string(faction) +
                                   " sits on impassable terrain");
     }
   }
-  // Each spawn band needs passable cells, all reachable from the
-  // faction objective (no sealed-off spawns).
+  // Each spawn region needs passable cells, all reachable from the
+  // faction objective (no sealed-off spawns). A 2-faction battle checks
+  // the historical west/east bands; a multi-faction battle checks each
+  // faction's anchor window (the sector it actually deploys in).
   const double band = world_.width * config_.spawn_band_fraction;
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = faction_index(faction);
-    const std::uint32_t x_begin =
-        faction == Faction::Red
-            ? 0
-            : static_cast<std::uint32_t>(
-                  (world_.width - band) / grid.cell_size);
-    const std::uint32_t x_end =
-        faction == Faction::Red
-            ? static_cast<std::uint32_t>(band / grid.cell_size) + 1
-            : grid.width;
+  for (std::size_t index = 0; index < faction_count_; ++index) {
+    const Faction faction = static_cast<Faction>(index);
+    std::uint32_t x_begin = 0;
+    std::uint32_t x_end = 0;
+    std::uint32_t y_begin = 0;
+    std::uint32_t y_end = 0;
+    if (faction_count_ == kFactionCount) {
+      x_begin = faction == Faction::Red
+                    ? 0
+                    : static_cast<std::uint32_t>(
+                          (world_.width - band) / grid.cell_size);
+      x_end = faction == Faction::Red
+                  ? static_cast<std::uint32_t>(band / grid.cell_size) + 1
+                  : grid.width;
+      y_begin = 0;
+      y_end = grid.height;
+    } else {
+      const SpawnAnchor sector = effective_spawn_anchor(index);
+      const double band_lo =
+          std::clamp(sector.x - band / 2.0, 0.0,
+                     std::max(0.0, world_.width - band));
+      const double y_lo =
+          std::clamp(sector.y - band / 2.0, 0.0,
+                     std::max(0.0, world_.height - band));
+      x_begin =
+          static_cast<std::uint32_t>(band_lo / grid.cell_size);
+      x_end = static_cast<std::uint32_t>(
+                  std::min(band_lo + band, world_.width) / grid.cell_size) +
+              1;
+      y_begin = static_cast<std::uint32_t>(y_lo / grid.cell_size);
+      y_end = static_cast<std::uint32_t>(
+                  std::min(y_lo + band, world_.height) / grid.cell_size) +
+              1;
+    }
     std::uint32_t passable = 0;
     std::uint32_t unreachable = 0;
-    for (std::uint32_t cy = 0; cy < grid.height; ++cy) {
+    for (std::uint32_t cy = y_begin; cy < y_end && cy < grid.height; ++cy) {
       for (std::uint32_t cx = x_begin; cx < x_end && cx < grid.width; ++cx) {
         const double px = (cx + 0.5) * grid.cell_size;
         const double py = (cy + 0.5) * grid.cell_size;
@@ -3982,7 +4148,7 @@ void Simulation::init_terrain() {
       }
     }
     if (passable == 0) {
-      throw std::invalid_argument(std::string("spawn band for ") +
+      throw std::invalid_argument(std::string("spawn region for ") +
                                   to_string(faction) +
                                   " has no passable cells");
     }

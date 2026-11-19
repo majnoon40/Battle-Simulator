@@ -212,10 +212,10 @@ std::string export_state_json(const Simulation& simulation) {
   }
   if (composed) {
     nlohmann::json armies_json;
-    for (Faction faction : kAllFactions) {
+    for (std::size_t index = 0; index < simulation.faction_count(); ++index) {
+      const Faction faction = static_cast<Faction>(index);
       nlohmann::json entries = nlohmann::json::array();
-      for (const TypeCount& entry :
-           config.composition[static_cast<std::size_t>(faction)]) {
+      for (const TypeCount& entry : config.composition[index]) {
         nlohmann::json item;
         item["count"] = entry.count;
         item["type"] = types->types[entry.type_index].id;
@@ -231,8 +231,8 @@ std::string export_state_json(const Simulation& simulation) {
   root["config"] = std::move(config_json);
 
   nlohmann::json factions_json = nlohmann::json::array();
-  for (Faction faction : kAllFactions) {
-    factions_json.push_back(to_string(faction));
+  for (std::size_t index = 0; index < simulation.faction_count(); ++index) {
+    factions_json.push_back(to_string(static_cast<Faction>(index)));
   }
   root["factions"] = std::move(factions_json);
 
@@ -258,9 +258,8 @@ std::string export_state_json(const Simulation& simulation) {
 
   nlohmann::json statistics_json;
   std::uint32_t total_deaths = 0;
-  for (Faction faction : kAllFactions) {
-    const FactionReport& report =
-        result.factions[static_cast<std::size_t>(faction)];
+  for (std::size_t index = 0; index < simulation.faction_count(); ++index) {
+    const FactionReport& report = result.factions[index];
     nlohmann::json faction_json;
     faction_json["deaths"] = report.deaths;
     faction_json["initial"] = report.initial;
@@ -310,7 +309,7 @@ std::string export_state_json(const Simulation& simulation) {
     // issued at least one order (battles without orders stay in the
     // exact pre-m11b shape; ordered battles carry format_version 8).
     const Simulation::PlayerOrderReport& player =
-        simulation.player_order_report(faction);
+        simulation.player_order_report(static_cast<Faction>(index));
     if (player.issued > 0) {
       nlohmann::json orders;
       orders["issued"] = player.issued;
@@ -335,7 +334,8 @@ std::string export_state_json(const Simulation& simulation) {
       }
       faction_json["by_type"] = std::move(by_type);
     }
-    statistics_json[to_string(faction)] = std::move(faction_json);
+    statistics_json[to_string(static_cast<Faction>(index))] =
+        std::move(faction_json);
     total_deaths += report.deaths;
   }
   statistics_json["total_deaths"] = total_deaths;

@@ -140,7 +140,7 @@ std::string Simulation::state_hash() const {
   u8(bytes, static_cast<std::uint8_t>(winner_));
 
   // Objectives and faction-level state.
-  for (std::size_t f = 0; f < kFactionCount; ++f) {
+  for (std::size_t f = 0; f < faction_count_; ++f) {
     f64(bytes, objective_x_[f]);
     f64(bytes, objective_y_[f]);
     u64(bytes, faction_reports_[f].initial);

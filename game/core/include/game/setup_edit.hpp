@@ -28,7 +28,8 @@ struct SetupEdit {
 // editor always edits counts).
 [[nodiscard]] SetupEdit setup_from_scenario(
     const sim::Scenario& scenario, const sim::UnitTypeTable& types,
-    const std::array<std::vector<sim::TypeCount>, 2>& composition);
+    const std::array<std::vector<sim::TypeCount>, sim::kMaxFactions>&
+        composition);
 
 // One +/- step for a faction's type (faction: 0 = red, 1 = blue;
 // delta: -1 / +1). Returns false when the step would leave that

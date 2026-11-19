@@ -83,7 +83,10 @@ struct BattleResult {
   bool has_winner = false;         // false => draw (or still running)
   Faction winner = Faction::Red;   // valid only when has_winner is true
   std::uint64_t ticks_elapsed = 0;
-  std::array<FactionReport, kFactionCount> factions{};
+  // m14 item 2: how many factions the battle fielded; per-faction
+  // consumers read factions[0, faction_count).
+  std::uint8_t faction_count = 2;
+  std::array<FactionReport, kMaxFactions> factions{};
   // Terrain (M8), filled only for battles on a map: the longest run of
   // consecutive ticks any unit spent making less than stuck-epsilon
   // progress, how many units ever had such a run longer than 100 ticks,

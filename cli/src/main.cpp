@@ -364,9 +364,20 @@ int run_with_replay(const cli::Arguments& args,
   config.battlefield_width = scenario.battlefield_width;
   config.battlefield_height = scenario.battlefield_height;
   config.spawn_band_fraction = scenario.spawn_band_fraction;
-  for (sim::Faction faction : sim::kAllFactions) {
-    config.spawn_anchors[static_cast<std::size_t>(faction)] =
-        scenario.anchors[static_cast<std::size_t>(faction)];
+  // M14 item 2: field every faction the scenario lists (red and blue are
+  // always required; green..magenta are optional fixed-index extras).
+  // --swap-sides is a two-faction option (the west/east band mirror has
+  // no meaning for sector spawns).
+  config.faction_count = scenario.faction_count;
+  if (args.swap_sides && config.faction_count > sim::kFactionCount) {
+    std::cerr << "error: --swap-sides is a two-faction option (this "
+                 "scenario fields "
+              << static_cast<int>(config.faction_count)
+              << " factions; use scenario anchors to place armies)\n";
+    return 1;
+  }
+  for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+    config.spawn_anchors[index] = scenario.anchors[index];
   }
   if (scenario.map.has_value()) {
     // The map defines the battlefield: map size x cell_size.
@@ -457,15 +468,13 @@ int run_with_replay(const cli::Arguments& args,
       }
     }
   }
-  for (sim::Faction faction : sim::kAllFactions) {
-    config.spawn_patterns[static_cast<std::size_t>(faction)] =
-        scenario.spawn_patterns[static_cast<std::size_t>(faction)];
+  for (std::size_t index = 0; index < scenario.faction_count; ++index) {
+    config.spawn_patterns[index] = scenario.spawn_patterns[index];
   }
 
   // Optional per-faction objectives from the scenario; unset factions keep
   // the default (center of the opposing spawn band).
-  for (sim::Faction faction : sim::kAllFactions) {
-    const std::size_t index = static_cast<std::size_t>(faction);
+  for (std::size_t index = 0; index < scenario.faction_count; ++index) {
     if (const auto& objective = scenario.objectives[index]) {
       config.objectives[index] =
           sim::ObjectivePoint{objective->x, objective->y, true};
@@ -523,8 +532,8 @@ int run_with_replay(const cli::Arguments& args,
   if (config.squads_enabled) {
     config.formations = &formations;
     config.commanders = &commanders;
-    for (sim::Faction faction : sim::kAllFactions) {
-      const std::size_t index = static_cast<std::size_t>(faction);
+    for (std::size_t index = 0; index < scenario.faction_count;
+         ++index) {
       if (const auto& plan = scenario.squads[index]) {
         config.squad_plans[index] =
             sim::SquadPlan{plan->count, plan->size};

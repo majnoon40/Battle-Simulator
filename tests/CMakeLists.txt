@@ -18,6 +18,7 @@ add_executable(battle_tests
   test_cli_args.cpp
   test_unit_types.cpp
   test_scenario.cpp
+  test_multifaction.cpp
   test_type_battle.cpp
   test_spatial_hash.cpp
   test_ai.cpp

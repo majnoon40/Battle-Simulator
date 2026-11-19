@@ -1,5 +1,6 @@
 #include "sim/config.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -87,13 +88,23 @@ void validate_composition(const SimulationConfig& config) {
     throw std::invalid_argument(
         "a composition requires a unit type table (config.unit_types)");
   }
-  for (Faction faction : kAllFactions) {
-    const std::size_t index = static_cast<std::size_t>(faction);
+  for (std::size_t index = 0; index < kMaxFactions; ++index) {
+    const bool fielded = index < config.faction_count;
+    const Faction faction = static_cast<Faction>(index);
     const std::string name = to_string(faction);
-    if (config.composition[index].empty()) {
+    if (fielded && config.composition[index].empty()) {
       throw std::invalid_argument(
-          "when either army has a composition, both armies need one (" +
+          "when either army has a composition, every fielded faction needs "
+          "one (" +
           name + " is empty)");
+    }
+    if (!fielded && !config.composition[index].empty()) {
+      throw std::invalid_argument(
+          name + " has a composition but is not fielded (faction_count is " +
+          std::to_string(config.faction_count) + ")");
+    }
+    if (!fielded) {
+      continue;
     }
     std::uint64_t army_total = 0;
     for (const TypeCount& entry : config.composition[index]) {
@@ -170,6 +181,18 @@ void validate_config(const SimulationConfig& config) {
     throw std::invalid_argument(
         "spawn_band_fraction must be in (0, 0.5] so the armies start apart");
   }
+  // M14 item 2: the faction count drives every per-faction array
+  // traversal; indices at or above it must never carry data.
+  if (config.faction_count < kFactionCount ||
+      config.faction_count > kMaxFactions) {
+    throw std::invalid_argument("faction_count must be in [2, " +
+                                std::to_string(kMaxFactions) + "]");
+  }
+  if (config.faction_count > kFactionCount && !composed) {
+    throw std::invalid_argument(
+        "multi-faction battles need a composition (the legacy unit split "
+        "fields exactly the two historical armies)");
+  }
   if (composed) {
     validate_composition(config);
   } else {
@@ -197,9 +220,9 @@ void validate_config(const SimulationConfig& config) {
     throw std::invalid_argument(
         "action_stickiness must be in [0, 1) (a small score bonus)");
   }
-  for (Faction faction : kAllFactions) {
-    const ObjectivePoint& objective =
-        config.objectives[static_cast<std::size_t>(faction)];
+  for (std::size_t index = 0; index < config.faction_count; ++index) {
+    const Faction faction = static_cast<Faction>(index);
+    const ObjectivePoint& objective = config.objectives[index];
     if (objective.explicit_set) {
       const std::string name = to_string(faction);
       if (!std::isfinite(objective.x) || !std::isfinite(objective.y)) {
@@ -244,22 +267,22 @@ void validate_config(const SimulationConfig& config) {
   // field exactly the matching army: `count` commander-type units (types
   // with leadership_radius > 0) and count * size soldiers. No silent
   // defaults — a mismatched scenario refuses to run.
-  const bool any_plan =
-      config.squad_plans[static_cast<std::size_t>(Faction::Red)].has_value() ||
-      config.squad_plans[static_cast<std::size_t>(Faction::Blue)].has_value();
+  const bool any_plan = std::any_of(
+      config.squad_plans.begin(),
+      config.squad_plans.begin() + config.faction_count,
+      [](const std::optional<SquadPlan>& plan) { return plan.has_value(); });
   if (any_plan && config.ai_mode == AiMode::Utility && config.squads_enabled) {
     if (!composed) {
       throw std::invalid_argument(
           "squad plans require a composition (a unit type table with "
           "commander types)");
     }
-    for (Faction faction : kAllFactions) {
-      const std::size_t index = static_cast<std::size_t>(faction);
+    for (std::size_t index = 0; index < config.faction_count; ++index) {
       const auto& plan = config.squad_plans[index];
       if (!plan) {
         continue;
       }
-      const std::string name = to_string(faction);
+      const std::string name = to_string(static_cast<Faction>(index));
       if (plan->count < 1 || plan->size < 1) {
         throw std::invalid_argument(name +
                                     " squad plan needs count >= 1 and size >= 1");

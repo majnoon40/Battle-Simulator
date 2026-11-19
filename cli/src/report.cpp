@@ -1,6 +1,7 @@
 #include "cli/report.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numeric>
 #include <map>
@@ -28,9 +29,10 @@ struct Measured {
   // recoveries / first rout tick.
   // Timeline-derived morale: first / min / last sample values + ticks.
   bool has_morale_samples = false;
-  double morale_first[2] = {0, 0};
-  double morale_min[2] = {100, 100};
-  double morale_last[2] = {0, 0};
+  // m14 item 2: sized kMaxFactions; only [0, result.faction_count) is read.
+  std::array<double, sim::kMaxFactions> morale_first{};
+  std::array<double, sim::kMaxFactions> morale_min{};
+  std::array<double, sim::kMaxFactions> morale_last{};
   std::uint64_t morale_first_tick = 0;
   std::uint64_t morale_min_tick = 0;
   std::uint64_t morale_last_tick = 0;
@@ -76,7 +78,8 @@ Measured measure(const sim::Simulation& simulation,
     out.has_morale_samples = true;
     out.morale_first_tick = rows.front().tick;
     out.morale_last_tick = rows.back().tick;
-    for (std::size_t f = 0; f < 2; ++f) {
+    out.morale_min.fill(100.0);
+    for (std::size_t f = 0; f < out.result.faction_count; ++f) {
       bool first = true;
       for (const sim::TimelineRow& row : rows) {
         const sim::FactionTimeline& side = row.factions[f];
@@ -114,7 +117,7 @@ Measured measure(const sim::Simulation& simulation,
     return simulation.squad_of(it->second);
   };
 
-  std::vector<std::uint64_t> death_ticks[2];
+  std::array<std::vector<std::uint64_t>, sim::kMaxFactions> death_ticks{};
   std::vector<std::uint64_t> rout_ticks[2];
   std::uint64_t rout_window[2] = {0, 0};  // running 20-tick window count
 
@@ -190,32 +193,47 @@ Measured measure(const sim::Simulation& simulation,
   // 50 ticks exceed twice the other side's (with at least 3 kills, so a
   // single early kill cannot trip the rule).
   std::vector<std::uint64_t> ticks;
-  for (int f = 0; f < 2; ++f) {
+  for (std::size_t f = 0; f < out.result.faction_count; ++f) {
     ticks.insert(ticks.end(), death_ticks[f].begin(), death_ticks[f].end());
   }
   std::sort(ticks.begin(), ticks.end());
   ticks.erase(std::unique(ticks.begin(), ticks.end()), ticks.end());
+  // m14 item 2: the turning point is the first tick where some faction's
+  // rolling deaths (>= 3) more than double every other faction's — at two
+  // factions this is exactly the old Red-vs-Blue pair of checks.
+  const std::size_t n = out.result.faction_count;
+  std::array<std::size_t, sim::kMaxFactions> rolling{};
   for (std::uint64_t t : ticks) {
-    const std::size_t red = count_leq(death_ticks[kRed], t) -
-                            count_leq(death_ticks[kRed],
-                                      t < 50 ? 0 : t - 50);
-    const std::size_t blue = count_leq(death_ticks[kBlue], t) -
-                             count_leq(death_ticks[kBlue],
-                                       t < 50 ? 0 : t - 50);
-    if (red >= 3 && red > 2 * blue) {
-      out.has_kill_ratio = true;
-      out.kill_ratio_tick = t;
-      out.kill_ratio_lead = red;
-      out.kill_ratio_trail = blue;
-      out.kill_ratio_faction = kRed;
-      break;
+    for (std::size_t f = 0; f < n; ++f) {
+      rolling[f] = count_leq(death_ticks[f], t) -
+                   count_leq(death_ticks[f], t < 50 ? 0 : t - 50);
     }
-    if (blue >= 3 && blue > 2 * red) {
-      out.has_kill_ratio = true;
-      out.kill_ratio_tick = t;
-      out.kill_ratio_lead = blue;
-      out.kill_ratio_trail = red;
-      out.kill_ratio_faction = kBlue;
+    for (std::size_t f = 0; f < n; ++f) {
+      if (rolling[f] < 3) {
+        continue;
+      }
+      std::size_t worst_other = 0;
+      bool dominates = true;
+      for (std::size_t g = 0; g < n; ++g) {
+        if (g == f) {
+          continue;
+        }
+        if (rolling[f] <= 2 * rolling[g]) {
+          dominates = false;
+          break;
+        }
+        worst_other = std::max(worst_other, rolling[g]);
+      }
+      if (dominates) {
+        out.has_kill_ratio = true;
+        out.kill_ratio_tick = t;
+        out.kill_ratio_lead = rolling[f];
+        out.kill_ratio_trail = worst_other;
+        out.kill_ratio_faction = f;
+        break;
+      }
+    }
+    if (out.has_kill_ratio) {
       break;
     }
   }
@@ -223,7 +241,7 @@ Measured measure(const sim::Simulation& simulation,
 }
 
 [[nodiscard]] const char* faction_name(std::size_t faction) {
-  return faction == kRed ? "Red" : "Blue";
+  return sim::to_string(static_cast<sim::Faction>(faction));
 }
 
 }  // namespace
@@ -256,7 +274,7 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
               ? std::to_string(r.first_contact_tick)
               : "never (no unit saw an enemy)")
       << ".\n";
-  for (std::size_t f = 0; f < 2; ++f) {
+  for (std::size_t f = 0; f < r.faction_count; ++f) {
     const sim::FactionReport& side = r.factions[f];
     out << "- " << faction_name(f) << ": " << side.initial
         << " units, " << side.deaths << " deaths, " << side.survivors
@@ -267,7 +285,7 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
   out << "\n## Casualties by unit type\n\n";
   out << "| faction | type | spawned | kills | deaths | damage dealt |\n";
   out << "| --- | --- | --- | --- | --- | --- |\n";
-  for (std::size_t f = 0; f < 2; ++f) {
+  for (std::size_t f = 0; f < r.faction_count; ++f) {
     for (const sim::TypeReport& type : r.factions[f].by_type) {
       out << "| " << faction_name(f) << " | " << type.type_id << " | "
           << type.spawned << " | " << type.kills << " | "
@@ -279,7 +297,7 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
   // Morale.
   out << "\n## Morale timeline\n\n";
   if (m.has_morale_samples) {
-    for (std::size_t f = 0; f < 2; ++f) {
+    for (std::size_t f = 0; f < m.result.faction_count; ++f) {
       out << "- " << faction_name(f) << " average morale: "
           << m.morale_first[f] << " at tick " << m.morale_first_tick
           << ", minimum " << m.morale_min[f] << ", " << m.morale_last[f]
@@ -291,13 +309,15 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
 
   // Combat depth (m13 item 3; the counters are all zero under --combat
   // v1 and the section is omitted).
-  const std::uint64_t combat_hits =
-      r.factions[0].combat.flank_hits + r.factions[0].combat.rear_hits +
-      r.factions[0].combat.charge_hits + r.factions[1].combat.flank_hits +
-      r.factions[1].combat.rear_hits + r.factions[1].combat.charge_hits;
+  std::uint64_t combat_hits = 0;
+  for (std::size_t f = 0; f < r.faction_count; ++f) {
+    combat_hits += r.factions[f].combat.flank_hits +
+                   r.factions[f].combat.rear_hits +
+                   r.factions[f].combat.charge_hits;
+  }
   if (combat_hits > 0) {
     out << "\n## Combat depth\n\n";
-    for (std::size_t f = 0; f < 2; ++f) {
+    for (std::size_t f = 0; f < r.faction_count; ++f) {
       const sim::CombatStats& stats = r.factions[f].combat;
       out << "- " << faction_name(f) << ": " << stats.flank_hits
           << " flank hits, " << stats.rear_hits << " rear hits, "
@@ -309,7 +329,7 @@ std::string generate_report_markdown(const sim::Simulation& simulation,
 
   // Routing.
   out << "\n## Routing\n\n";
-  for (std::size_t f = 0; f < 2; ++f) {
+  for (std::size_t f = 0; f < r.faction_count; ++f) {
     const sim::RoutingStats& stats = r.factions[f].routing;
     out << "- " << faction_name(f) << ": " << stats.total_routs
         << " routs, " << stats.recoveries << " recoveries";
@@ -519,7 +539,7 @@ std::string generate_report_json(const sim::Simulation& simulation,
       << ",\n    \"longest_stuck_stretch\": " << r.longest_stuck_stretch
       << "\n  },\n";
   out << "  \"factions\": [\n";
-  for (std::size_t f = 0; f < 2; ++f) {
+  for (std::size_t f = 0; f < r.faction_count; ++f) {
     const sim::FactionReport& side = r.factions[f];
     out << "    {\"name\": " << q(faction_name(f)) << ", \"initial\": "
         << side.initial << ", \"deaths\": " << side.deaths
@@ -632,20 +652,23 @@ std::string generate_timeline_csv(const sim::Simulation& simulation,
   std::ostringstream out;
   out.imbue(std::locale::classic());
   out << "tick";
-  for (const char* faction : {"red", "blue"}) {
+  for (std::size_t f = 0; f < simulation.faction_count(); ++f) {
+    const std::string faction{
+        sim::faction_key(static_cast<sim::Faction>(f))};
     out << "," << faction << "_alive," << faction << "_routed," << faction
         << "_dead," << faction << "_avg_morale," << faction
         << "_engagements";
   }
-  for (const char* faction : {"red", "blue"}) {
+  for (std::size_t f = 0; f < simulation.faction_count(); ++f) {
     for (const sim::UnitType& type : types.types) {
-      out << "," << faction << "_" << type.id << "_alive";
+      out << "," << sim::faction_key(static_cast<sim::Faction>(f))
+          << "_" << type.id << "_alive";
     }
   }
   out << "\n";
   for (const sim::TimelineRow& row : simulation.timeline()) {
     out << row.tick;
-    for (std::size_t f = 0; f < 2; ++f) {
+    for (std::size_t f = 0; f < simulation.faction_count(); ++f) {
       const sim::FactionTimeline& side = row.factions[f];
       out << "," << side.alive << "," << side.routed << "," << side.dead
           << ",";
@@ -654,7 +677,7 @@ std::string generate_timeline_csv(const sim::Simulation& simulation,
       }
       out << "," << side.engagements;
     }
-    for (std::size_t f = 0; f < 2; ++f) {
+    for (std::size_t f = 0; f < simulation.faction_count(); ++f) {
       const std::vector<std::uint32_t>& counts =
           row.factions[f].alive_by_type;
       for (std::size_t t = 0; t < types.types.size(); ++t) {
