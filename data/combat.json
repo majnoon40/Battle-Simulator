@@ -38,5 +38,16 @@
     "cohesion_min": 0.6,
     "damage_factor": 0.8,
     "morale_resist": 0.2
+  },
+  "counters": {
+    "multiplier_cap": 4.0,
+    "list": [
+      {"attacker": "cavalry", "defender": "archer", "multiplier": 0.90},
+      {"attacker": "archer", "defender": "cavalry", "multiplier": 1.15},
+      {"attacker": "archer", "defender": "infantry", "multiplier": 2.15},
+      {"attacker": "infantry", "defender": "archer", "multiplier": 0.95},
+      {"attacker": "infantry", "defender": "cavalry", "multiplier": 0.50},
+      {"attacker": "cavalry", "defender": "infantry", "multiplier": 2.25}
+    ]
   }
 }
