@@ -212,8 +212,10 @@ TEST(ShellTest, ApplyBattleFrameFoldsClicksAndViewState) {
 
   // Click Pause through the real reducer path: the click lands in
   // battle.clicked and folds into the sticky viewer state.
-  app = move_to(std::move(app), center_of(app.battle, "pause"));
-  app = click_at(std::move(app), center_of(app.battle, "pause"));
+  const render::ui::Point point_1 = center_of(app.battle, "pause");
+  app = move_to(std::move(app), point_1);
+  const render::ui::Point point_2 = center_of(app.battle, "pause");
+  app = click_at(std::move(app), point_2);
   view = render::ui::apply_battle_frame(app, view, base_zoom);
   EXPECT_TRUE(view.paused);
   // A quiet frame keeps it paused.
@@ -221,14 +223,17 @@ TEST(ShellTest, ApplyBattleFrameFoldsClicksAndViewState) {
   view = render::ui::apply_battle_frame(app, view, base_zoom);
   EXPECT_TRUE(view.paused);
   // Play unpauses, speed4 sets the speed.
-  app = click_at(std::move(app), center_of(app.battle, "play"));
+  const render::ui::Point point_3 = center_of(app.battle, "play");
+  app = click_at(std::move(app), point_3);
   view = render::ui::apply_battle_frame(app, view, base_zoom);
   EXPECT_FALSE(view.paused);
-  app = click_at(std::move(app), center_of(app.battle, "speed4"));
+  const render::ui::Point point_4 = center_of(app.battle, "speed4");
+  app = click_at(std::move(app), point_4);
   view = render::ui::apply_battle_frame(app, view, base_zoom);
   EXPECT_DOUBLE_EQ(view.speed, 4.0);
   // The terrain checkbox unchecks -> options follow every frame.
-  app = click_at(std::move(app), center_of(app.battle, "terrain"));
+  const render::ui::Point point_5 = center_of(app.battle, "terrain");
+  app = click_at(std::move(app), point_5);
   view = render::ui::apply_battle_frame(app, view, base_zoom);
   EXPECT_FALSE(view.options.show_terrain);
   // The zoom slider maps through the shell's zoom mapping.
@@ -245,13 +250,15 @@ TEST(ShellTest, ShellSessionWalksMenuToBattle) {
   render::ui::App app =
       render::ui::sandbox_app(1280, 720, test_scenarios());
   app.screen = render::ui::Screen::Menu;
-  app = click_at(std::move(app), center_of(app.menu, "scenario"));
+  const render::ui::Point point_6 = center_of(app.menu, "scenario");
+  app = click_at(std::move(app), point_6);
   EXPECT_EQ(app.screen, render::ui::Screen::Scenario);
   // Pick "squads" in the select (second item), then Start.
   const std::int32_t list = find_id(app.scenario, "scenario-list");
   ASSERT_GE(list, 0);
   app.scenario.tree.at(static_cast<std::size_t>(list)).selected = 1;
-  app = click_at(std::move(app), center_of(app.scenario, "start"));
+  const render::ui::Point point_7 = center_of(app.scenario, "start");
+  app = click_at(std::move(app), point_7);
   EXPECT_EQ(app.screen, render::ui::Screen::Battle);
   EXPECT_EQ(app.chosen_scenario, "squads");
   // The viewer state is derivable the moment the battle screen shows.
@@ -261,6 +268,7 @@ TEST(ShellTest, ShellSessionWalksMenuToBattle) {
   EXPECT_TRUE(view.options.show_hud);
   // Quit works from the menu.
   app.screen = render::ui::Screen::Menu;
-  app = click_at(std::move(app), center_of(app.menu, "quit"));
+  const render::ui::Point point_8 = center_of(app.menu, "quit");
+  app = click_at(std::move(app), point_8);
   EXPECT_TRUE(app.quit);
 }

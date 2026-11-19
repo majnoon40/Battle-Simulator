@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(autobattle VERSION 0.1.0 LANGUAGES CXX
+# m13 item 7: the project version follows sim::kSimVersion (the
+# packaging below and the release archives use it).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/sim/include/sim/version.hpp"
+     SIM_VERSION_HPP)
+string(REGEX MATCH "kSimVersion = \"([^\"]+)\"" _ "${SIM_VERSION_HPP}")
+set(BATTLE_SIM_VERSION "${CMAKE_MATCH_1}")
+project(autobattle VERSION ${BATTLE_SIM_VERSION} LANGUAGES CXX
         DESCRIPTION "Deterministic 2D autonomous battle simulation")
 
 set(CMAKE_CXX_STANDARD 20)
@@ -55,6 +61,22 @@ add_subdirectory(cli)
 if(BUILD_FUZZING)
   add_subdirectory(fuzz)
 endif()
+
+# m13 item 7: install + package rules. `cmake --install` lays out
+# bin/battle_cli + data/ + docs/ + the project texts; `cpack` builds
+# the release archive (TGZ + ZIP) with the sim version from
+# sim/version.hpp.
+install(TARGETS battle_cli RUNTIME DESTINATION bin)
+install(DIRECTORY data/ DESTINATION data)
+install(DIRECTORY docs/ DESTINATION docs FILES_MATCHING PATTERN "*.md")
+install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md DESTINATION .)
+set(CPACK_PACKAGE_NAME "battle-simulator")
+set(CPACK_PACKAGE_VERSION "${BATTLE_SIM_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Deterministic 2D autonomous battle simulation")
+set(CPACK_GENERATOR "TGZ;ZIP")
+set(CPACK_SOURCE_GENERATOR "TGZ")
+include(CPack)
 
 enable_testing()
 add_subdirectory(tests)

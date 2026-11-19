@@ -14,6 +14,8 @@
 //      hash is unchanged with it on or off.
 #include <sys/wait.h>
 
+#include "wait_status.hpp"
+
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -193,7 +195,7 @@ int run_cli(const std::string& arguments, std::string& output) {
   while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
     output += buffer;
   }
-  return WEXITSTATUS(pclose(pipe));
+  return exit_status_of(pclose(pipe));
 }
 
 bool files_equal(const std::string& a, const std::string& b) {

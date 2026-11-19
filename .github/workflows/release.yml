@@ -1,0 +1,42 @@
+# m13 item 7 — release packaging: pushing a v* tag builds the release
+# archives on Linux, macOS and Windows (the CPack config in the root
+# CMakeLists: bin/battle_cli + data/ + docs/ + the project texts) and
+# attaches them to the GitHub release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Release)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build battle_cli
+        run: cmake --build build --target battle_cli --config Release
+
+      - name: Package (CPack)
+        run: cpack --config build/CPackConfig.cmake
+
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --generate-notes --verify-tag
+          gh release upload "$tag" battle-simulator-* --clobber

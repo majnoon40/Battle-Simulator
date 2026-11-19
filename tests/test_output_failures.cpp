@@ -10,6 +10,8 @@
 // the failure is deterministic on Linux and macOS.
 #include <sys/wait.h>
 
+#include "wait_status.hpp"
+
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -34,7 +36,7 @@ int run_cli(const std::string& arguments, std::string* output = nullptr) {
   while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
     captured << buffer;
   }
-  const int code = WEXITSTATUS(pclose(pipe));
+  const int code = exit_status_of(pclose(pipe));
   if (output != nullptr) {
     *output = captured.str();
   }
