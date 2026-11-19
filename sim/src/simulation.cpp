@@ -310,9 +310,14 @@ void Simulation::init_threading() {
       thread_pool_ != nullptr ? thread_pool_->worker_count() : 1;
   worker_perceive_.assign(buffers, {});
   for (std::vector<std::uint32_t>& buffer : worker_perceive_) {
-    buffer.reserve(256);
+    // m14 item 1: sight-radius queries on converged 20k-unit fronts
+    // return well over 256 candidates; the old reserve let the buffers
+    // grow (amortized, warm-up only) to the front's high-water mark.
+    // Reserving more up front removes that churn at scale.
+    buffer.reserve(2048);
   }
   decide_inputs_.resize(world_.units.size());
+  candidate_shadow_.resize(world_.units.size());
 }
 
 // Personalities never touch rng_: the same (seed, unit id, table) triple
@@ -1261,6 +1266,17 @@ void Simulation::decide_targets() {
         phase_profiling_ ? std::chrono::steady_clock::now()
                          : std::chrono::steady_clock::time_point{};
     const std::size_t unit_count = world_.units.size();
+    // m14 item 1: refresh the candidate shadow once — pass A then reads
+    // health/max_health/routed from these copies instead of the Unit
+    // structs (the grid shadow carries position/id/faction/alive). Both
+    // are stable from the tick's start until the later phases mutate
+    // them, and every read below is a copy, so results are unchanged.
+    for (std::size_t i = 0; i < unit_count; ++i) {
+      const Unit& unit = world_.units[i];
+      candidate_shadow_[i].health = unit.health;
+      candidate_shadow_[i].max_health = unit.stats.max_health;
+      candidate_shadow_[i].routed = unit.routed;
+    }
     // m13 item P: pre-pass for the avail-v2 routed-ally Help gate. The
     // gate asks, per helper and visible routed ally, "is any living enemy
     // within help.routed_help_enemy_distance of this ally?" — and the
@@ -1289,12 +1305,17 @@ void Simulation::decide_targets() {
             damage_this_tick_[i] <= 0.0) {
           continue;  // never in need, so no helper ever probes this ally
         }
-        grid_.radius_query(world_.units, routed.x, routed.y, reach,
-                           routed_probe_buffer_);
+        // The probe only asks whether any LIVING ENEMY is within reach, so
+        // the faction-scoped query returns exactly the candidates the old
+        // both-faction scan kept (same order, same values — from the grid
+        // shadow).
+        const Faction probe_enemy =
+            routed.faction == Faction::Red ? Faction::Blue : Faction::Red;
+        grid_.radius_query_faction(routed.x, routed.y, reach, probe_enemy,
+                                   routed_probe_buffer_);
         bool near_enemy = false;
         for (std::uint32_t probe : routed_probe_buffer_) {
-          const Unit& probe_unit = world_.units[probe];
-          if (probe_unit.alive && probe_unit.faction != routed.faction) {
+          if (grid_.shadow_of(probe).alive) {
             near_enemy = true;
             break;
           }
@@ -1461,10 +1482,12 @@ void Simulation::compute_decision_inputs(
   // aggregated exactly as the serial scan did (fixed cell order, ties to
   // the lower unit id).
   Perception& perception = out.perception;
-  grid_.radius_query(world_.units, unit.x, unit.y, sight, perceive_buffer);
+  grid_.radius_query(unit.x, unit.y, sight, perceive_buffer);
 
   const Faction enemy =
       unit.faction == Faction::Red ? Faction::Blue : Faction::Red;
+  const std::uint8_t enemy_faction = static_cast<std::uint8_t>(enemy);
+  const std::uint8_t own_faction = static_cast<std::uint8_t>(unit.faction);
   int best = -1;
   double best_d2 = 0.0;
   double sum_x = 0.0;
@@ -1476,8 +1499,13 @@ void Simulation::compute_decision_inputs(
     if (candidate == index) {
       continue;  // a unit is not its own ally
     }
-    const Unit& other = world_.units[candidate];
-    if (other.faction == enemy) {
+    // m14 item 1: the aggregation reads the grid shadow (position, id,
+    // faction) and the candidate shadow (routed) — copies of the unit
+    // array's values in the same iteration order, so every sum,
+    // comparison and tie-break below is bit-identical to the version
+    // that read the Unit structs.
+    const SpatialHashGrid::Shadow& other = grid_.shadow_of(candidate);
+    if (other.faction == enemy_faction) {
       ++enemies;
       sum_x += other.x;
       sum_y += other.y;
@@ -1488,13 +1516,14 @@ void Simulation::compute_decision_inputs(
       // distance, exact ties to the lower unit id (scan-order independent).
       if (best < 0 || d2 < best_d2 ||
           (d2 == best_d2 &&
-           other.id < world_.units[static_cast<std::size_t>(best)].id)) {
+           other.id <
+               grid_.shadow_of(static_cast<std::uint32_t>(best)).id)) {
         best = static_cast<int>(candidate);
         best_d2 = d2;
       }
     } else {
       ++allies;
-      if (morale_enabled_ && other.routed) {
+      if (morale_enabled_ && candidate_shadow_[candidate].routed) {
         ++routed_allies;
       }
     }
@@ -1513,7 +1542,7 @@ void Simulation::compute_decision_inputs(
       best >= 0 &&
       best_d2 <= unit.stats.attack_range * unit.stats.attack_range;
   out.target_routed =
-      best >= 0 && world_.units[static_cast<std::size_t>(best)].routed;
+      best >= 0 && candidate_shadow_[static_cast<std::size_t>(best)].routed;
   {
     const double adx = unit.x - unit.pursuit_anchor_x;
     const double ady = unit.y - unit.pursuit_anchor_y;
@@ -1533,7 +1562,8 @@ void Simulation::compute_decision_inputs(
   if (tactics_active_) {
     const std::uint64_t tick_number = world_.tick_count + 1;
     if (best >= 0) {
-      const Unit& seen = world_.units[static_cast<std::size_t>(best)];
+      const SpatialHashGrid::Shadow& seen =
+          grid_.shadow_of(static_cast<std::uint32_t>(best));
       world_.units[index].memory_x = seen.x;
       world_.units[index].memory_y = seen.y;
       world_.units[index].memory_tick = tick_number;
@@ -1625,12 +1655,17 @@ void Simulation::compute_decision_inputs(
       if (candidate == index) {
         continue;
       }
-      const Unit& other = world_.units[candidate];
-      if (other.faction != unit.faction || !other.alive) {
+      // m14 item 1: faction/alive/position from the grid shadow, health
+      // and routed from the candidate shadow — the same values the Unit
+      // structs hold, read without touching them.
+      const SpatialHashGrid::Shadow& other = grid_.shadow_of(candidate);
+      if (other.faction != own_faction || !other.alive) {
         continue;
       }
+      const CandidateShadow& candidate_info = candidate_shadow_[candidate];
       const double fraction =
-          std::clamp(other.health / other.stats.max_health, 0.0, 1.0);
+          std::clamp(candidate_info.health / candidate_info.max_health,
+                     0.0, 1.0);
       const bool in_need =
           fraction < effective_tactics_->help.ally_health_below ||
           damage_this_tick_[candidate] > 0.0;
@@ -1644,7 +1679,7 @@ void Simulation::compute_decision_inputs(
       // once per routed unit per tick in routed_probe_ — value 2 means a
       // living enemy is within routed_help_enemy_distance — instead of
       // every helper that sees the ally re-running the radius query.)
-      if (config_.ai_avail_v2 && other.routed) {
+      if (config_.ai_avail_v2 && candidate_info.routed) {
         if (routed_probe_[candidate] != 2) {
           continue;
         }
@@ -2572,13 +2607,15 @@ bool Simulation::steer_in_formation(std::size_t index, const Unit& unit,
   // separation_radius, linearly stronger the closer it is. Exact overlaps
   // (distance 0) have no defined direction and are skipped; other neighbors
   // still push the pair apart.
-  grid_.radius_query(world_.units, unit.x, unit.y, steering.separation_radius,
+  grid_.radius_query(unit.x, unit.y, steering.separation_radius,
                      separation_buffer_);
   for (std::uint32_t other_index : separation_buffer_) {
     if (other_index == index) {
       continue;
     }
-    const Unit& other = world_.units[other_index];
+    // Shadow reads: the movement compute loop runs on tick-start
+    // positions, which is exactly what the grid shadow holds.
+    const SpatialHashGrid::Shadow& other = grid_.shadow_of(other_index);
     const double dx = unit.x - other.x;
     const double dy = unit.y - other.y;
     const double distance = std::sqrt(dx * dx + dy * dy);
@@ -2722,12 +2759,12 @@ void Simulation::update_command_auras() {
     if (!unit.alive || unit.stats.leadership_radius <= 0.0) {
       continue;
     }
-    grid_.radius_query(world_.units, unit.x, unit.y,
-                       unit.stats.leadership_radius,
-                       combat_probe_buffer_);
+    // The aura only marks same-faction members: the faction-scoped query
+    // returns exactly the candidates the both-faction scan kept.
+    grid_.radius_query_faction(unit.x, unit.y, unit.stats.leadership_radius,
+                               unit.faction, combat_probe_buffer_);
     for (std::uint32_t probe : combat_probe_buffer_) {
-      if (world_.units[probe].alive &&
-          world_.units[probe].faction == unit.faction) {
+      if (grid_.shadow_of(probe).alive) {
         aura_active_[probe] = 1;
       }
     }
@@ -2910,14 +2947,16 @@ void Simulation::resolve_combat() {
                 static_cast<Action>(goal.last_action) == Action::Hold;
             if (!reduced) {
               // A dense line around the target blunts the charge too.
-              grid_.radius_query(
-                  world_.units, goal.x, goal.y,
-                  effective_combat_->charge.dense_line_radius,
+              // Only the target's own faction counts: the faction-scoped
+              // query returns exactly the candidates the both-faction
+              // scan kept.
+              grid_.radius_query_faction(
+                  goal.x, goal.y,
+                  effective_combat_->charge.dense_line_radius, goal.faction,
                   combat_probe_buffer_);
               std::uint32_t allies = 0;
               for (std::uint32_t probe : combat_probe_buffer_) {
-                const Unit& other = world_.units[probe];
-                if (other.alive && other.faction == goal.faction &&
+                if (grid_.shadow_of(probe).alive &&
                     probe != static_cast<std::uint32_t>(target)) {
                   ++allies;
                 }
@@ -3201,8 +3240,10 @@ void Simulation::update_morale() {
         return;
       }
       for (const DeathEvent& event : events) {
-        grid_.radius_query(world_.units, event.x, event.y, max_sight_,
-                           death_observer_buffer_);
+        // Observers are same-faction only: the faction-scoped query
+        // returns exactly the subsequence the both-faction scan kept.
+        grid_.radius_query_faction(event.x, event.y, max_sight_,
+                                   event.faction, death_observer_buffer_);
         for (std::uint32_t observer : death_observer_buffer_) {
           Unit& unit = world_.units[observer];
           if (!unit.alive || unit.faction != event.faction) {
@@ -3426,7 +3467,7 @@ void Simulation::update_squads() {
       if (may_reorder) {
         // Local strength from the commander's own sight-limited perception
         // (the same ratio the utility AI uses for its units).
-        grid_.radius_query(world_.units, commander.x, commander.y,
+        grid_.radius_query(commander.x, commander.y,
                            effective_sight(commander),
                            squad_perceive_buffer_);
         std::uint32_t allies = 0;
@@ -3435,8 +3476,8 @@ void Simulation::update_squads() {
           if (candidate == squad.commander_index) {
             continue;  // the commander is not its own ally
           }
-          const Unit& other = world_.units[candidate];
-          if (other.faction == commander.faction) {
+          if (grid_.shadow_of(candidate).faction ==
+              static_cast<std::uint8_t>(commander.faction)) {
             ++allies;
           } else {
             ++enemies;
@@ -3525,8 +3566,36 @@ void Simulation::update_termination() {
   // (issue_order calls between ticks count against the upcoming tick).
   orders_issued_this_tick_ = {};
 
-  const std::uint32_t red = world_.alive_count(Faction::Red);
-  const std::uint32_t blue = world_.alive_count(Faction::Blue);
+  // m14 item 1: one fused pass computes every counter the termination
+  // rules below read — per-faction alive counts (elimination, tick-limit
+  // and stalemate winners), per-faction active counts (the --end v2
+  // routed threshold) and the stalemate attacker count. Five full
+  // unit-array sweeps in one; all integer counters, so the fused pass
+  // yields exactly the values the separate scans produced.
+  std::uint32_t red = 0;
+  std::uint32_t blue = 0;
+  std::uint32_t red_active = 0;
+  std::uint32_t blue_active = 0;
+  std::uint32_t attacking = 0;
+  for (const Unit& unit : world_.units) {
+    if (!unit.alive) {
+      continue;
+    }
+    if (unit.faction == Faction::Red) {
+      ++red;
+      if (!unit.routed) {
+        ++red_active;
+      }
+    } else {
+      ++blue;
+      if (!unit.routed) {
+        ++blue_active;
+      }
+    }
+    if (unit.last_action == static_cast<std::uint8_t>(Action::Attack)) {
+      ++attacking;
+    }
+  }
 
   if (red == 0 || blue == 0) {
     finished_ = true;
@@ -3565,15 +3634,6 @@ void Simulation::update_termination() {
   // M13 hold-arm study battles: >90% routed, ~20 fighting on, grinding
   // to the tick limit).
   if (morale_enabled_ && config_.end_v2) {
-    const auto active_of = [this](Faction faction) {
-      std::uint32_t active = 0;
-      for (const Unit& unit : world_.units) {
-        if (unit.alive && !unit.routed && unit.faction == faction) {
-          ++active;
-        }
-      }
-      return active;
-    };
     const auto threshold_out = [&](Faction faction) {
       const std::size_t index = faction_index(faction);
       const auto& term = effective_morale_->termination;
@@ -3582,7 +3642,9 @@ void Simulation::update_termination() {
           static_cast<std::uint32_t>(
               term.routed_threshold_fraction *
               static_cast<double>(initial_alive_[index])));
-      if (active_of(faction) >= threshold) {
+      const std::uint32_t active =
+          faction == Faction::Red ? red_active : blue_active;
+      if (active >= threshold) {
         below_threshold_ticks_[index] = 0;
         return false;
       }
@@ -3616,15 +3678,9 @@ void Simulation::update_termination() {
   // limit.
   if (morale_enabled_ && config_.end_v2 && first_contact_tick_ > 0 &&
       !attack_count_ring_.empty()) {
-    std::uint32_t attacking = 0;
-    for (const Unit& unit : world_.units) {
-      if (unit.alive &&
-          unit.last_action == static_cast<std::uint8_t>(Action::Attack)) {
-        ++attacking;
-      }
-    }
+    const std::uint32_t attacking_now = attacking;
     const std::size_t window = attack_count_ring_.size();
-    attack_count_ring_[stalemate_ring_pos_] = attacking;
+    attack_count_ring_[stalemate_ring_pos_] = attacking_now;
     stalemate_ring_pos_ = (stalemate_ring_pos_ + 1) % window;
     stalemate_samples_ = std::min(stalemate_samples_ + 1, window);
     if (stalemate_samples_ >= window) {

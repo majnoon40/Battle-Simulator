@@ -37,10 +37,13 @@ has a design report under `docs/`.
   (outcome, casualties, morale timeline, squads, turning points),
   `--record` / `--replay --verify` with canonical state hashes every
   25 ticks, `--events` JSONL and `--export-csv` timelines.
-- **Performance (M13 item P)** — the whole regression chain from the
-  initial release is measured in `docs/milestone-13.md`; the routed-ally
-  Help probe is memoized per tick: 5,000 units run at 82 t/s with 2
-  threads on 2 cores (byte-identical, verified by replay hashes).
+- **Performance (M13 item P, M14 item 1)** — the whole regression chain
+  from the initial release is measured in `docs/milestone-13.md` and
+  `docs/milestone-14.md`; the routed-ally Help probe is memoized per
+  tick, and the spatial-hash queries read a per-unit shadow instead of
+  the unit structs: 5,000 units run at 93 t/s with 2 threads and 20,000
+  at 23 t/s single-threaded on 2 cores, all byte-identical (verified by
+  replay hashes and pinned exports).
 - **Unit balance data (M13 item H)** — optional `cost` field on unit
   types and budget-form scenario armies (`{"budget": 300, "mix": ...}`,
   deterministic largest-remainder fill); the tuned

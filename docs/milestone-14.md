@@ -105,3 +105,99 @@ be reachable by stance scaling alone. Doing it properly wants the
 item-3 fix candidates (pursue-on-hold variants), which is engine work
 beyond this item's "tune counters only" scope. Reported per the item's
 "report otherwise" clause.
+
+## Item 1 — Scale: perception off the Unit array (branch m14-scale)
+
+The M13 item 4 benchmark (this box, 2 vCPU, seed 42, 600 ticks,
+--profile-phases) showed the tick at 20,000 units is 70.4 ms of which
+perception is 63.7 ms (90%): pass A's radius queries randomly touch the
+232-byte Unit structs per candidate, and the aggregation loops walk them
+again. The item is a set of byte-identity-preserving throughput changes
+to that path — no behavior change anywhere, by construction and by
+measurement.
+
+### What shipped
+
+- **Query shadow** (`SpatialHashGrid::Shadow`, 24 bytes/unit: x, y, id,
+  faction, alive): the grid maintains a per-unit copy of exactly the
+  fields queries test, refreshed by build/insert/update/remove — every
+  simulation mutation flows through those (movement through
+  update_grid_after_movement, deaths through the same apply_deaths
+  iteration that clears the flag, and update() refreshes before its
+  same-cell early return). `radius_query` reads the shadow instead of
+  the unit array; values are copies and the bucket iteration order is
+  unchanged, so outputs are bit-identical. `nearest_enemy` still reads
+  the unit array and keeps its documented behind-the-back liveness
+  contract (test-pinned); `radius_query`'s liveness is the shadow, which
+  in the simulation is always as current as the buckets (documented in
+  spatial_hash.hpp).
+- **O(1) remove**: a slot array (unit -> position in its bucket) makes
+  remove() swap-remove through the tracked slot — the identical writes
+  the std::find-based removal performed, without scanning the bucket.
+- **Faction-scoped query** (`radius_query_faction`): four call sites
+  only ever keep one faction of the both-faction scan (the avail-v2
+  routed-ally probe, commander auras, the charge dense-line check,
+  morale death-event spread); the variant iterates only that faction's
+  buckets and returns exactly the subsequence the scan kept — proven by
+  a property test, and the other faction's buckets are never touched.
+- **Pass-A candidate shadow** (`Simulation::CandidateShadow`:
+  health, max_health, routed — 24 bytes/unit, one sequential refresh at
+  decide_targets start): the perception aggregation, the Help scan,
+  target_routed and the tactical-memory update read shadows instead of
+  Unit structs; every read is a copy in the same iteration order.
+- **Fused termination sweeps**: update_termination's five full
+  unit-array scans (per-faction alive x2, per-faction active x2,
+  stalemate attackers) became one pass over integer counters.
+- **Bigger query buffer reserve** (256 -> 2048/worker): sight-radius
+  queries on converged 20k fronts exceed 256 candidates; the buffers
+  used to grow during warm-up.
+
+### Measured (same protocol as the M13 table: single runs, seed 42,
+600 ticks, this 2-vCPU box, Release, --profile-phases means)
+
+| scenario | threads | t/s before | t/s after | gain | ms/tick | perception ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| perf-5000 | 1 | 79.8 | 85.2 | +7% | 12.5 -> 11.7 | 11.8 -> 10.9 |
+| perf-5000 | 2 | 73.1 | 92.8 | +27% | 13.7 -> 10.8 | 12.6 -> 9.8 |
+| perf-5000-squads | 1 | 59.2 | 63.6 | +7% | 16.9 -> 15.7 | 13.2 -> 12.3 |
+| perf-5000-squads | 2 | 75.2 | 81.7 | +9% | 13.3 -> 12.2 | 9.4 -> 8.6 |
+| perf-20000 | 1 | 15.9 | 22.6 | **+42%** | 63.0 -> 44.3 | 57.2 -> 39.5 |
+| perf-20000 | 2 | 17.1 | 19.2 | +12% | 58.4 -> 52.2 | 51.8 -> 46.8 |
+| perf-20000-squads | 2 | 5.8 | 7.7 | **+34%** | 172.9 -> 129.4 | 125.7 -> 94.9 |
+| earth-lebanon | 2 | 238.1 | 235.5 | ~0 | 4.2 -> 4.3 | 3.3 -> 3.3 |
+
+earth-lebanon is unchanged deliberately noted: at 2,080 units on a
+terrain map the tick is flow-field/nav bound and perception is a small
+share, so the item's target (the 5k/20k scale wall) is where the gains
+are.
+
+### Honest observations
+
+- **Single-thread now beats two threads at 20k** (22.6 vs 19.2 t/s;
+  before the change t2 won 17.1 vs 15.9). With the per-candidate cost
+  down, the pool's dispatch/barrier overhead and two workers contending
+  for the same shadow arrays cost more than the parallelism returns on
+  2 cores. Output remains byte-identical for every thread count (pinned
+  by the existing suite); a chunk-size/dispatch follow-up could recover
+  the t2 gap. Not pursued here — the item is the byte-identical
+  throughput change, and t1 is now the fastest configuration at 20k.
+- perf-5000 t2 was already slower than t1 before the change on this box
+  (73.1 vs 79.8); after it t2 wins clearly (92.8 vs 85.2). The 5k
+  working set fits cache; 20k does not.
+
+### Verification
+
+- Byte-identity: 17 scenario exports (default, mixed, squads,
+  demo-river, earth-lebanon swapped, balanced-demo, perf-5000,
+  perf-20000, perf-20000-squads, combat-v1 pairs; thread counts 1/2/3/4)
+  compared before/after — all 17 byte-identical, plus the full existing
+  suite including the M1/M2 references, mixed double-runs, the
+  5,000-unit both-modes byte-identity and replay verification.
+- 487/487 tests (486 + the new
+  `SpatialHashPropertyTest.RadiusQueryExactUnderIncrementalMaintenance`:
+  300 random move/kill/revive steps through grid ops assert the
+  shadow==units invariant, radius_query == brute-force oracle, and the
+  faction query == the both-faction subsequence).
+- TSan (Debug, -fsanitize=thread, CI's two selections):
+  14/14 multithreading tests (incl. ScenarioExportsAreByteIdentical,
+  980 s) and 33/33 sim/squad tests, 0 warnings.
