@@ -155,6 +155,19 @@ class SpatialHashGrid {
   // Cell bucket index for a position, clamped to the grid. Public for tests.
   [[nodiscard]] std::size_t cell_of(double x, double y) const noexcept;
 
+  // M15 S1 (invariant checker): verifies the grid against the
+  // authoritative unit array — read-only. Every alive unit is tracked
+  // exactly once, in the bucket matching its position and faction, with
+  // a current shadow record; no dead unit is tracked; the bucket sizes
+  // sum to tracked_count_, which equals the alive count. Appends a
+  // human-readable description of each inconsistency found (at most 8,
+  // prefixed with the unit index where applicable) to `violations`;
+  // returns true when the grid is consistent. Units at or beyond the
+  // index range the grid has ever seen are skipped (nothing to verify).
+  [[nodiscard]] bool verify_contents(
+      const std::vector<Unit>& units,
+      std::vector<std::string>& violations) const;
+
  private:
   // Copies the query-relevant fields of units[index] into the shadow.
   void refresh_shadow(const std::vector<Unit>& units, std::uint32_t index);

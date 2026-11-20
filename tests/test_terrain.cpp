@@ -1095,7 +1095,8 @@ const sim::CommanderConfig& m11a_commanders() {
 sim::Simulation m11a_battle(const sim::TerrainGrid* grid,
                             std::vector<sim::Unit> units,
                             sim::EventRecorder* recorder = nullptr,
-                            bool nav_v2 = true) {
+                            bool nav_v2 = true, double width = 200.0,
+                            double height = 100.0) {
   sim::SimulationConfig config;
   config.seed = 1;
   config.max_ticks = 600;
@@ -1112,8 +1113,8 @@ sim::Simulation m11a_battle(const sim::TerrainGrid* grid,
     config.battlefield_width = grid->width * grid->cell_size;
     config.battlefield_height = grid->height * grid->cell_size;
   } else {
-    config.battlefield_width = 200.0;
-    config.battlefield_height = 100.0;
+    config.battlefield_width = width;
+    config.battlefield_height = height;
   }
   config.spawn_band_fraction = 0.15;
   return sim::Simulation(config, std::move(units));
@@ -1139,7 +1140,8 @@ TEST(NavV2Test, FirstContactTickAndEvent) {
 
   sim::Simulation far = m11a_battle(
       nullptr, {make_unit(1, sim::Faction::Red, 50.0, 50.0),
-                make_unit(2, sim::Faction::Blue, 240.0, 50.0)});
+                make_unit(2, sim::Faction::Blue, 240.0, 50.0)},
+      nullptr, true, 400.0, 100.0);
   // Closing speed 4/tick, sight 40: contact would be at tick ~38; stop
   // well before it.
   for (int tick = 0; tick < 25; ++tick) {

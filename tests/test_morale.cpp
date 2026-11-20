@@ -907,8 +907,8 @@ TEST(TerminationV2Test, ThresholdEndsTheBattleAndPicksTheWinner) {
     }
     for (int i = 0; i < 12; ++i) {
       units.push_back(make_unit(static_cast<std::uint32_t>(13 + i),
-                                sim::Faction::Blue, 900.0 + 3.0 * i,
-                                900.0));
+                                sim::Faction::Blue, 300.0 + 3.0 * i,
+                                300.0));
     }
     return sim::Simulation(config, units);
   };
@@ -950,7 +950,7 @@ TEST(TerminationV2Test, BothBelowThresholdIsADraw) {
   }
   for (int i = 0; i < 12; ++i) {
     units.push_back(make_unit(static_cast<std::uint32_t>(13 + i),
-                              sim::Faction::Blue, 900.0 + 3.0 * i, 900.0));
+                              sim::Faction::Blue, 300.0 + 3.0 * i, 300.0));
   }
   sim::Simulation simulation(config, units);
   simulation.tick();

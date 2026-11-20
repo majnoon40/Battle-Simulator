@@ -32,6 +32,10 @@ Simulation::Simulation(SimulationConfig config,
     : config_(std::move(config)), rng_(config_.seed) {
   validate_config(config_);
   faction_count_ = config_.faction_count;
+  // M15 S1: the test-harness default (set_default_invariant_checks);
+  // 0 (the production default — the CLI never calls the setter) keeps
+  // the checker off entirely.
+  invariant_interval_ = default_invariant_interval_;
   // Remember whether this is an explicit initial state before the vector is
   // moved from below: explicit states keep their preset morale and routed
   // values (tests construct broken or recovering units that way).
@@ -78,8 +82,33 @@ Simulation::Simulation(SimulationConfig config,
             " outside the unit type table (size " +
             std::to_string(config_.unit_types->size()) + ")");
       }
+      // M15 S1: the battlefield dimensions come from the config; a unit
+      // placed outside them (or at a non-finite position) contradicts
+      // it. Found by the invariant checker: three test fixtures placed
+      // units beyond their field and the battles only worked because
+      // the grid clamps out-of-world positions — accepted silently for
+      // years, rejected at the door now.
+      if (!std::isfinite(unit.x) || !std::isfinite(unit.y) ||
+          unit.x < 0.0 || unit.x > config_.battlefield_width ||
+          unit.y < 0.0 || unit.y > config_.battlefield_height) {
+        throw std::invalid_argument(
+            "unit " + std::to_string(unit.id) + " at (" +
+            std::to_string(unit.x) + ", " + std::to_string(unit.y) +
+            ") is outside the battlefield [0, " +
+            std::to_string(config_.battlefield_width) + "] x [0, " +
+            std::to_string(config_.battlefield_height) + "]");
+      }
     }
     world_.units = std::move(initial_units);
+  }
+
+  // M15 S1: pre-size the checker's scratch (only when checks are on, by
+  // the harness default or an explicit enable before any tick) so a
+  // healthy check allocates nothing — the allocation-counting tests
+  // measure steady-state ticks.
+  if (invariant_interval_ != 0) {
+    invariant_dead_at_tick_start_.resize(world_.units.size());
+    invariant_seen_ids_.reserve(world_.units.size() + 8);
   }
 
   for (const Unit& unit : world_.units) {
@@ -844,8 +873,15 @@ void Simulation::spawn_armies() {
 }
 
 void Simulation::tick() {
-  if (finished_) {
+  if (battle_over()) {
     return;
+  }
+  // M15 S1: when this tick's end will run an invariant check (every N
+  // completed ticks), snapshot the dead set now — see the member
+  // comment for why the target invariants need the tick-start view.
+  if (invariant_interval_ != 0 &&
+      (world_.tick_count + 1) % invariant_interval_ == 0) {
+    snapshot_invariant_dead();
   }
   // --profile-phases (m13 item 4): steady-clock accumulation around the
   // pipeline phases; reads the clock only, never simulation state, so
@@ -894,6 +930,15 @@ void Simulation::tick() {
                                                              total_start)
             .count();
     phase_timings_.ticks += 1;
+  }
+  // M15 S1: invariant checker. Off by default (interval 0): one load and
+  // test per tick, no state touched, byte-identical to the previous
+  // release. When on, the post-tick state is validated every N ticks and
+  // once more when the battle terminates; the first violation freezes the
+  // battle (battle_over() turns true for every driver loop).
+  if (invariant_interval_ != 0 &&
+      (world_.tick_count % invariant_interval_ == 0 || finished_)) {
+    run_invariant_check();
   }
 }
 
@@ -1249,7 +1294,7 @@ void Simulation::sample_timeline() {
 }
 
 BattleResult Simulation::run() {
-  while (!finished_) {
+  while (!battle_over()) {
     tick();
   }
   if (config_.timeline_interval > 0 &&

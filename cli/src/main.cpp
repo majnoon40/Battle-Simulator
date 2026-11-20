@@ -655,6 +655,12 @@ int run_with_replay(const cli::Arguments& args,
   // m13 item 4: --profile-phases — clock reads only; the battle is
   // byte-identical with profiling on or off.
   simulation.enable_phase_profiling(args.profile_phases);
+  // M15 S1: --check-invariants — validates the spawn state now and the
+  // post-tick state every N ticks; a healthy battle is byte-identical
+  // (the checks only read state), the first violation freezes it.
+  if (args.invariants_on) {
+    simulation.enable_invariant_checks(args.invariants_interval);
+  }
   // m11b: applies one scripted order (also used by the record/replay
   // loops). "all" addresses every squad of the faction at issue time.
   const auto apply_script_order =
@@ -1297,6 +1303,71 @@ int run_with_replay(const cli::Arguments& args,
     result = simulation.result();
   } else {
     result = simulation.run();
+  }
+  // M15 S1: invariant checker failure report. The first violation froze
+  // the battle inside one of the loops above; print every recorded
+  // violation (tick, unit, invariant, detail, a state dump), write a
+  // replay of the run so the failure reproduces headlessly, and exit 3.
+  // Never fires without --check-invariants.
+  if (simulation.invariant_failed()) {
+    for (const sim::InvariantViolation& violation :
+         simulation.invariant_violations()) {
+      std::cerr << "INVARIANT FAILURE at tick " << violation.tick << ": "
+                << violation.invariant << " — " << violation.detail << "\n";
+      if (violation.unit_index != sim::InvariantViolation::kNoUnit) {
+        std::cerr << simulation.invariant_state_dump(violation.unit_index);
+      }
+    }
+    if (simulation.invariant_failed() &&
+        simulation.invariant_violations().size() >= 64) {
+      std::cerr << "(violation list capped at 64)\n";
+    }
+    std::cerr << simulation.invariant_state_dump(
+        sim::InvariantViolation::kNoUnit);
+    if (args.record_on) {
+      // The record branch above already wrote the replay; point at it.
+      std::cerr << "replay for reproduction: '" << args.record_path
+                << "'\n";
+    } else {
+      // Build the deterministic inputs (the same header the record
+      // branch writes) so --replay reproduces the corrupt battle.
+      // Script orders and interventions are included; a scripted-general
+      // run additionally needs the same --general flags (generals are
+      // not captured in replay files, as with --record).
+      cli::ReplayData failure_replay;
+      failure_replay.version = sim::kSimVersion;
+      failure_replay.scenario = scenario_path;
+      failure_replay.mod = args.mod_dir.empty() ? "-" : args.mod_dir;
+      failure_replay.seed = args.seed;
+      failure_replay.ticks = args.ticks;
+      failure_replay.variance = args.variance_on ? "on" : "off";
+      failure_replay.contact_seek = args.contact_seek_on ? "on" : "off";
+      failure_replay.neighbor = args.grid_mode ? "grid" : "brute";
+      failure_replay.squads = args.squads_on ? "on" : "off";
+      failure_replay.swap_sides = args.swap_sides ? "on" : "off";
+      failure_replay.nav = args.nav_v2 ? "v2" : "v1";
+      failure_replay.ai_avail = args.ai_avail_v2 ? "v2" : "v1";
+      failure_replay.end = args.end_v2 ? "v2" : "v1";
+      failure_replay.combat = args.combat_v2 ? "v2" : "v1";
+      failure_replay.orders = args.orders_on ? "on" : "off";
+      failure_replay.order_interventions = script_orders;
+      for (const std::string& spec : args.interventions) {
+        const std::optional<cli::Intervention> intervention =
+            parse_intervention(spec);
+        if (intervention) {
+          failure_replay.interventions.push_back(*intervention);
+        }
+      }
+      const std::string failure_path = "invariants-failure.replay.json";
+      if (cli::write_replay(failure_path, failure_replay)) {
+        std::cerr << "replay for reproduction: '" << failure_path
+                  << "'\n";
+      } else {
+        std::cerr << "error: cannot write the failure replay '"
+                  << failure_path << "'\n";
+      }
+    }
+    return 3;
   }
   const auto end = std::chrono::steady_clock::now();
 

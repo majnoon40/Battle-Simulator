@@ -10,6 +10,7 @@
 #include "sim/ai.hpp"
 #include "sim/config.hpp"
 #include "sim/flow_field.hpp"
+#include "sim/invariants.hpp"
 #include "sim/personalities.hpp"
 #include "sim/results.hpp"
 #include "sim/rng.hpp"
@@ -132,7 +133,7 @@ class Simulation {
   // Runs ticks until the battle terminates; returns the final result.
   [[nodiscard]] BattleResult run();
 
-  [[nodiscard]] bool finished() const noexcept { return finished_; }
+  [[nodiscard]] bool finished() const noexcept { return battle_over(); }
   [[nodiscard]] BattleResult result() const;
   [[nodiscard]] const World& world() const noexcept { return world_; }
   [[nodiscard]] const SimulationConfig& config() const noexcept {
@@ -359,6 +360,54 @@ class Simulation {
   [[nodiscard]] const PhaseTimings& phase_timings() const noexcept {
     return phase_timings_;
   }
+
+  // Invariant checker (M15 S1). Off by default (interval 0): tick()
+  // never validates anything, byte-identical to the previous release.
+  // enable_invariant_checks(N) validates the spawn state once, then the
+  // post-tick state every N ticks and once more when the battle
+  // terminates. The checks only READ state — a healthy battle runs
+  // bit-identically with them on or off. The first violation freezes the
+  // battle: finished() turns true so every driver loop exits (result()
+  // reports the unfinished state, reason None), and the violation is
+  // recorded in invariant_violations(). check_invariants() is the
+  // one-shot form: validates, returns every violation, changes nothing.
+  // set_default_invariant_checks is the test-harness hook that turns
+  // checks on for every subsequently constructed Simulation — tests
+  // build with the checker on by default; production binaries never
+  // call it. What is validated (each violation names it): ids non-zero
+  // and unique; positions finite, in bounds and (alive units) not
+  // inside an impassable cell; health in [0, max_health] with dead
+  // units at exactly 0; morale in [0, 100], fatigue and experience in
+  // [0, 1], all finite; dead units carry no target (a one-tick grace
+  // covers units that died during the tick — their stale slot is
+  // hashed state, cleared at the next decide phase) and no cooldown;
+  // no alive unit targets a same-faction unit or a dead unit past the
+  // grace; every unit's
+  // faction is one this battle fields; squad membership consistent in
+  // both directions, commanded squads have a living commander; the
+  // in-flight order queue references living squads of the right faction
+  // with deliver_tick >= issue_tick and stays sorted; the spatial grid
+  // contents equal the unit positions; per-faction counts consistent.
+  void enable_invariant_checks(std::uint32_t every_n_ticks);
+  static void set_default_invariant_checks(std::uint32_t every_n_ticks) {
+    default_invariant_interval_ = every_n_ticks;
+  }
+  [[nodiscard]] bool invariant_checks_on() const noexcept {
+    return invariant_interval_ != 0;
+  }
+  [[nodiscard]] bool invariant_failed() const noexcept {
+    return invariant_failed_;
+  }
+  [[nodiscard]] const std::vector<InvariantViolation>&
+  invariant_violations() const noexcept {
+    return invariant_violations_;
+  }
+  [[nodiscard]] std::vector<InvariantViolation> check_invariants() const;
+  // A full text dump of one unit's state (id, faction, position, health,
+  // morale, fatigue, experience, squad, target) for the failure report;
+  // InvariantViolation::kNoUnit dumps the global counters instead.
+  [[nodiscard]] std::string invariant_state_dump(
+      std::size_t unit_index) const;
 
   // Intervention hook (M6 acceptance experiments): zeroes a unit's health
   // between ticks. The death resolves in the next tick's apply_deaths with
@@ -803,8 +852,43 @@ class Simulation {
   // --profile-phases state (m13 item 4); see enable_phase_profiling.
   PhaseTimings phase_timings_{};
   bool phase_profiling_ = false;
+  // M15 S1: invariant checker state. Not hashed, not exported — the
+  // interval and the violation list never influence the battle (with the
+  // checks on, a healthy battle is bit-identical; on the first violation
+  // the battle freezes, which is the checker doing its job).
+  inline static std::uint32_t default_invariant_interval_ = 0;
+  std::uint32_t invariant_interval_ = 0;
+  bool invariant_failed_ = false;
+  std::vector<InvariantViolation> invariant_violations_{};
+  // Scratch reused by every check so a healthy check does not allocate.
+  mutable std::vector<std::uint32_t> invariant_seen_ids_{};
+  // Dead-set snapshot taken at the START of a tick whose end will run a
+  // check (see tick()). The target invariants use it to distinguish a
+  // unit that died during the tick — whose stale target slot is by
+  // design, cleared at the next decide phase (target_index_ is hashed
+  // state; clearing it earlier would change every replay hash) — from a
+  // unit already dead when the tick began, which must be clean.
+  // kNoSnapshotTick = no snapshot yet (target checks skipped).
+  static constexpr std::uint64_t kNoSnapshotTick =
+      static_cast<std::uint64_t>(-1);
+  mutable std::vector<std::uint8_t> invariant_dead_at_tick_start_{};
+  mutable std::uint64_t invariant_dead_snapshot_tick_ = kNoSnapshotTick;
+  // Records the current dead set as the tick-start snapshot.
+  void snapshot_invariant_dead();
+  // Runs check_invariants(), appends to invariant_violations_ (capped)
+  // and sets invariant_failed_ on the first violation.
+  void run_invariant_check();
+  // Test seam (M15 S1): deliberately corrupts private state; see
+  // sim/invariants.hpp. Never called by the simulation itself.
+  friend struct InvariantCorruption;
   static inline const Perception kNoPerception{};
   bool finished_ = false;
+  // M15 S1: finished() also reports true once the invariant checker has
+  // frozen a corrupt battle, so every driver loop (run(), the CLI, the
+  // replay driver) exits instead of ticking corrupt state.
+  [[nodiscard]] bool battle_over() const noexcept {
+    return finished_ || invariant_failed_;
+  }
   TerminationReason reason_ = TerminationReason::None;
   bool has_winner_ = false;
   Faction winner_ = Faction::Red;
