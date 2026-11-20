@@ -85,20 +85,26 @@ struct Scenario {
   double battlefield_height = 0.0;
   double spawn_band_fraction = 0.0;
   std::optional<ScenarioMap> map{};
-  std::array<std::vector<ScenarioEntry>, kFactionCount> armies{};
+  // M14 item 2: how many factions the battle fields (2..kMaxFactions).
+  // red and blue are always required; extras are the fixed-index optional
+  // keys green/yellow/purple/orange/cyan/magenta. Indices are the fixed
+  // Faction enum values (never file order), and per-faction arrays below
+  // are only read up to faction_count.
+  std::uint8_t faction_count = 2;
+  std::array<std::vector<ScenarioEntry>, kMaxFactions> armies{};
   // m13 item H(b): budget-form armies. When set for a faction, that
   // faction's `armies` entry list is empty and the composition comes
   // from the budget fill in build_composition().
-  std::array<std::optional<ScenarioBudget>, kFactionCount> budgets{};
+  std::array<std::optional<ScenarioBudget>, kMaxFactions> budgets{};
   // m13 item 5c: optional spawn anchors (drag-to-place in the editor).
-  std::array<std::optional<SpawnAnchor>, kFactionCount> anchors{};
-  std::array<std::optional<ScenarioObjective>, kFactionCount> objectives{};
-  std::array<std::optional<ScenarioSquads>, kFactionCount> squads{};
+  std::array<std::optional<SpawnAnchor>, kMaxFactions> anchors{};
+  std::array<std::optional<ScenarioObjective>, kMaxFactions> objectives{};
+  std::array<std::optional<ScenarioSquads>, kMaxFactions> squads{};
   // M10 spawn patterns: Band (default) keeps the M1-M9 uniform random
   // spawn; line / columns / echelon / cluster are deterministic opt-ins
   // ("spawn_pattern": "..." for both factions, or "spawn_patterns":
   // {"red": ..., "blue": ...}).
-  std::array<SpawnPattern, kFactionCount> spawn_patterns{};
+  std::array<SpawnPattern, kMaxFactions> spawn_patterns{};
 };
 
 // Parses a scenario from JSON text. Expected shape (see
@@ -135,7 +141,7 @@ struct Scenario {
 // yields the same army sizes. `seed` defaults to 0 for compatibility with
 // fixed-count scenarios; ranged entries resolve identically every call
 // for a given seed.
-[[nodiscard]] std::array<std::vector<TypeCount>, kFactionCount>
+[[nodiscard]] std::array<std::vector<TypeCount>, kMaxFactions>
 build_composition(const Scenario& scenario, const UnitTypeTable& types,
                   std::uint64_t seed = 0);
 

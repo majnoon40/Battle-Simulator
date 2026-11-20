@@ -88,11 +88,16 @@ class SpatialHashGrid {
 
   SpatialHashGrid() = default;
 
-  // (Re-)configures the grid for a battlefield. Throws std::invalid_argument
-  // for a non-positive or non-finite cell size, non-positive extents, or a
-  // cell count above kMaxGridCells. Clears all tracked units.
+  // (Re-)configures the grid for a battlefield. `faction_count` (M14 item 2)
+  // sizes the per-cell buckets and occupancy bitmaps; it must be in
+  // [2, kMaxFactions] and defaults to 2 (the legacy game — identical bucket
+  // layout and query order to before). Throws std::invalid_argument for a
+  // non-positive or non-finite cell size, non-positive extents, a cell count
+  // above kMaxGridCells, or a faction count outside [2, kMaxFactions].
+  // Clears all tracked units.
   void configure(double width, double height, double cell_size,
-                 std::size_t reserve_per_cell);
+                 std::size_t reserve_per_cell,
+                 std::size_t faction_count = kFactionCount);
 
   // Clears every bucket (keeping capacity) and inserts every alive unit of
   // `units` in index order. The canonical fixed-order rebuild.
@@ -141,7 +146,7 @@ class SpatialHashGrid {
   [[nodiscard]] std::size_t cols() const noexcept { return cols_; }
   [[nodiscard]] std::size_t rows() const noexcept { return rows_; }
   [[nodiscard]] std::size_t cell_count() const noexcept {
-    return cells_.size();
+    return cols_ * rows_;
   }
   // Number of units currently tracked (all factions).
   [[nodiscard]] std::size_t tracked_count() const noexcept {
@@ -151,11 +156,6 @@ class SpatialHashGrid {
   [[nodiscard]] std::size_t cell_of(double x, double y) const noexcept;
 
  private:
-  struct Cell {
-    // One bucket per faction: indices into the caller's unit vector.
-    std::array<std::vector<std::uint32_t>, kFactionCount> by_faction{};
-  };
-
   // Copies the query-relevant fields of units[index] into the shadow.
   void refresh_shadow(const std::vector<Unit>& units, std::uint32_t index);
   // Appends every alive bucket member within radius_sq of (x, y) to `out`,
@@ -165,6 +165,19 @@ class SpatialHashGrid {
                             std::vector<std::uint32_t>& out) const;
   void insert_into_cell(std::uint32_t index, std::size_t cell,
                         Faction faction);
+  // Flat bucket storage: cell (col, row) x faction -> one bucket of unit
+  // indices, bucket index = cell * faction_count_ + faction. Sized at
+  // configure() to cell_count * faction_count_ — a 2-faction battle gets
+  // exactly the layout the per-cell std::array had, in the same iteration
+  // order (faction index 0 then 1), so outputs are bit-identical.
+  [[nodiscard]] std::vector<std::uint32_t>& bucket_of(
+      std::size_t cell, std::size_t faction) noexcept {
+    return buckets_[cell * faction_count_ + faction];
+  }
+  [[nodiscard]] const std::vector<std::uint32_t>& bucket_of(
+      std::size_t cell, std::size_t faction) const noexcept {
+    return buckets_[cell * faction_count_ + faction];
+  }
   // Occupancy bitmaps, one per faction and orientation: bit (x, y) is set
   // when cell (x, y) holds at least one unit of that faction. Ring scans
   // test whole row/column segments with a few word loads and only visit
@@ -178,13 +191,13 @@ class SpatialHashGrid {
   [[nodiscard]] bool cell_has_units(Faction faction, std::int64_t x,
                                     std::int64_t y) const noexcept;
   void set_cell_occupancy(std::size_t cell, Faction faction, bool set);
-  // Scans one cell's enemy bucket against the current best candidate.
-  // Returns true when the best candidate changed.
+  // Scans one cell's enemy buckets (every faction except `own`) against the
+  // current best candidate. Returns true when the best candidate changed.
   bool scan_cell(const std::vector<Unit>& units, std::size_t cell,
-                 Faction enemy, double qx, double qy, int& best,
+                 Faction own, double qx, double qy, int& best,
                  double& best_d2) const;
 
-  std::vector<Cell> cells_;
+  std::vector<std::vector<std::uint32_t>> buckets_;
   std::vector<std::int32_t> unit_cell_;  // unit index -> cell id, -1 = untracked
   // unit index -> slot inside its bucket (the position unit_cell_ points
   // at), maintained on every insert/swap-remove so remove() is O(1) instead
@@ -197,8 +210,9 @@ class SpatialHashGrid {
   std::vector<Shadow> shadow_;
   // Occupancy bitmaps per faction and orientation: [faction][0] row-major,
   // [faction][1] column-major. Bit (x, y) is set when cell (x, y) holds at
-  // least one unit of that faction.
-  std::vector<std::uint64_t> occupancy_[kFactionCount][2];
+  // least one unit of that faction. Only [0, faction_count_) are used.
+  std::vector<std::uint64_t> occupancy_[kMaxFactions][2];
+  std::size_t faction_count_ = kFactionCount;
   std::size_t row_words_ = 0;  // words per row in the row-major bitmaps
   std::size_t col_words_ = 0;  // words per column in the column-major bitmaps
   double width_ = 0.0;

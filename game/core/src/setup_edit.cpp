@@ -8,7 +8,7 @@ namespace game {
 
 SetupEdit setup_from_scenario(
     const sim::Scenario& scenario, const sim::UnitTypeTable& types,
-    const std::array<std::vector<sim::TypeCount>, 2>& composition) {
+    const std::array<std::vector<sim::TypeCount>, sim::kMaxFactions>& composition) {
   SetupEdit edit;
   for (std::size_t faction = 0; faction < 2; ++faction) {
     edit.counts[faction].assign(types.types.size(), 0);

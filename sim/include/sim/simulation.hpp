@@ -138,6 +138,10 @@ class Simulation {
   [[nodiscard]] const SimulationConfig& config() const noexcept {
     return config_;
   }
+  // M14 item 2: how many factions this battle fields (2..kMaxFactions).
+  [[nodiscard]] std::size_t faction_count() const noexcept {
+    return faction_count_;
+  }
   [[nodiscard]] std::uint64_t tick_index() const noexcept {
     return world_.tick_count;
   }
@@ -403,6 +407,25 @@ class Simulation {
 
   void spawn_armies();
 
+  // M14 item 2: formation + retreat axes per faction, computed once after
+  // the objectives are known (see the .cpp). At two factions the AI's
+  // hardcoded +/-1 fallbacks still win; these axes drive squads and every
+  // multi-faction direction decision.
+  void compute_faction_axes();
+
+  // The "toward my own side" direction of a faction: the historical
+  // west/east literals at two factions, the negated forward axis (away
+  // from the objective, toward the spawn anchor) in a multi-faction
+  // battle. Always unit length.
+  void retreat_axis(std::size_t index, double& x, double& y) const;
+
+  // M14 item 2: the spawn reference point of a faction — its explicit
+  // anchor when the configuration sets one, otherwise the deterministic
+  // sector default (angle pi + 2*pi*index/faction_count around the field
+  // center, radius min(W, H)/2 - band/2, clamped; at 2 factions this is
+  // never consulted — the west/east bands are the historical rule).
+  [[nodiscard]] SpawnAnchor effective_spawn_anchor(std::size_t index) const;
+
   // --- Terrain (M8) ------------------------------------------------------
   // Stuck detection constants: a goal-seeking unit that actually moves
   // less than kStuckEpsilon world units for kStuckTickThreshold
@@ -437,8 +460,8 @@ class Simulation {
   [[nodiscard]] bool snap_to_passable(double& x, double& y) const noexcept;
 
   const TerrainGrid* terrain_ = nullptr;
-  std::array<FlowField, kFactionCount> flow_{};
-  std::array<std::uint64_t, kFactionCount> flow_target_cell_{};  // packed, max = none
+  std::array<FlowField, kMaxFactions> flow_{};
+  std::array<std::uint64_t, kMaxFactions> flow_target_cell_{};  // packed, max = none
   std::vector<std::uint16_t> stuck_ticks_;        // consecutive stuck ticks
   std::vector<std::uint16_t> max_stuck_stretch_;  // per-unit maximum
   std::vector<bool> counted_stuck_;               // counted in units_stuck_over_100_
@@ -539,7 +562,7 @@ class Simulation {
                                std::vector<std::uint32_t>& perceive_buffer);
   [[nodiscard]] Action finish_unit_decision(
       std::size_t index, const DecisionInputs& inputs,
-      const std::array<std::size_t, kFactionCount>& estimate_dropper,
+      const std::array<std::size_t, kMaxFactions>& estimate_dropper,
       Perception& perception, ActionScores& scores);
   // Creates the worker pool and per-worker scratch (both constructors);
   // a no-op re-run is safe but never happens.
@@ -565,16 +588,26 @@ class Simulation {
   void apply_deaths();       // 4. deaths
   void update_morale();      // 5. morale, routing and recovery (M5)
   void update_squads();      // 6. squads: metrics, command, orders (M6)
-  void update_termination();  // 7. statistics, termination, commit tick
+  void update_termination();
+
+  // m14 item 2: tick-limit / stalemate winner — the faction with the most
+  // survivors; an exact tie at the top is a draw.
+  void set_most_survivors_winner(
+      const std::array<std::uint32_t, kMaxFactions>& alive);  // 7. statistics, termination, commit tick
 
   SimulationConfig config_;
   World world_;
   Rng rng_;
-  std::array<FactionReport, kFactionCount> faction_reports_{};
+  // M14 item 2: how many factions this battle fields (validated copy of
+  // config_.faction_count). Every per-faction loop runs [0, faction_count_)
+  // — a 2-faction battle traverses exactly the slots in the order the
+  // kAllFactions loops did (bit-identical).
+  std::size_t faction_count_ = kFactionCount;
+  std::array<FactionReport, kMaxFactions> faction_reports_{};
   // Per-type counters, one vector per faction sized like the unit type table
   // (empty for legacy battles without a table). Filled during the battle and
   // copied into BattleResult::FactionReport::by_type by result().
-  std::array<std::vector<TypeReport>, kFactionCount> type_reports_{};
+  std::array<std::vector<TypeReport>, kMaxFactions> type_reports_{};
   bool use_type_reports_ = false;
   std::vector<int> target_index_;             // per unit, this tick's target
   std::vector<PendingMove> pending_moves_;    // per unit, this tick's move
@@ -583,8 +616,8 @@ class Simulation {
   bool use_grid_ = false;
   // Utility AI state (M4).
   const PersonalityTable* effective_personalities_ = nullptr;
-  std::array<double, kFactionCount> objective_x_{};  // faction -> objective
-  std::array<double, kFactionCount> objective_y_{};
+  std::array<double, kMaxFactions> objective_x_{};  // faction -> objective
+  std::array<double, kMaxFactions> objective_y_{};
   std::vector<Perception> last_perception_{};   // per unit, last alive tick
   std::vector<std::uint8_t> action_commit_{};   // commit ticks left per unit
   // m13 item 4: the persistent worker pool (null with thread_count <= 1 —
@@ -624,7 +657,7 @@ class Simulation {
   // living enemy in reach, 2 = a living enemy is in reach.
   std::vector<std::uint8_t> routed_probe_{};
   std::vector<std::uint32_t> routed_probe_buffer_{};  // pre-pass scratch
-  std::array<std::array<std::uint64_t, kActionCount>, kFactionCount>
+  std::array<std::array<std::uint64_t, kActionCount>, kMaxFactions>
       action_counts_{};  // cumulative per-faction action totals
   // Morale and routing state (M5).
   bool morale_enabled_ = false;
@@ -643,8 +676,8 @@ class Simulation {
   std::vector<DeathEvent> rout_events_{};  // breaks from the previous tick
   std::vector<std::uint32_t> death_observer_buffer_{};  // reused query buffer
   std::vector<std::uint32_t> ally_rout_count_{};  // per unit, this tick
-  std::array<RoutingStats, kFactionCount> routing_stats_{};
-  std::array<std::uint64_t, kFactionCount> inactive_ticks_{};  // consecutive
+  std::array<RoutingStats, kMaxFactions> routing_stats_{};
+  std::array<std::uint64_t, kMaxFactions> inactive_ticks_{};  // consecutive
   // Squads, formations and commanders (M6).
   bool squads_active_ = false;
   const FormationConfig* formations_ = nullptr;
@@ -652,11 +685,11 @@ class Simulation {
   std::vector<Squad> squads_{};               // global id order
   std::vector<std::int32_t> unit_squad_{};    // per unit, squad id or -1
   std::vector<std::uint32_t> unit_member_{};  // per unit, index into squad members
-  std::array<SquadStats, kFactionCount> squad_stats_{};
-  std::array<double, kFactionCount> forward_x_{};  // formation axes per faction
-  std::array<double, kFactionCount> forward_y_{};
-  std::array<double, kFactionCount> lateral_x_{};
-  std::array<double, kFactionCount> lateral_y_{};
+  std::array<SquadStats, kMaxFactions> squad_stats_{};
+  std::array<double, kMaxFactions> forward_x_{};  // formation axes per faction
+  std::array<double, kMaxFactions> forward_y_{};
+  std::array<double, kMaxFactions> lateral_x_{};
+  std::array<double, kMaxFactions> lateral_y_{};
   std::vector<std::uint32_t> separation_buffer_{};  // reused steering query
   std::vector<std::uint32_t> squad_perceive_buffer_{};  // commander order query
   // Player orders (m11b): the in-flight orders (ascending deliver_tick,
@@ -668,10 +701,10 @@ class Simulation {
   std::vector<PlayerOrder> pending_orders_{};
   std::vector<FlowField> squad_flow_{};
   std::vector<std::uint64_t> squad_flow_target_{};  // packed cell, max = none
-  std::array<double, kFactionCount> hq_x_{};
-  std::array<double, kFactionCount> hq_y_{};
-  std::array<std::uint32_t, kFactionCount> orders_issued_this_tick_{};
-  std::array<PlayerOrderReport, kFactionCount> player_order_reports_{};
+  std::array<double, kMaxFactions> hq_x_{};
+  std::array<double, kMaxFactions> hq_y_{};
+  std::array<std::uint32_t, kMaxFactions> orders_issued_this_tick_{};
+  std::array<PlayerOrderReport, kMaxFactions> player_order_reports_{};
   // m11b: deliver due orders (called from update_squads after succession,
   // before the commander AI re-evaluates), and the delivery itself.
   void process_pending_orders(std::uint64_t tick_number);
@@ -703,9 +736,9 @@ class Simulation {
   // becomes the estimate (while it is fresh enough), so Search heads for
   // it instead of a stale personal memory.
   bool contact_seek_active_ = false;
-  std::array<double, kFactionCount> estimate_x_{};
-  std::array<double, kFactionCount> estimate_y_{};
-  std::array<std::uint64_t, kFactionCount> estimate_tick_{};
+  std::array<double, kMaxFactions> estimate_x_{};
+  std::array<double, kMaxFactions> estimate_y_{};
+  std::array<std::uint64_t, kMaxFactions> estimate_tick_{};
   std::vector<std::uint32_t> contactless_streak_{};
   // Per unit: contact seek engaged on the previous decision (for the
   // seek_start event's false -> true transition).
@@ -720,8 +753,8 @@ class Simulation {
   // m13 item 2 (--end v2): consecutive ticks each faction's active count
   // stayed below the routed threshold, and the initial alive counts the
   // threshold scales from.
-  std::array<std::uint64_t, kFactionCount> below_threshold_ticks_{};
-  std::array<std::uint32_t, kFactionCount> initial_alive_{};
+  std::array<std::uint64_t, kMaxFactions> below_threshold_ticks_{};
+  std::array<std::uint32_t, kMaxFactions> initial_alive_{};
 
   // m13 item 3 (--combat v2): per-tick combat-depth state. All of it
   // stays zero under v1 (and is hashed as zeros, so v1 hashes are

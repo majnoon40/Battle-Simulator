@@ -24,7 +24,7 @@ struct FactionTimeline {
 
 struct TimelineRow {
   std::uint64_t tick = 0;  // 1-based
-  std::array<FactionTimeline, kFactionCount> factions{};
+  std::array<FactionTimeline, kMaxFactions> factions{};
 };
 
 }  // namespace sim

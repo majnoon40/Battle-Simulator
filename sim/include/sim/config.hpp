@@ -80,7 +80,7 @@ struct SimulationConfig {
   // simulation; it also drives per-type reports and the "type" field in JSON
   // exports.
   const UnitTypeTable* unit_types = nullptr;
-  std::array<std::vector<TypeCount>, kFactionCount> composition{};
+  std::array<std::vector<TypeCount>, kMaxFactions> composition{};
 
   // Neighbor search (M3). Grid mode builds a SpatialHashGrid over the
   // battlefield and maintains it after movement and deaths; results are
@@ -98,7 +98,7 @@ struct SimulationConfig {
   AiMode ai_mode = AiMode::Utility;
   const PersonalityTable* personalities = nullptr;
   double action_stickiness = 0.05;  // score bonus for the current action
-  std::array<ObjectivePoint, kFactionCount> objectives{};
+  std::array<ObjectivePoint, kMaxFactions> objectives{};
 
   // Morale and routing (M5). Applies to utility mode only — legacy mode
   // ignores morale regardless of this flag so it keeps reproducing the
@@ -119,7 +119,7 @@ struct SimulationConfig {
   bool squads_enabled = true;
   const FormationConfig* formations = nullptr;
   const CommanderConfig* commanders = nullptr;
-  std::array<std::optional<SquadPlan>, kFactionCount> squad_plans{};
+  std::array<std::optional<SquadPlan>, kMaxFactions> squad_plans{};
 
   // Terrain (M8): a grid of terrain cells, or nullptr for the classic
   // open field (no terrain rule fires at all then, so every M1-M7
@@ -161,10 +161,15 @@ struct SimulationConfig {
   // random spawn from the RNG stream). The other patterns place units
   // deterministically inside the band (counter RNG channel 5); scenarios
   // opt in per faction.
-  std::array<SpawnPattern, kFactionCount> spawn_patterns{};
+  std::array<SpawnPattern, kMaxFactions> spawn_patterns{};
   // m13 item 5c: optional spawn anchors (drag-to-place; see
   // sim/scenario.hpp). Unset = the historical full-height side band.
-  std::array<std::optional<SpawnAnchor>, kFactionCount> spawn_anchors{};
+  std::array<std::optional<SpawnAnchor>, kMaxFactions> spawn_anchors{};
+  // M14 item 2: how many factions the battle fields (2..kMaxFactions).
+  // Per-faction arrays above are written for indices < faction_count and
+  // only those slots are read; 2-faction battles traverse the same slots
+  // in the same order as before (bit-identical).
+  std::uint8_t faction_count = 2;
 
   // Side swap (M10, --swap-sides): Red spawns in the eastern band and
   // Blue in the western one (the band contents, default objectives and
