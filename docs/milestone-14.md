@@ -288,3 +288,56 @@ md5sum out.json   # == the pin in .github/workflows/ci.yml
   not independently exercised.
 - The Windows pins cover two scenarios at 300 ticks; the macOS full
   suite (with the committed baselines) remains the broader check.
+
+## Item 3 — Scripted AI generals (branch m14-lua)
+
+### What shipped
+
+- **Lua 5.4.7 embedded** via FetchContent (pinned tag, built as C from
+  the upstream sources, `lua_static`). The general sandbox registers
+  only `_G` (base), `math`, `string` and `table`: no `io`, `os`,
+  `package`, `debug` or `coroutine` — a script cannot reach the file
+  system, the process or the loader (they compile but are never
+  registered; pinned by `LuaGeneralTest.SandboxHasNoIOOrOS`).
+- **`cli::LuaGeneral`** (cli/lua_general.hpp/.cpp): one instance per
+  faction, each with its own state. The script must define
+  `decide(g)`; every `--general-interval` ticks (default 30, before
+  ticks N, 2N, ...) the CLI snapshots the battle and calls it.
+- **The snapshot `g`** (docs/generals.md has the full table): tick,
+  faction, own and enemy squads (`{id, x, y, members, commander,
+  formation}`), and the living-enemy aggregate `{count, centroid_x,
+  centroid_y}`. God view — the general sees the whole board;
+  fog-of-war snapshots are future work.
+- **Orders** return as `{squad = id | "all", order = "move_to" |
+  "attack_move" | "hold" | "retreat" | "regroup" | "formation",
+  x, y, formation}` and flow through the **existing m11b
+  `issue_order` pipeline** — the same rate limits, courier delays and
+  rejection warnings as order scripts and replays. Malformed returns
+  fail the run naming the order index.
+- **CLI**: `--general [faction=]script.lua` (repeatable; a bare path
+  gives every faction its own instance of the same script — self-play),
+  `--general-interval N`. Needs `--orders on`; rejected together with
+  `--record`/`--replay`/render modes/`--tactic-scan`/`--script` (a
+  replayed battle re-runs its generals live).
+- **Determinism**: no `--general` flags -> the code path never runs
+  (byte-identity pinned by the whole existing suite, 498/498 + the
+  13-export sweep of items 1-2). With a general: same script + seed +
+  scenario -> same orders -> same battle, per-tick state hashes
+  compared in `LuaGeneralTest.ScriptedBattleIsDeterministic`. Scripts
+  using `math.sin/cos/atan` inherit the libm caveat of item 4.
+- 7 new tests (`LuaGeneralTest.*`): load errors, the sandbox, the
+  snapshot contents, order-parsing shapes, malformed-order rejections,
+  end-to-end determinism, delivery counters moving. docs/generals.md
+  documents the API, sandbox and determinism contract.
+
+### Honest misses
+
+- Fog-of-war: the snapshot is the full board. The M4 perception layer
+  would need a per-faction visibility aggregate exposed per squad;
+  deferred (the god view is explicitly documented, and no script can
+  see anything the export does not contain).
+- `--record`/`--replay` with generals: rejected rather than recorded —
+  a replay would need the script itself embedded in the replay file to
+  re-run identically; deferred with the flag guard.
+- The window does not host generals (CLI only); the setup editor stays
+  2-faction (item 2's documented limitation).

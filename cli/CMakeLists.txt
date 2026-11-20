@@ -19,9 +19,15 @@ target_include_directories(cli_report PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 target_compile_features(cli_report PUBLIC cxx_std_20)
 target_link_libraries(cli_report PUBLIC sim render game_core)
 
+# M14 item 3: the scripted AI general host (sandboxed Lua 5.4).
+add_library(cli_lua STATIC src/lua_general.cpp)
+target_include_directories(cli_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(cli_lua PUBLIC cxx_std_20)
+target_link_libraries(cli_lua PUBLIC sim lua_static)
+
 add_executable(battle_cli src/main.cpp)
 target_compile_features(battle_cli PRIVATE cxx_std_20)
 # M7: the CLI links the viewer's pure drawing pipeline (game_core camera/
 # view/ascii + render DrawList/rasterizer/PNG) for the headless
 # --render-frame/--render-frames/--ascii modes; no raylib anywhere.
-target_link_libraries(battle_cli PRIVATE sim render game_core cli_args cli_report)
+target_link_libraries(battle_cli PRIVATE sim render game_core cli_args cli_report cli_lua)

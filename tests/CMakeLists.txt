@@ -19,6 +19,7 @@ add_executable(battle_tests
   test_unit_types.cpp
   test_scenario.cpp
   test_multifaction.cpp
+  test_lua_general.cpp
   test_type_battle.cpp
   test_spatial_hash.cpp
   test_ai.cpp
@@ -48,7 +49,7 @@ target_compile_features(battle_tests PRIVATE cxx_std_20)
 target_include_directories(battle_tests PRIVATE ${CMAKE_SOURCE_DIR})
 target_compile_definitions(battle_tests PRIVATE
   FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/fuzz/corpus")
-target_link_libraries(battle_tests PRIVATE sim render game_core cli_args
+target_link_libraries(battle_tests PRIVATE sim render game_core cli_lua cli_args
   cli_report gtest_main)
 # The committed data files are validated by the loader tests.
 target_compile_definitions(battle_tests PRIVATE

@@ -130,6 +130,11 @@ struct Arguments {
   bool replay_verify = false;  // --replay PATH --verify
   std::uint64_t replay_seek = 0;  // --seek T: re-run to tick T (0 = off)
   std::vector<std::string> interventions;  // --intervene kill:UNIT:TICK
+  // M14 item 3: scripted AI generals. Each entry is
+  // "[faction=]script.lua" — a bare path gives every faction its own
+  // instance of the same script; "red=gen.lua" binds one faction.
+  std::vector<std::string> generals;
+  std::uint32_t general_interval = 30;  // --general-interval ticks
   // m11a: --trace out.jsonl writes one navigation-trace line per
   // --trace-interval ticks (per-faction centroid, mean move, still
   // fraction, Advance fraction, x histogram; see cli/trace.hpp). Pure
