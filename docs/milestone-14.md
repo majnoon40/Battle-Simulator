@@ -201,3 +201,90 @@ are.
 - TSan (Debug, -fsanitize=thread, CI's two selections):
   14/14 multithreading tests (incl. ScenarioExportsAreByteIdentical,
   980 s) and 33/33 sim/squad tests, 0 warnings.
+
+## Item 4 — Cross-platform report
+
+Branch `m14-crossplat` (on top of item 2). The question: does the same
+seed produce the same battle on every platform we ship CI for, and what
+exactly is proven versus assumed?
+
+### The matrix and what each job proves
+
+| job | platform | compiler | runs |
+| --- | --- | --- | --- |
+| Build and test (headless) | ubuntu-24.04 | gcc | full suite + same-seed-twice + grid==brute |
+| macOS build and test | macos-latest | clang (Xcode SDK) | **full suite**, including the committed M7/M13 export baselines |
+| Windows build (compile + smoke) | windows-latest | MSVC | compile + this item's export pins (below) |
+| ASan+UBSan / TSan / fuzzing / mapgen / window build | ubuntu-24.04 | gcc | memory model, fuzz corpus, tooling |
+
+The strongest cross-platform evidence has always been the macOS job: it
+runs `NoMapPinsTest.M7BaselinesReproduceByteForByte` and the M13
+baseline suites — committed reference exports are re-produced
+byte-for-byte by a different compiler, standard library and OS. The
+Windows job was compile+smoke only (10 ticks, exit code): nothing about
+its outputs was verified. This item closes that gap.
+
+### The arithmetic inventory (why it should hold)
+
+The simulation's entire math is IEEE-754-exact operations —
+`std::clamp` (74 sites), `std::sqrt` (27), `min`/`max`, `floor`,
+`ceil`, `fabs`, `round` — all of which IEEE 754 defines as exact or
+correctly rounded, so every conforming platform produces identical
+bits. The RNG is SplitMix64 integer arithmetic. The state hash and the
+JSON export encode little-endian canonical bytes (m13 audit finding 5),
+never host order. The one remaining libm dependency:
+
+- `std::atan2` — three sites: a unit's facing at spawn
+  (simulation.cpp, toward the objective), facing after each move
+  (last_move), and the charge-angle comparison in combat. A libm that
+  differs in the last ulp could in principle flip a facing/charge
+  boundary and diverge a battle. Every platform we test (glibc, Xcode
+  libm, MSVC UCRT) implements atan2 as a correctly-rounded-ish
+  polynomial; the empirical answer below is the actual check.
+
+### M14 additions this item ships
+
+- **`kSectorDirections`** (factions.hpp): the multi-faction sector
+  spawn directions as hex float literals — `[n][i] = (cos, sin)` of
+  `pi + 2*pi*i/n`. Item 2 computed these with runtime `cos`/`sin`, whose
+  last-ulp differences between libms would have shifted every
+  multi-faction spawn position; the literals are the single source of
+  truth, identical bits everywhere. (Two-faction battles never consult
+  the table — west/east bands — so their outputs are untouched.)
+- **Windows export pins** in the CI smoke job: `default.json` and the
+  new `three-way.json` (the shipped 3-faction example), 300 ticks,
+  seed 42, `--export-json` piped to `md5sum`, compared against the
+  values produced by the Linux build. Green means MSVC reproduces the
+  Linux export byte-for-byte — the first direct Windows byte-identity
+  evidence in the repo.
+
+### The empirical result
+
+Both pins were produced by the Linux build of this branch's tree
+(default `908322e6c9fc9a9c5923b0b748f8655f`, three-way
+`95579bb578efe756ec7c215548fe2092`) and re-run identical; the CI job
+compares the Windows builds against them on every push. Note the
+three-way pin intentionally differs from the value in the branch's
+first commit: that earlier pin was produced before the item-2
+`update_morale` stack-overflow fix (m14 item 2, PR #23 round 2) — the
+pre-fix bytes were the bug's corruption, deterministic on one compiler
+but not a battle anyone wanted pinned. If a pin ever fails, that is a
+real cross-platform finding to file, not a flaky test to retry.
+
+### Verifying locally
+
+```
+./build/battle_cli --scenario data/scenarios/default.json --seed 42   --ticks 300 --export-json out.json
+md5sum out.json   # == the pin in .github/workflows/ci.yml
+```
+
+### Honest limits
+
+- `atan2` remains libm-dependent (three sites, listed above). Platforms
+  outside the CI matrix are unverified; a conforming-but-different
+  libm could diverge a battle through a facing boundary.
+- The window build compiles on all three platforms but runs nowhere in
+  CI (no display); its determinism is inherited from the shared core,
+  not independently exercised.
+- The Windows pins cover two scenarios at 300 ticks; the macOS full
+  suite (with the committed baselines) remains the broader check.

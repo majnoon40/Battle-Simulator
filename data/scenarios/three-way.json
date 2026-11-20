@@ -1,0 +1,21 @@
+{
+  "battlefield": {
+    "width": 1000.0,
+    "height": 1000.0
+  },
+  "spawn_band_fraction": 0.15,
+  "armies": {
+    "red": {
+      "infantry": 150,
+      "archer": 50
+    },
+    "blue": {
+      "infantry": 150,
+      "archer": 50
+    },
+    "green": {
+      "infantry": 150,
+      "archer": 50
+    }
+  }
+}

@@ -27,4 +27,6 @@ milestone-N.md files); this table is the index.
 | m13 item 6 — fuzzing (13 libFuzzer harnesses, seed corpus, CI 60s job, nightly 10min) | in PR #18 | #18 | 2026-11-18 |
 | m13 item 7 — packaging (CPack/install + Release workflow), macOS/Windows CI, README/architecture refresh | in PR #19 | #19 | 2026-11-18 |
 | m14 item 0 — type counters (validated combat.json list, capped product, v2-only; RPS acceptance PASS 0.640/0.695/0.585) | merged | #20 | 2026-11-19 |
-| m14 item 1 — scale: query shadow + O(1) remove + faction-scoped query + fused termination sweeps (byte-identical, 487/487; perf-20000 +42% t1, perf-20000-squads +34% t2) | in this PR | — | 2026-11-19 |
+| m14 item 1 — scale: query shadow + O(1) remove + faction-scoped query + fused termination sweeps (byte-identical, 487/487; perf-20000 +42% t1, perf-20000-squads +34% t2) | merged | #23 | 2026-11-19 |
+| m14 item 2 — multi-faction battles (2-8 factions, fixed indices, sector spawn, any-enemy semantics, last-standing termination; 2-faction byte-identity pinned 498/498 + 13/13 export sweep) | merged | #23 | 2026-11-20 |
+| m14 item 4 — cross-platform: sector directions as hex literals, Windows export-md5 pins (default + three-way), the cross-platform report (IEEE-op inventory, atan2 exposure, evidence matrix) | in this PR | — | 2026-11-20 |

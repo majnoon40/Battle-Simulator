@@ -201,3 +201,15 @@ jobs:
       - name: Smoke run
         shell: bash
         run: ./build/Release/battle_cli --scenario data/scenarios/default.json --seed 42 --ticks 10
+
+      # M14 item 4: Windows byte-identity evidence. The same seeds must
+      # produce the Linux/macOS export bytes (the sim math is IEEE-exact
+      # ops plus atan2; see docs/milestone-14.md item 4). A failure here
+      # is a real cross-platform finding, not a flaky test.
+      - name: Export byte-identity pins (default + three-way)
+        shell: bash
+        run: |
+          ./build/Release/battle_cli --scenario data/scenarios/default.json --seed 42 --ticks 300 --export-json pin-default.json
+          ./build/Release/battle_cli --scenario data/scenarios/three-way.json --seed 42 --ticks 300 --export-json pin-three-way.json
+          echo "908322e6c9fc9a9c5923b0b748f8655f  pin-default.json" | md5sum -c -
+          echo "95579bb578efe756ec7c215548fe2092  pin-three-way.json" | md5sum -c -
