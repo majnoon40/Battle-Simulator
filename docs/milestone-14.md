@@ -202,6 +202,73 @@ are.
   14/14 multithreading tests (incl. ScenarioExportsAreByteIdentical,
   980 s) and 33/33 sim/squad tests, 0 warnings.
 
+## Item 2 — Multi-faction battles (branch m14-factions, PR #23)
+
+### What shipped
+
+- **Scenario layer**: `armies` accepts 2-8 factions — fixed indices
+  (red/blue/green/yellow/purple/orange/cyan/magenta), contiguous from
+  Red; the parser rejects unknown keys, holes in the index set, and
+  per-faction data (squads, spawn patterns) for factions an army does
+  not field. `write_scenario` round-trips a three-faction file. The
+  faction limit `kMaxFactions = 8` is a single validated constant.
+- **Internals generalized**: every per-faction array member (spawn
+  patterns, squad plans, HQ/objective/estimate arrays, timeline rows,
+  reports, player-order reports) sized `kMaxFactions`; the spatial
+  hash grid's buckets are flattened to `cell * faction_count + faction`
+  with faction-scoped queries; perception, the utility AI, combat
+  targeting, morale spread and the flow of order delivery all use
+  any-enemy / per-faction semantics instead of Red-vs-Blue pairs.
+- **Sector spawn default**: without an explicit spawn pattern, faction
+  *i* of *n* deploys around the point at angle `pi + 2*pi*i/n` on a
+  circle around the field center (Red west; at n = 2 Blue is exactly
+  east, byte-identical to the band default). Since item 4 the
+  directions come from `kSectorDirections` (hex float literals —
+  identical bits on every libm).
+- **Termination and results**: per-faction elimination counting with a
+  last-standing winner; the timeline, faction reports and the state
+  hash cover every fielded faction (the hash's player-order report
+  block is per-faction at n > 2 — a format change from the 2-faction
+  hash, which is unchanged).
+- **11 tests** (`MultiFaction*`): parse acceptance/rejection shapes +
+  round-trip, config validation (count rules, unfielded-faction data),
+  sector-spawn determinism per seed, three-faction nearest-enemy vs
+  brute force, a three-faction battle running to termination with all
+  factions accounted, and the two-faction-unchanged pin.
+
+### Byte-identity, and the two CI rounds that proved it the hard way
+
+Every two-faction battle is byte-identical to pre-item-2: the final
+tree passed the full suite (498/498) and a 13-export sweep vs the
+`2a4c1ee` baseline (default/mixed/squads/demo-river/balanced-demo/
+perf-5000 with and without `--swap-sides`, earth-lebanon
+`--swap-sides`). Getting there took two CI fix rounds, both real bugs
+the local gcc-14 run survived:
+
+- **Round 1 — the formation axes**: moving the axes computation out of
+  `assign_squads` left 2-faction *squad* battles with zero
+  forward/lateral axes — formations collapsed toward the origin and
+  every squad-dependent output diverged (six CI test failures plus the
+  earth-lebanon export). `assign_squads` computes them again after its
+  early return, at every faction count: a 2-faction battle computes
+  them exactly when a squad plan runs and leaves them zero otherwise —
+  the timing is byte-identity, the state hash covers these arrays.
+- **Round 2 — the gcc-13 crash**: `update_morale`'s `routed_now` /
+  `active_now` locals were still `kFactionCount`(2)-sized stack arrays;
+  a Green unit's index-2 write is a stack-buffer-overflow that ASan
+  catches, gcc-13 crashed on, and gcc-14 silently absorbed — the
+  reminder that a green local run is evidence, not proof. Two 2-bounded
+  loops went with it (faction estimates, the hash's player-order
+  block) and `M_PI` became a `kPi` literal (MSVC does not define it).
+
+### Honest misses
+
+- The setup editor and the in-game faction colors stay two-faction;
+  multi-faction battles are CLI/scenario-file only.
+- `--swap-sides` at n > 2 is rejected (the mirror of 3+ factions is
+  not well-defined).
+- Cross-platform n>2 byte-identity arrived with item 4's direction
+  table; before that the sector math used runtime `cos`/`sin`.
 ## Item 4 — Cross-platform report
 
 Branch `m14-crossplat` (on top of item 2). The question: does the same
