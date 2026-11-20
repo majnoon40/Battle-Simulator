@@ -109,6 +109,97 @@ jobs:
             --check-invariants > /dev/null
           echo "checker smoke passed"
 
+  differential:
+    name: Differential (M15 S2)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Release, BUILD_GAME=OFF)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GAME=OFF
+
+      - name: Build battle_cli
+        run: cmake --build build --target battle_cli -j"$(nproc)"
+
+      # M15 S2: replay record/verify on EVERY shipped scenario (the
+      # DifferentialTest suite keeps representatives in the regular
+      # test run). Tick budgets: 300, 150 for the 5k perf scenarios,
+      # 100 for the 20k ones.
+      - name: Replay record/verify on every shipped scenario
+        run: |
+          set -e
+          ticks_for() {
+            case "$1" in
+              perf-20000*) echo 100;;
+              perf-5000*|demo-river-perf) echo 150;;
+              *) echo 300;;
+            esac
+          }
+          for s in data/scenarios/*.json; do
+            name=$(basename "$s" .json)
+            t=$(ticks_for "$name")
+            ./build/battle_cli --scenario "$s" --seed 42 --ticks "$t" \
+              --record /tmp/s2.replay > /dev/null
+            ./build/battle_cli --replay /tmp/s2.replay --verify \
+              | grep -q "replay verified"
+            echo "$name: verified"
+          done
+          # Both orientations for an open field and an earth map.
+          for s in default earth-lebanon; do
+            ./build/battle_cli --scenario "data/scenarios/$s.json" \
+              --seed 42 --ticks 300 --swap-sides \
+              --record /tmp/s2.replay > /dev/null
+            ./build/battle_cli --replay /tmp/s2.replay --verify \
+              | grep -q "replay verified"
+            echo "$s --swap-sides: verified"
+          done
+
+      # M15 S2: aggregate fairness on the symmetric default.json. The
+      # per-seed winner-flip property does NOT hold (spawn draws are
+      # allocated by faction index and translated into the flipped
+      # band, not mirrored — docs/milestone-15.md S2), but the symmetric
+      # map must stay fair in aggregate. The counts are exact pins of
+      # deterministic battles: a battle-behavior change (always behind
+      # a flag) shifts them and forces a conscious re-measure.
+      # Measured: Red 49 / Blue 50 / draw 1 of 100.
+      - name: Side-swap aggregate fairness (50 seeds, both orientations)
+        run: |
+          set -e
+          red=0; blue=0; draw=0
+          for seed in $(seq 1 50); do
+            for extra in "" "--swap-sides"; do
+              ./build/battle_cli --scenario data/scenarios/default.json \
+                --seed "$seed" --ticks 2000 $extra \
+                --report /tmp/s2_fair.md > /dev/null
+              w=$(grep -o '"winner": "[^"]*"' /tmp/s2_fair.json)
+              case "$w" in
+                *'"Red"'*) red=$((red+1));;
+                *'"Blue"'*) blue=$((blue+1));;
+                *) draw=$((draw+1));;
+              esac
+            done
+          done
+          echo "fairness: red=$red blue=$blue draw=$draw (pinned 49/50/1)"
+          [ "$red" -eq 49 ] && [ "$blue" -eq 50 ] && [ "$draw" -eq 1 ]
+
+      # M15 S2: grid == brute on every scenario small enough for the
+      # O(n^2) scan (the gtest covers five, demo-river included, at
+      # battle length).
+      - name: Grid == brute neighbor modes
+        run: |
+          set -e
+          for s in default mixed m10-line squads balanced-demo three-way viewer-demo; do
+            ./build/battle_cli --scenario "data/scenarios/$s.json" \
+              --seed 42 --ticks 300 --neighbor-mode grid \
+              --export-json /tmp/s2_g.json > /dev/null
+            ./build/battle_cli --scenario "data/scenarios/$s.json" \
+              --seed 42 --ticks 300 --neighbor-mode brute \
+              --export-json /tmp/s2_b.json > /dev/null
+            cmp /tmp/s2_g.json /tmp/s2_b.json
+            echo "$s: grid == brute"
+          done
+
   game-build:
     name: Game window build (compile only)
     runs-on: ubuntu-24.04

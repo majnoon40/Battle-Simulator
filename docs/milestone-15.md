@@ -139,3 +139,121 @@ inside the field.
   flags, script orders, interventions); a scripted-general run needs
   the same `--general` flags supplied again — generals are not
   captured in replay files (the same limitation `--record` has).
+
+## S2 — Differential and metamorphic tests
+
+### What shipped
+
+Six `DifferentialTest` cases in `tests/test_differential.cpp` — every
+one runs the real binary end to end and compares runs against each
+other, never against a golden file — plus a `differential` CI job
+that extends the sweeps to every shipped scenario:
+
+- **`SideSwapAggregateFairnessOnSymmetricMap`** — `default.json` is
+  mirror-symmetric (open field, identical 250-infantry armies), so a
+  faction advantage would skew the win count. Seeds 1-5, both
+  orientations, 10 deterministic battles: Red 6 / Blue 4 / draw 0,
+  pinned exactly. The counts are exact pins of deterministic battles:
+  a battle-behavior change (always behind a flag) shifts them and
+  forces a conscious re-measure.
+- **`SideSwapTranslatesSpawnBandsNotMirrors`** — pins what
+  `--swap-sides` actually does to spawns: each unit's band-relative
+  offset maps to the same offset in the opposite band (a translation,
+  measured max offset delta 4.000 = two speed-2.0 steps after one
+  tick), keeping the army's layout. A mirror mapping would put the
+  delta at |2*offset − 150| for most units, far outside the 4.5
+  slack — the test fails if the semantics ever change to a mirror.
+- **`ReplayRecordVerifyOnRepresentativeScenarios`** — record then
+  verify (hash-by-hash re-run) on open field, squads, three factions,
+  terrain, an earth map `--swap-sides`, and perf-5000 at a reduced
+  budget; default and perf-5000 also verify under `--threads 4`.
+  The CI job sweeps **all 19 shipped scenarios** plus swapped default
+  and earth-lebanon (measured locally: 19/19 verified, 12 checkpoints
+  at 300 ticks).
+- **`GridVsBruteAgreeOnShippedScenarios`** — grid and brute neighbor
+  modes export byte-identical JSON on default, mixed, squads,
+  three-way (faction-scoped multi-faction queries) and demo-river
+  (terrain); the CI job adds m10-line, balanced-demo and viewer-demo
+  (measured: 8/8 agree).
+- **`EraFlagsComposeWithInertModesToBaselines`** — the M7-era recipe
+  (`--variance off --ai-avail v1 --end v1 --combat v1`) reproduces
+  the committed baselines; the output-neutral modes (`--orders off`,
+  `--neighbor-mode brute`, `--threads 4`) compose with it to the same
+  bytes. Turning every switchable feature off reaches the previous
+  release no matter how the inert modes are set.
+- **`ScriptOrdersMatchReplayInterventionsExactly`** — an 8-order
+  script (both factions, all six order types, all/specific squads,
+  with/without points) is recorded into the replay as exactly the
+  same intervention lines — count, order, fields — and the replay
+  verifies. `CliAppliesScriptAndRecordsIt` checked one line's
+  presence; this pins the full bijection.
+
+### The finding: side-swap is not a mirror, and per-seed symmetry does not hold
+
+The S2 checklist asked for "side-swap symmetry on a symmetric map:
+the winner flips with the same end tick." Measured on `default.json`
+(seeds 1-100, both orientations, 2000-tick cap): **it does not hold**
+— winner flips 60/100 (what two independent even battles give), same
+end tick **0/100**, mirrored casualties **0/100**. Example (seed 1):
+Blue wins in 324 ticks (`faction_routed`) plain, Blue wins in 822
+ticks (`stalemate`) swapped — a different battle, not a mirrored one.
+
+Root cause, measured at the spawn (seed 1, tick 1): the swapped run
+is neither the mirror of the plain run (mirror positions overlap
+0/250) nor the same draws (0/250) —
+
+1. The spawn stream allocates draws by faction index and maps them by
+   **translation** into the flipped band (`x = band_lo + d*span` with
+   `band_lo` flipped): the army keeps its exact relative layout on
+   the other side; it is not reflected.
+2. The default objective, in contrast, mirrors properly (band centers
+   75 vs 925), so a unit's |dx| toward its objective differs between
+   the runs and the normalized y-step diverges from tick 1 (y differs
+   for 250/250 units after one tick).
+3. Combat is *not* the culprit: attacks are collected from the
+   tick-start state into `pending_attacks_` and applied afterwards,
+   so a unit that dies mid-loop still lands its own queued attack —
+   there is no first-mover faction advantage.
+
+What a true per-seed fix would need: reflected in-band mapping +
+cross-faction draw allocation (the army playing the opponent's mirror
+role must consume the opponent's draws) + id-order-neutral
+tie-breaking and event ordering (ties break by unit id; event
+processing iterates by index — both favor whoever holds the low
+indices). Every battle changes bytes → flag + `kSimVersion` bump +
+full re-pin, the same shape as the queued flee-clamp change. Not done
+here: `--swap-sides` as shipped is an orientation-flip deployment
+tool (the M13 tuning used both orientations to cancel map asymmetry,
+which works regardless of per-seed symmetry), and whether true
+per-seed symmetry is wanted is a game-design decision.
+
+### What does hold (and is now pinned)
+
+- **Aggregate fairness on the symmetric map**: the 200-battle
+  measurement gives Red 93 / Blue 103 / draw 4 — share 0.465, 95% CI
+  [0.396, 0.534] — no evidence of a faction advantage. The CI job
+  pins seeds 1-50 both orientations at Red 49 / Blue 50 / draw 1
+  (~5 min single-threaded; 50 seeds, not 100, to halve the cost).
+- **Replay record/verify: every shipped scenario** (19/19 measured;
+  CI sweeps all, gtest keeps six representatives).
+- **grid == brute** on every scenario small enough for the O(n^2)
+  scan (8 measured: 5 in the gtest at battle length, 7 in CI).
+- **flag-off == previous release**: the era recipe composes with
+  every inert mode to the committed M7 baselines, byte-for-byte.
+- **script orders == recorded interventions**, exactly (the 8-order
+  bijection), and the scripted battle's replay verifies.
+
+### Honest misses
+
+- The perf scenarios (5k/20k units) are excluded from grid==brute —
+  brute is O(n^2); they run the grid exclusively (the brute path is
+  covered at smaller scale here and by the m13 synthetic tests).
+- The fairness pins are exact counts of deterministic battles, so a
+  knife-edge seed flip on a different libm (the cross-platform
+  atan2 exposure from the m14 report) would shift a count by one and
+  fail loudly — if that ever fires on a platform change rather than
+  a code change, re-measure and re-pin.
+- The spawn-semantics test pins tick-1 state (the CLI refuses
+  `--ticks 0`); the 4.5 slack is two movement steps, tight enough to
+  distinguish translation from a mirror but not to detect a partial
+  reflection of a few units.
