@@ -527,6 +527,13 @@ void Simulation::assign_squads() {
     squads_active_ = false;
     return;
   }
+  // Formation axes: squads need them at every faction count. The
+  // constructor computes them early only for multi-faction battles
+  // (whose AI fallbacks read them without squads); here is the
+  // historical spot — a 2-faction battle computes them exactly when a
+  // squad plan runs, and leaves them zero otherwise (the state hash
+  // covers these arrays, so the timing is part of byte-identity).
+  compute_faction_axes();
   formations_ = config_.formations != nullptr
                     ? config_.formations
                     : &default_formation_config();
