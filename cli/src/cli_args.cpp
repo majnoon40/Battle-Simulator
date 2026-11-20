@@ -602,6 +602,23 @@ ParseOutcome parse_args(int argc, char** argv) {
       args.profile_phases = true;
       continue;
     }
+    if (flag == "--general") {
+      const char* value = require_value("--general");
+      args.generals.emplace_back(value);
+      continue;
+    }
+    if (flag == "--general-interval") {
+      const char* value = require_value("--general-interval");
+      char* end = nullptr;
+      const unsigned long parsed = std::strtoul(value, &end, 10);
+      if (end == value || *end != '\0' || parsed == 0 || parsed > 10000) {
+        outcome.error =
+            "--general-interval must be a whole number in [1, 10000]";
+        return outcome;
+      }
+      args.general_interval = static_cast<std::uint32_t>(parsed);
+      continue;
+    }
     if (flag == "--script") {
       const char* value = require_value("--script");
       if (value == nullptr) {

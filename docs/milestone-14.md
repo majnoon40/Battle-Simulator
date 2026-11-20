@@ -202,6 +202,73 @@ are.
   14/14 multithreading tests (incl. ScenarioExportsAreByteIdentical,
   980 s) and 33/33 sim/squad tests, 0 warnings.
 
+## Item 2 — Multi-faction battles (branch m14-factions, PR #23)
+
+### What shipped
+
+- **Scenario layer**: `armies` accepts 2-8 factions — fixed indices
+  (red/blue/green/yellow/purple/orange/cyan/magenta), contiguous from
+  Red; the parser rejects unknown keys, holes in the index set, and
+  per-faction data (squads, spawn patterns) for factions an army does
+  not field. `write_scenario` round-trips a three-faction file. The
+  faction limit `kMaxFactions = 8` is a single validated constant.
+- **Internals generalized**: every per-faction array member (spawn
+  patterns, squad plans, HQ/objective/estimate arrays, timeline rows,
+  reports, player-order reports) sized `kMaxFactions`; the spatial
+  hash grid's buckets are flattened to `cell * faction_count + faction`
+  with faction-scoped queries; perception, the utility AI, combat
+  targeting, morale spread and the flow of order delivery all use
+  any-enemy / per-faction semantics instead of Red-vs-Blue pairs.
+- **Sector spawn default**: without an explicit spawn pattern, faction
+  *i* of *n* deploys around the point at angle `pi + 2*pi*i/n` on a
+  circle around the field center (Red west; at n = 2 Blue is exactly
+  east, byte-identical to the band default). Since item 4 the
+  directions come from `kSectorDirections` (hex float literals —
+  identical bits on every libm).
+- **Termination and results**: per-faction elimination counting with a
+  last-standing winner; the timeline, faction reports and the state
+  hash cover every fielded faction (the hash's player-order report
+  block is per-faction at n > 2 — a format change from the 2-faction
+  hash, which is unchanged).
+- **11 tests** (`MultiFaction*`): parse acceptance/rejection shapes +
+  round-trip, config validation (count rules, unfielded-faction data),
+  sector-spawn determinism per seed, three-faction nearest-enemy vs
+  brute force, a three-faction battle running to termination with all
+  factions accounted, and the two-faction-unchanged pin.
+
+### Byte-identity, and the two CI rounds that proved it the hard way
+
+Every two-faction battle is byte-identical to pre-item-2: the final
+tree passed the full suite (498/498) and a 13-export sweep vs the
+`2a4c1ee` baseline (default/mixed/squads/demo-river/balanced-demo/
+perf-5000 with and without `--swap-sides`, earth-lebanon
+`--swap-sides`). Getting there took two CI fix rounds, both real bugs
+the local gcc-14 run survived:
+
+- **Round 1 — the formation axes**: moving the axes computation out of
+  `assign_squads` left 2-faction *squad* battles with zero
+  forward/lateral axes — formations collapsed toward the origin and
+  every squad-dependent output diverged (six CI test failures plus the
+  earth-lebanon export). `assign_squads` computes them again after its
+  early return, at every faction count: a 2-faction battle computes
+  them exactly when a squad plan runs and leaves them zero otherwise —
+  the timing is byte-identity, the state hash covers these arrays.
+- **Round 2 — the gcc-13 crash**: `update_morale`'s `routed_now` /
+  `active_now` locals were still `kFactionCount`(2)-sized stack arrays;
+  a Green unit's index-2 write is a stack-buffer-overflow that ASan
+  catches, gcc-13 crashed on, and gcc-14 silently absorbed — the
+  reminder that a green local run is evidence, not proof. Two 2-bounded
+  loops went with it (faction estimates, the hash's player-order
+  block) and `M_PI` became a `kPi` literal (MSVC does not define it).
+
+### Honest misses
+
+- The setup editor and the in-game faction colors stay two-faction;
+  multi-faction battles are CLI/scenario-file only.
+- `--swap-sides` at n > 2 is rejected (the mirror of 3+ factions is
+  not well-defined).
+- Cross-platform n>2 byte-identity arrived with item 4's direction
+  table; before that the sector math used runtime `cos`/`sin`.
 ## Item 4 — Cross-platform report
 
 Branch `m14-crossplat` (on top of item 2). The question: does the same
@@ -288,3 +355,56 @@ md5sum out.json   # == the pin in .github/workflows/ci.yml
   not independently exercised.
 - The Windows pins cover two scenarios at 300 ticks; the macOS full
   suite (with the committed baselines) remains the broader check.
+
+## Item 3 — Scripted AI generals (branch m14-lua)
+
+### What shipped
+
+- **Lua 5.4.7 embedded** via FetchContent (pinned tag, built as C from
+  the upstream sources, `lua_static`). The general sandbox registers
+  only `_G` (base), `math`, `string` and `table`: no `io`, `os`,
+  `package`, `debug` or `coroutine` — a script cannot reach the file
+  system, the process or the loader (they compile but are never
+  registered; pinned by `LuaGeneralTest.SandboxHasNoIOOrOS`).
+- **`cli::LuaGeneral`** (cli/lua_general.hpp/.cpp): one instance per
+  faction, each with its own state. The script must define
+  `decide(g)`; every `--general-interval` ticks (default 30, before
+  ticks N, 2N, ...) the CLI snapshots the battle and calls it.
+- **The snapshot `g`** (docs/generals.md has the full table): tick,
+  faction, own and enemy squads (`{id, x, y, members, commander,
+  formation}`), and the living-enemy aggregate `{count, centroid_x,
+  centroid_y}`. God view — the general sees the whole board;
+  fog-of-war snapshots are future work.
+- **Orders** return as `{squad = id | "all", order = "moveto" |
+  "attackmove" | "hold" | "retreat" | "regroup" | "formation",
+  x, y, formation}` and flow through the **existing m11b
+  `issue_order` pipeline** — the same rate limits, courier delays and
+  rejection warnings as order scripts and replays. Malformed returns
+  fail the run naming the order index.
+- **CLI**: `--general [faction=]script.lua` (repeatable; a bare path
+  gives every faction its own instance of the same script — self-play),
+  `--general-interval N`. Needs `--orders on`; rejected together with
+  `--record`/`--replay`/render modes/`--tactic-scan`/`--script` (a
+  replayed battle re-runs its generals live).
+- **Determinism**: no `--general` flags -> the code path never runs
+  (byte-identity pinned by the whole existing suite, 498/498 + the
+  13-export sweep of items 1-2). With a general: same script + seed +
+  scenario -> same orders -> same battle, per-tick state hashes
+  compared in `LuaGeneralTest.ScriptedBattleIsDeterministic`. Scripts
+  using `math.sin/cos/atan` inherit the libm caveat of item 4.
+- 7 new tests (`LuaGeneralTest.*`): load errors, the sandbox, the
+  snapshot contents, order-parsing shapes, malformed-order rejections,
+  end-to-end determinism, delivery counters moving. docs/generals.md
+  documents the API, sandbox and determinism contract.
+
+### Honest misses
+
+- Fog-of-war: the snapshot is the full board. The M4 perception layer
+  would need a per-faction visibility aggregate exposed per squad;
+  deferred (the god view is explicitly documented, and no script can
+  see anything the export does not contain).
+- `--record`/`--replay` with generals: rejected rather than recorded —
+  a replay would need the script itself embedded in the replay file to
+  re-run identically; deferred with the flag guard.
+- The window does not host generals (CLI only); the setup editor stays
+  2-faction (item 2's documented limitation).

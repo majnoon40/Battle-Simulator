@@ -25,6 +25,7 @@
 #include "cli/cli_args.hpp"
 #include "cli/replay.hpp"
 #include "cli/replay_runtime.hpp"
+#include "cli/lua_general.hpp"
 #include "cli/report.hpp"
 #include "cli/trace.hpp"
 #include "sim/replay.hpp"
@@ -466,6 +467,78 @@ int run_with_replay(const cli::Arguments& args,
                   << order.formation << "' at tick " << order.tick << "\n";
         return 1;
       }
+    }
+  }
+
+  // M14 item 3: scripted AI generals. One sandboxed Lua state per
+  // faction (a bare path gives every faction its own instance of the
+  // same script). Generals need the m11b order pipeline and one of the
+  // plain run paths; recording/replaying a general battle is not
+  // supported (the general reruns live in the replay instead).
+  std::vector<std::pair<sim::Faction, cli::LuaGeneral>> generals;
+  if (!args.generals.empty()) {
+    if (!args.orders_on) {
+      std::cerr << "error: --general needs --orders on\n";
+      return 1;
+    }
+    if (args.record_on || args.replay_on || render_mode ||
+        !args.tactic_scan.empty() || !args.script_path.empty()) {
+      std::cerr << "error: --general is not supported together with "
+                   "--record, --replay, --render-frame/--render-frames/"
+                   "--ascii, --tactic-scan or --script\n";
+      return 1;
+    }
+    const auto bind_general = [&](const std::string& spec) {
+      const std::size_t eq = spec.find('=');
+      std::string key;
+      std::string path = spec;
+      if (eq != std::string::npos) {
+        key = spec.substr(0, eq);
+        path = spec.substr(eq + 1);
+      }
+      const auto faction = sim::faction_from_key(key);
+      if (eq != std::string::npos && !faction) {
+        std::cerr << "error: --general '" << spec
+                  << "': unknown faction '" << key << "'\n";
+        return false;
+      }
+      std::ifstream file(path);
+      if (!file) {
+        std::cerr << "error: --general: cannot open script '" << path
+                  << "'\n";
+        return false;
+      }
+      std::ostringstream buffer;
+      buffer << file.rdbuf();
+      const std::vector<sim::Faction> targets =
+          faction ? std::vector<sim::Faction>{*faction}
+                  : [&] {
+                      std::vector<sim::Faction> all;
+                      for (std::size_t i = 0; i < config.faction_count;
+                           ++i) {
+                        all.push_back(static_cast<sim::Faction>(i));
+                      }
+                      return all;
+                    }();
+      for (const sim::Faction target : targets) {
+        try {
+          generals.emplace_back(
+              target, cli::LuaGeneral(buffer.str(), path));
+        } catch (const std::exception& error) {
+          std::cerr << "error: " << error.what() << "\n";
+          return false;
+        }
+      }
+      return true;
+    };
+    for (const std::string& spec : args.generals) {
+      if (!bind_general(spec)) {
+        return 1;
+      }
+    }
+    if (generals.empty()) {
+      std::cerr << "error: --general bound no faction\n";
+      return 1;
     }
   }
   for (std::size_t index = 0; index < scenario.faction_count; ++index) {
@@ -1165,6 +1238,43 @@ int run_with_replay(const cli::Arguments& args,
              script_orders[next_order].tick <= upcoming) {
         apply_script_order(script_orders[next_order]);
         ++next_order;
+      }
+      // M14 item 3: every --general-interval ticks each scripted
+      // general sees a fresh snapshot and may issue orders (the same
+      // pipeline, rate limits and rejection warnings as script orders).
+      if (!generals.empty() && upcoming % args.general_interval == 0) {
+        for (auto& [faction, general] : generals) {
+          std::vector<cli::GeneralOrder> issued;
+          try {
+            issued = general.decide(simulation, faction);
+          } catch (const std::exception& error) {
+            std::cerr << "error: " << error.what() << "\n";
+            return 1;
+          }
+          for (const cli::GeneralOrder& order : issued) {
+            std::vector<std::uint32_t> squads;
+            if (order.squads_all) {
+              for (const sim::Squad& squad : simulation.squads()) {
+                if (squad.faction == faction) {
+                  squads.push_back(squad.id);
+                }
+              }
+            } else {
+              squads = order.squads;
+            }
+            const bool point = order.has_point;
+            if (!simulation.issue_order(
+                    faction, squads, order.type,
+                    point ? order.x : 0.0, point ? order.y : 0.0,
+                    order.formation)) {
+              std::cerr << "warning: general '" << general.name()
+                        << "' order at tick " << upcoming << " ("
+                        << sim::to_string(order.type)
+                        << ") was rejected (invalid squad, rate limit or "
+                           "unavailable commander)\n";
+            }
+          }
+        }
       }
       simulation.tick();
       if (args.trace_on &&
