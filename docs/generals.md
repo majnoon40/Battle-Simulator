@@ -31,7 +31,7 @@ function decide(g)
   -- one order per own squad toward the enemy mass
   if g.enemies.count == 0 then return nil end
   return {
-    {squad = "all", order = "attack_move",
+    {squad = "all", order = "attackmove",
      x = g.enemies.centroid_x, y = g.enemies.centroid_y},
   }
 end

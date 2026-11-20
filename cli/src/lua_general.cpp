@@ -220,14 +220,22 @@ std::vector<GeneralOrder> LuaGeneral::decide(
       fail(name_, where + " is not a table");
     }
     GeneralOrder order;
-    // squad: "all" or a squad id.
+    // squad: a squad id (integer) or the string "all". The integer is
+    // checked FIRST: lua_tostring converts a number in place, so a
+    // tostring-first probe would turn the id into a string and the
+    // integer branch could never fire.
     lua_getfield(state, -1, "squad");
-    if (lua_isstring(state, -1) != 0 &&
-        std::string(lua_tostring(state, -1)) == "all") {
-      order.squads_all = true;
-    } else if (lua_isinteger(state, -1) != 0) {
+    if (lua_isinteger(state, -1) != 0) {
       order.squads.push_back(static_cast<std::uint32_t>(
           lua_tointeger(state, -1)));
+    } else if (lua_isstring(state, -1) != 0) {
+      const char* squad = lua_tostring(state, -1);
+      if (std::string(squad) != "all") {
+        lua_pop(state, 3);
+        fail(name_, where + " squad must be an id or \"all\", got '" +
+                       std::string(squad) + "'");
+      }
+      order.squads_all = true;
     } else {
       lua_pop(state, 3);
       fail(name_, where + " needs squad = <id | \"all\">");
@@ -237,7 +245,7 @@ std::vector<GeneralOrder> LuaGeneral::decide(
     lua_getfield(state, -1, "order");
     if (lua_isstring(state, -1) == 0) {
       lua_pop(state, 3);
-      fail(name_, where + " needs order = \"move_to\" | \"attack_move\" | "
+      fail(name_, where + " needs order = \"moveto\" | \"attackmove\" | "
                         "\"hold\" | \"retreat\" | \"regroup\" | \"formation\"");
     }
     if (!sim::parse_player_order_type(lua_tostring(state, -1),

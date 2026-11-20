@@ -131,7 +131,7 @@ TEST(LuaGeneralTest, OrderParsingShapes) {
       "function decide(g)\n"
       "  return {\n"
       "    {squad = 'all', order = 'regroup'},\n"
-      "    {squad = 3, order = 'move_to', x = 100, y = 200},\n"
+      "    {squad = 3, order = 'moveto', x = 100, y = 200},\n"
       "    {squad = 4, order = 'formation', formation = 'column'},\n"
       "  }\n"
       "end\n";
@@ -186,7 +186,7 @@ TEST(LuaGeneralTest, ScriptedBattleIsDeterministic) {
       "function decide(g)\n"
       "  if g.enemies.count == 0 then return nil end\n"
       "  local orders = {}\n"
-      "  table.insert(orders, {squad = 'all', order = 'attack_move',\n"
+      "  table.insert(orders, {squad = 'all', order = 'attackmove',\n"
       "                        x = g.enemies.centroid_x,\n"
       "                        y = g.enemies.centroid_y})\n"
       "  return orders\n"

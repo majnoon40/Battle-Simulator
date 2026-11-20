@@ -308,8 +308,8 @@ md5sum out.json   # == the pin in .github/workflows/ci.yml
   formation}`), and the living-enemy aggregate `{count, centroid_x,
   centroid_y}`. God view — the general sees the whole board;
   fog-of-war snapshots are future work.
-- **Orders** return as `{squad = id | "all", order = "move_to" |
-  "attack_move" | "hold" | "retreat" | "regroup" | "formation",
+- **Orders** return as `{squad = id | "all", order = "moveto" |
+  "attackmove" | "hold" | "retreat" | "regroup" | "formation",
   x, y, formation}` and flow through the **existing m11b
   `issue_order` pipeline** — the same rate limits, courier delays and
   rejection warnings as order scripts and replays. Malformed returns
