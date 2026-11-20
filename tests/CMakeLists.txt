@@ -14,6 +14,7 @@ add_executable(battle_tests
   test_rng.cpp
   test_units.cpp
   test_simulation.cpp
+  test_invariants.cpp
   test_json_export.cpp
   test_cli_args.cpp
   test_unit_types.cpp

@@ -602,6 +602,31 @@ ParseOutcome parse_args(int argc, char** argv) {
       args.profile_phases = true;
       continue;
     }
+    if (flag == "--check-invariants" ||
+        flag.rfind("--check-invariants=", 0) == 0) {
+      // M15 S1: optional-value flag — bare means every tick (N = 1),
+      // "--check-invariants=N" every N ticks. Strict unsigned parse.
+      std::uint32_t interval = 1;
+      const std::string prefix = "--check-invariants=";
+      if (flag.size() >= prefix.size()) {
+        const std::string value = flag.substr(prefix.size());
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value.c_str(), &end, 10);
+        if (value.empty() || end == value.c_str() || *end != '\0' ||
+            parsed == 0 || parsed > 100000) {
+          outcome.ok = false;
+          outcome.error =
+              "--check-invariants expects a whole number in [1, 100000] "
+              "after '=', got '" +
+              value + "'";
+          return outcome;
+        }
+        interval = static_cast<std::uint32_t>(parsed);
+      }
+      args.invariants_on = true;
+      args.invariants_interval = interval;
+      continue;
+    }
     if (flag == "--general") {
       const char* value = require_value("--general");
       args.generals.emplace_back(value);
@@ -1057,6 +1082,9 @@ void print_usage(std::ostream& out) {
       << "                         core. Output is byte-identical for\n"
       << "                         every thread count\n"
       << "  --profile-phases        Print per-phase timing after the run\n"
+      << "  --check-invariants[=n]  Validate state every n ticks (default 1);\n"
+      << "                          on failure print the violation and write\n"
+      << "                          a replay, exit code 3 (default off)\n"
       << "                         (perception / decision / resolution /\n"
       << "                         commit / total; clock reads only, the\n"
       << "                         battle is unchanged)\n"

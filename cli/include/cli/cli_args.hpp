@@ -64,6 +64,14 @@ struct Arguments {
   std::uint32_t threads = 1;
   bool threads_explicit = false;
   bool profile_phases = false;
+  // M15 S1: --check-invariants[=N] — validate the simulation state
+  // every N ticks (N defaults to 1, every tick, when the flag is bare).
+  // Off by default: battles are byte-identical without the flag, and a
+  // healthy battle is byte-identical with it (the checks only read
+  // state). On the first violation the CLI prints the tick, unit,
+  // invariant and a state dump, writes a replay of the run and exits 3.
+  bool invariants_on = false;
+  std::uint32_t invariants_interval = 1;
   // m11b player orders: --orders on (default) or off (issue_order is
   // inert; a --script is rejected). With no order issued battles are
   // byte-identical either way.

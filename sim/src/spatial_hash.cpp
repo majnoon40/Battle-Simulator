@@ -515,4 +515,96 @@ void SpatialHashGrid::radius_query_faction(double x, double y, double radius,
   }
 }
 
+// M15 S1: the invariant checker's grid half. Read-only; see the header.
+bool SpatialHashGrid::verify_contents(
+    const std::vector<Unit>& units,
+    std::vector<std::string>& violations) const {
+  const std::size_t max_messages = 8;
+  const auto push = [&](std::string message) {
+    if (violations.size() < max_messages) {
+      violations.push_back(std::move(message));
+    }
+  };
+  bool ok = true;
+  std::size_t alive_units = 0;
+  for (std::uint32_t i = 0; i < units.size(); ++i) {
+    const Unit& unit = units[i];
+    if (unit.alive) {
+      ++alive_units;
+    }
+    if (i >= unit_cell_.size()) {
+      break;  // beyond anything the grid has ever tracked
+    }
+    const std::int32_t cell = unit_cell_[i];
+    // Built only when a message is pushed: a healthy check must not
+    // allocate (the allocation-counting tests measure steady-state
+    // ticks with the checker on).
+    const auto prefix = [&unit, i] {
+      return "unit index " + std::to_string(i) + " (id " +
+             std::to_string(unit.id) + "): ";
+    };
+    if (unit.alive) {
+      if (cell < 0) {
+        push(prefix() + "alive but not tracked");
+        ok = false;
+        continue;
+      }
+      const std::size_t expected = cell_of(unit.x, unit.y);
+      if (static_cast<std::size_t>(cell) != expected) {
+        push(prefix() + "tracked in cell " + std::to_string(cell) +
+             " but its position is in cell " + std::to_string(expected));
+        ok = false;
+        continue;
+      }
+      const std::size_t faction = static_cast<std::size_t>(unit.faction);
+      if (faction >= faction_count_) {
+        // Reported by the simulation-level faction-valid invariant; the
+        // bucket lookup below would index out of range, so stop here.
+        continue;
+      }
+      const std::vector<std::uint32_t>& bucket =
+          bucket_of(static_cast<std::size_t>(cell), faction);
+      const std::uint32_t slot =
+          i < unit_slot_.size() ? unit_slot_[i] : ~0u;
+      if (slot >= bucket.size() || bucket[slot] != i) {
+        push(prefix() + "bucket slot back-pointer does not lead to it");
+        ok = false;
+      }
+      if (i < shadow_.size()) {
+        // Queries read the shadows of bucketed (alive) units; a dead
+        // unit's shadow is never consulted (and is default-constructed
+        // for units that were dead before the grid ever saw them), so
+        // only the alive records are verified.
+        const Shadow& shadow = shadow_[i];
+        if (shadow.x != unit.x || shadow.y != unit.y ||
+            shadow.id != unit.id ||
+            shadow.faction != static_cast<std::uint8_t>(unit.faction) ||
+            !shadow.alive) {
+          push(prefix() + "query shadow is stale");
+          ok = false;
+        }
+      }
+    } else if (cell >= 0) {
+      push(prefix() + "dead but still tracked in cell " +
+           std::to_string(cell));
+      ok = false;
+    }
+  }
+  std::size_t bucket_total = 0;
+  for (const std::vector<std::uint32_t>& bucket : buckets_) {
+    bucket_total += bucket.size();
+  }
+  if (bucket_total != tracked_count_) {
+    push("bucket entries total " + std::to_string(bucket_total) +
+         " != tracked_count " + std::to_string(tracked_count_));
+    ok = false;
+  }
+  if (tracked_count_ != alive_units) {
+    push("tracked_count " + std::to_string(tracked_count_) +
+         " != alive units " + std::to_string(alive_units));
+    ok = false;
+  }
+  return ok;
+}
+
 }  // namespace sim

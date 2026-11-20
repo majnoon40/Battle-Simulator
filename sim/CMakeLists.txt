@@ -19,6 +19,7 @@ add_library(sim STATIC
   src/spatial_hash.cpp
   src/ai.cpp
   src/simulation.cpp
+  src/invariants.cpp
   src/json_export.cpp)
 add_library(sim::sim ALIAS sim)
 target_include_directories(sim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
