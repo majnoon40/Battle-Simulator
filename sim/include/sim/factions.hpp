@@ -30,6 +30,10 @@ enum class Faction : std::uint8_t {
 // kMaxFactions and iterated up to a runtime faction count, so 2-faction
 // battles traverse exactly the same slots in the same order as before.
 inline constexpr std::size_t kFactionCount = 2;
+
+// Pi as the nearest double (identical to glibc's M_PI, which MSVC does
+// not define — multi-faction sector math uses this constant directly).
+inline constexpr double kPi = 3.14159265358979323846;
 inline constexpr std::size_t kMaxFactions = 8;
 static_assert(kFactionCount <= kMaxFactions);
 

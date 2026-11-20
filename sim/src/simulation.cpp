@@ -654,7 +654,7 @@ SpawnAnchor Simulation::effective_spawn_anchor(std::size_t index) const {
   // factions are evenly distributed. The radius keeps a band-sized margin
   // from the borders (clamped for very small fields).
   const double n = static_cast<double>(faction_count_);
-  const double angle = M_PI + 2.0 * M_PI * static_cast<double>(index) / n;
+  const double angle = kPi + 2.0 * kPi * static_cast<double>(index) / n;
   const double band =
       std::min(world_.width, world_.height) * config_.spawn_band_fraction;
   const double radius =
@@ -2827,7 +2827,9 @@ void Simulation::update_faction_estimates() {
     return;
   }
   const std::uint64_t tick_number = world_.tick_count + 1;
-  for (std::size_t faction = 0; faction < kFactionCount; ++faction) {
+  // m14 item 2: every fielded faction maintains its estimate (a
+  // multi-faction battle's extra factions seek too).
+  for (std::size_t faction = 0; faction < faction_count_; ++faction) {
     double sum_x = 0.0;
     double sum_y = 0.0;
     std::size_t seers = 0;
@@ -3388,8 +3390,8 @@ void Simulation::update_morale() {
     rout_events_.clear();
 
     const std::uint64_t tick_number = world_.tick_count + 1;  // 1-based
-    std::array<std::uint32_t, kFactionCount> routed_now{};
-    std::array<std::uint32_t, kFactionCount> active_now{};
+    std::array<std::uint32_t, kMaxFactions> routed_now{};
+    std::array<std::uint32_t, kMaxFactions> active_now{};
 
     for (std::size_t i = 0; i < world_.units.size(); ++i) {
       Unit& unit = world_.units[i];
