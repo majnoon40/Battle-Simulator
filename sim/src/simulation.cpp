@@ -652,18 +652,21 @@ SpawnAnchor Simulation::effective_spawn_anchor(std::size_t index) const {
   // at angle pi + 2*pi*index/n on a circle around the field center — Red
   // starts at west; at n = 2 Blue lands exactly east; at n > 2 the
   // factions are evenly distributed. The radius keeps a band-sized margin
-  // from the borders (clamped for very small fields).
-  const double n = static_cast<double>(faction_count_);
-  const double angle = kPi + 2.0 * kPi * static_cast<double>(index) / n;
+  // from the borders (clamped for very small fields). The direction comes
+  // from kSectorDirections (hex literals, identical bits everywhere) — a
+  // runtime cos/sin could differ in the last ulp between libms and would
+  // shift every multi-faction spawn position (M14 item 4).
   const double band =
       std::min(world_.width, world_.height) * config_.spawn_band_fraction;
   const double radius =
       std::min(world_.width, world_.height) / 2.0 - band / 2.0;
   const double cx = world_.width / 2.0;
   const double cy = world_.height / 2.0;
+  const auto& direction =
+      kSectorDirections[faction_count_][index];
   SpawnAnchor anchor;
-  anchor.x = std::clamp(cx + radius * std::cos(angle), 0.0, world_.width);
-  anchor.y = std::clamp(cy + radius * std::sin(angle), 0.0, world_.height);
+  anchor.x = std::clamp(cx + radius * direction[0], 0.0, world_.width);
+  anchor.y = std::clamp(cy + radius * direction[1], 0.0, world_.height);
   return anchor;
 }
 
