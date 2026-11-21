@@ -145,6 +145,16 @@ struct SimulationConfig {
   // + tactics mode only; off reproduces Part 1 byte-for-byte.
   bool contact_seek_enabled = true;
 
+  // Flee clamp (M15, --flee-clamp): every pending move destination
+  // clamps to the battlefield at the single move-apply choke point —
+  // the S1 finding: the Advance/Approach/Retreat paths never clamped,
+  // so routed units fled past the border and kept running (Blue at
+  // y=106..115 on a 100-high field). ON (default) changes the bytes of
+  // battles where a unit actually leaves the field; OFF reproduces
+  // 13.1 byte-for-byte. With ON the invariant checker enforces
+  // position bounds strictly again.
+  bool flee_clamp_enabled = true;
+
   // Battle events (M10 Part 2a, --events): when set, the simulation
   // records deaths (with killer), routs, recoveries, commander deaths,
   // successions, order changes, flank/help/pursuit/seek starts and

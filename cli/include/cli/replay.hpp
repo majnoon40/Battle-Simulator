@@ -40,6 +40,7 @@ struct ReplayData {
   std::uint64_t ticks = 0;
   std::string variance = "on";
   std::string contact_seek = "on";
+  std::string flee_clamp = "on";
   std::string neighbor = "grid";
   std::string squads = "on";
   std::string swap_sides = "off";

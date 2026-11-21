@@ -396,6 +396,9 @@ int run_with_replay(const cli::Arguments& args,
   config.tactics_enabled = args.variance_on && args.utility_ai;
   config.contact_seek_enabled = args.contact_seek_on && args.variance_on &&
                                 args.utility_ai;
+  // M15 flee clamp: mode-independent (it sits at the move-apply choke
+  // point, so it covers utility and legacy battles alike).
+  config.flee_clamp_enabled = args.flee_clamp_on;
   config.tactics = &tactics;
   // m13 item 3: combat depth (utility mode only; the sim gates it).
   // M10 Part 2a: event recording + timeline sampling. Off by default;
@@ -1182,6 +1185,7 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.ticks = args.ticks;
       replay_data.variance = args.variance_on ? "on" : "off";
       replay_data.contact_seek = args.contact_seek_on ? "on" : "off";
+      replay_data.flee_clamp = args.flee_clamp_on ? "on" : "off";
       replay_data.neighbor = args.grid_mode ? "grid" : "brute";
       replay_data.squads = args.squads_on ? "on" : "off";
       replay_data.swap_sides = args.swap_sides ? "on" : "off";
@@ -1342,6 +1346,7 @@ int run_with_replay(const cli::Arguments& args,
       failure_replay.ticks = args.ticks;
       failure_replay.variance = args.variance_on ? "on" : "off";
       failure_replay.contact_seek = args.contact_seek_on ? "on" : "off";
+      failure_replay.flee_clamp = args.flee_clamp_on ? "on" : "off";
       failure_replay.neighbor = args.grid_mode ? "grid" : "brute";
       failure_replay.squads = args.squads_on ? "on" : "off";
       failure_replay.swap_sides = args.swap_sides ? "on" : "off";
@@ -1861,6 +1866,7 @@ int main(int argc, char** argv) {
     effective.variance_on = replay_data.variance == "on";
     effective.variance_explicit = true;
     effective.contact_seek_on = replay_data.contact_seek == "on";
+    effective.flee_clamp_on = replay_data.flee_clamp == "on";
     effective.squads_on = replay_data.squads == "on";
     effective.squads_explicit = true;
     effective.grid_mode = replay_data.neighbor == "grid";

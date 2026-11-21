@@ -2693,6 +2693,19 @@ void Simulation::resolve_movement() {
           unit.y + (pending_moves_[i].y - unit.y) *
                        effective_combat_->fatigue.speed_factor;
     }
+    if (config_.flee_clamp_enabled) {
+      // M15 flee clamp: the single choke point every collected move
+      // passes through (utility and legacy collection, terrain and
+      // plain commits alike). In-bounds destinations are untouched —
+      // std::clamp returns the value itself — so only battles where a
+      // unit actually leaves the field change bytes; OFF reproduces
+      // the 13.1 paths exactly (the S1 finding: Advance/Approach/
+      // Retreat never clamped and routed units ran past the border).
+      pending_moves_[i].x =
+          std::clamp(pending_moves_[i].x, 0.0, world_.width);
+      pending_moves_[i].y =
+          std::clamp(pending_moves_[i].y, 0.0, world_.height);
+    }
     if (!pending_moves_[i].moves) {
       // A unit that stands still has no heading: reset so the squad's
       // alignment average never reads a stale move.

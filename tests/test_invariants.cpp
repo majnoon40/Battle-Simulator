@@ -179,15 +179,40 @@ TEST(InvariantsTest, GridDesyncIsCaught) {
   EXPECT_TRUE(has_invariant(simulation.check_invariants(), "grid-contents"));
 }
 
-// Position bounds are deliberately NOT checked yet (see the milestone
-// finding: the unclamped move paths make out-of-bounds a legitimate
-// transient state); the finite check above covers corruption to NaN
-// and infinities.
+// Position bounds are enforced strictly with the flee clamp on (m15:
+// every move clamps, so an out-of-bounds position is a real violation);
+// with the clamp off the 13.1 behavior legitimately lets units run
+// past the border, so the check stays silent. The finite check covers
+// corruption to NaN and infinities in both modes.
 
 TEST(InvariantsTest, NonFinitePositionIsCaught) {
   sim::Simulation simulation(battle_config());
   sim::InvariantCorruption::position(simulation, 0, std::nan(""), 100.0);
   EXPECT_TRUE(has_invariant(simulation.check_invariants(), "position-finite"));
+}
+
+TEST(InvariantsTest, OutOfBoundsPositionIsCaughtWithClampOn) {
+  sim::Simulation simulation(battle_config());
+  const double w = simulation.world().width;
+  const double y = simulation.world().units[0].y;
+  sim::InvariantCorruption::position(simulation, 0, w + 25.0, y);
+  EXPECT_TRUE(has_invariant(simulation.check_invariants(),
+                            "position-bounds"));
+}
+
+TEST(InvariantsTest, BoundsStaySilentWithClampOff) {
+  sim::SimulationConfig config = battle_config();
+  config.flee_clamp_enabled = false;
+  sim::Simulation simulation(config);
+  const double w = simulation.world().width;
+  const double y = simulation.world().units[0].y;
+  sim::InvariantCorruption::position(simulation, 0, w + 25.0, y);
+  const std::vector<sim::InvariantViolation> violations =
+      simulation.check_invariants();
+  EXPECT_FALSE(has_invariant(violations, "position-bounds"));
+  // The corrupted position still desyncs the grid — that check is
+  // mode-independent.
+  EXPECT_TRUE(has_invariant(violations, "grid-contents"));
 }
 
 TEST(InvariantsTest, ZeroIdIsCaught) {

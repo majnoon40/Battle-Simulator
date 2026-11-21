@@ -329,6 +329,12 @@ bool parse_replay(const std::string& path, ReplayData& out,
           parsed.variance = value;
         } else if (name == "contact_seek") {
           parsed.contact_seek = value;
+        } else if (name == "flee_clamp") {
+          if (value != "on" && value != "off") {
+            error = "bad flee_clamp flag value '" + value + "' in replay";
+            return false;
+          }
+          parsed.flee_clamp = value;
         } else if (name == "neighbor") {
           parsed.neighbor = value;
         } else if (name == "squads") {
@@ -529,6 +535,7 @@ bool write_replay(const std::string& path, const ReplayData& data) {
   file << "ticks " << data.ticks << "\n";
   file << "flags variance=" << data.variance
        << " contact_seek=" << data.contact_seek
+       << " flee_clamp=" << data.flee_clamp
        << " neighbor=" << data.neighbor << " squads=" << data.squads
        << " swap_sides=" << data.swap_sides << " nav=" << data.nav
        << " ai_avail=" << data.ai_avail << " end=" << data.end

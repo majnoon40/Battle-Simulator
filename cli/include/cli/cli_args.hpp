@@ -39,6 +39,7 @@ struct Arguments {
   bool variance_on = true;
   bool variance_explicit = false;
   bool contact_seek_on = true;  // --contact-seek on (default) vs off
+  bool flee_clamp_on = true;    // --flee-clamp on (default) vs off
   bool swap_sides = false;
   // m11a navigation generation: --nav v2 (default; fixed explicit-objective
   // swap under --swap-sides, terrain-aware formation march) or v1 (the

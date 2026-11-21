@@ -86,7 +86,9 @@ the border and keep running. That is a real, long-standing behavior
 bug, but fixing it changes battle bytes: it needs its own PR with a
 flag, a `kSimVersion` bump and a re-pinned baseline sweep. The checker
 therefore does NOT enforce bounds yet; the finding is queued as the
-follow-up item, after which the check comes back strict.
+follow-up item, after which the check comes back strict. (Shipped —
+see "The flee clamp" below; the check is strict again under the
+default-on flag.)
 
 The same investigation found the constructor accepting explicit
 initial units placed outside the battlefield (three test fixtures had
@@ -94,9 +96,7 @@ units at x = 900 on 400-wide fields — the battles only worked because
 of the grid's clamping). That is input validation, not behavior, and
 is fixed here: the explicit-state constructor now rejects non-finite
 or out-of-bounds positions, and the three fixtures place their units
-inside the field.
-
-### The evidence
+inside the field.### The evidence
 
 - **25 new tests** (`InvariantsTest.*`): checker-on default, zero
   interval rejected, healthy battles (plain and squads) clean through
@@ -257,3 +257,62 @@ per-seed symmetry is wanted is a game-design decision.
   `--ticks 0`); the 4.5 slack is two movement steps, tight enough to
   distinguish translation from a mirror but not to detect a partial
   reflection of a few units.
+
+## The flee clamp (`--flee-clamp`, default on) — the S1 finding, fixed
+
+The S1 checker found routed/flanking units leaving the battlefield (the
+Advance/Approach/Retreat move family never clamped; only
+retreat-with-enemies, formation steering and Flee did). The fix ships
+behind `--flee-clamp on|off` (default **on**): a single clamp at the
+move-apply choke point — the one loop every collected pending move
+passes through (utility and legacy collection, terrain and plain
+commits alike) — so one site covers all ten unclamped assignment
+paths. `std::clamp` is a no-op for in-bounds destinations, so only
+battles where a unit actually leaves the field change bytes.
+`kSimVersion` bumps 13.1 → 13.2 once: old replays are refused cleanly
+by version (this also closes the m14 gap — the item-0 counters change
+shipped while the version stayed 13.1, so same-version pre-counters
+replays failed at checkpoint verify instead of a clean refusal). The
+checker's `position-bounds` check is strict again when the clamp is on
+(and stays silent with it off, where running past the border is the
+documented 13.1 behavior).
+
+### The evidence
+
+- **Repro**: a 200x100 edge battle (objectives at y=85 pull the armies
+  to the top border; flank points get computed beside enemies close to
+  it) — 13.1 leaves one Blue unit 18.4 units outside the field, alive,
+  permanently (`tests/test_flee_clamp.cpp` pins both directions: the
+  clamped battle stays inside at every tick; the unclamped battle ends
+  with a unit outside).
+- **OFF reaches the previous release**: 26 battle pairs (every shipped
+  scenario at seed 42, plus default/squads at seeds 1, 7, 123 to 2000
+  ticks and a 1000-tick earth-lebanon run) — `--flee-clamp off`
+  exports are byte-identical to the independently built 13.1 binary in
+  every pair. The edge battle's 13.1 export is committed as
+  `tests/baselines/flee-clamp/edge-s1.json` and pinned by
+  `FleeClampTest.OffReproducesThe131ReferenceBytes`.
+- **What ON actually changes**: 2 of those 26 battles — the two
+  earth-alps-innsbruck maps at seed 42 (the 96%-hills terrain pushes
+  units out via the unclamped paths). No other shipped battle has a
+  unit leave the field before termination ends it.
+- **Re-pinned baselines: none.** No committed baseline pins an alps
+  battle byte-for-byte, and the whole 546-test suite passes unchanged
+  with the clamp on by default (540 pre-existing + 6 new: four
+  FleeClampTest cases, two InvariantsTest bounds cases). The era
+  recipes (M7 baselines, combat v1) need no `--flee-clamp off`: their
+  battles never leave the field, ON reproduces the committed bytes.
+- The flag rides in replays (`flee_clamp=on|off` in the flags line) and
+  a hand-written 13.1 replay is refused by version — pinned by
+  `FleeClampTest.ReplayCarriesTheFlagAndVerifies`.
+
+### Honest misses
+
+- The clamp holds routed units *at* the border (they pile up along the
+  edge instead of dispersing past it); whether cornered units should
+  fight, surrender or be removed is a game-design question, not a
+  bounds question.
+- The strict `position-bounds` check trusts the clamp completely; a
+  future move path added outside the pending-move pipeline would not
+  be covered by the choke point (it would, however, be caught by this
+  check the moment a unit crosses).
