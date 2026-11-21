@@ -25,10 +25,12 @@ namespace sim {
 //   seed <n>
 //   ticks <n>                  (the tick limit used)
 //   flags variance=on|off contact_seek=on|off flee_clamp=on|off
-//         neighbor=grid|brute squads=on|off swap_sides=on|off nav=v1|v2
+//         neighbor=grid|brute squads=on|off
+//         swap_sides=on|off|mirror nav=v1|v2
 //         orders=on|off
-//         (nav is m11a, orders is m11b; flee_clamp is m15; files
-//         without them parse as v1 / on / on)
+//         (nav is m11a, orders is m11b, flee_clamp is m15, the
+//         swap_sides mirror mode is m15; files without them parse as
+//         v1 / on / on / off)
 //   intervene kill <unit> <tick>     (0+ lines, ascending tick)
 //   order <tick> <red|blue> <squads|all> <type> [args]  (m11b, ascending)
 //         moveto/attackmove: x y  |  retreat: [x y]  |  formation: <id>

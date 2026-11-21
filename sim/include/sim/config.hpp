@@ -187,6 +187,20 @@ struct SimulationConfig {
   // swap). Purely positional — unit factions are unchanged.
   bool swap_sides = false;
 
+  // Mirror spawns (M15, --swap-sides mirror — test-only mode). On a
+  // symmetric map with identical armies this produces the exact mirror
+  // battle of the plain run: Blue spawns FIRST (taking the unit index
+  // and id space the plain run gave Red, so every index-ordered pass —
+  // RNG draws, personalities, combat, morale, events — aligns with its
+  // plain-run counterpart) and each band's x draws map REFLECTED
+  // (x = band_hi - d*span), so Blue stands at mirror(plain Red) and
+  // Red at mirror(plain Blue). Bands stay default (no swap_sides):
+  // the objectives, HQ and formation axes then align with the roles
+  // automatically. The mirror property is defined for symmetric
+  // scenarios; on anything else it is a valid battle with no symmetry
+  // guarantee. Default false — every existing byte is unchanged.
+  bool mirror_spawns = false;
+
   // Navigation v2 (m11a, --nav v2|v1; default v2). v2 fixes the m11a
   // diagnosis findings: formation members far from their slot march
   // along the faction flow field instead of beelining to the projected
