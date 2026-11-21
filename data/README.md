@@ -87,7 +87,8 @@ configuration.
   `width * fraction`; must be in (0, 0.5].
 - `armies.red/blue` — non-empty objects of `type id -> count`; counts are
   whole numbers ≥ 1, referenced types must exist in units.json, and the
-  scenario total may not exceed the 20,000-unit cap.
+  scenario total may not exceed the 100,000-unit cap (M15 S5; it was
+  20,000 from M3 through M14).
 - `objectives.red/blue` — optional per-faction objective points (M4): where
   utility units advance when no enemy is visible. Both coordinates are
   required, must be ≥ 0 and lie on the battlefield, and each faction may be
@@ -105,6 +106,9 @@ M1.
   (benchmarks).
 - `perf-20000.json` — 2500×2500 field, 10,000 infantry per faction
   (benchmarks).
+- `perf-100000.json` — 5600×5600 field, 50,000 infantry per faction (M15
+  S5 benchmarks; 5600 = 2500·√5 rounded, so the spawn-band density matches
+  perf-20000 and the ladder measures scale, not crowding).
 
 File reading happens in the CLI only (`battle_cli --config`, `--scenario`,
 `--personalities`); the `sim` library parses text or streams and never

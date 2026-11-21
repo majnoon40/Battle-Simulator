@@ -145,3 +145,39 @@ report.
 
    What should happen: a version mismatch error, nonzero exit — the
    clean refusal the kSimVersion bump buys.
+
+## m15 S5 — performance gate (PR #30)
+
+1. **The 100k scale point runs (2 min on a laptop).**
+
+   ```
+   ./build/battle_cli --scenario perf-100000 --seed 42 --ticks 100
+   ```
+
+   What should happen: the normal report, ~262 MiB peak memory, no
+   invariant failures, exit 0. The t/s you see is hardware-dependent —
+   on a 2-vCPU CI-grade box it is ~2.4; the gate numbers live in the
+   Performance job, not on your machine.
+
+2. **Two threads beat one at 20k again (1 min).**
+
+   ```
+   ./build/battle_cli --scenario perf-20000 --seed 42 --ticks 600 --threads 1 | grep "Ticks per second"
+   ./build/battle_cli --scenario perf-20000 --seed 42 --ticks 600 --threads 2 | grep "Ticks per second"
+   ```
+
+   What should happen: the t2 number at or above the t1 number — the
+   m14 regression (t2 losing to t1) is fixed by the occupancy skip.
+   Both numbers vary run to run; compare directions, not digits.
+
+3. **The occupancy skip changes no bytes (1 min).**
+
+   ```
+   ./build/battle_cli --scenario default --seed 42 --ticks 300 --export-json a.json
+   ./battle_tests --gtest_filter='SpatialHash*'
+   ```
+
+   What should happen: the export is the same file as before the
+   upgrade (byte-identical against your previous build), and the
+   spatial-hash suites pass — including
+   `OccupancyBitmapStaysInLockstepWithBuckets`, the new lockstep pin.

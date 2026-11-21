@@ -131,6 +131,7 @@ jobs:
           set -e
           ticks_for() {
             case "$1" in
+              perf-100000*) echo 60;;
               perf-20000*) echo 100;;
               perf-5000*|demo-river-perf) echo 150;;
               *) echo 300;;
@@ -199,6 +200,95 @@ jobs:
             cmp /tmp/s2_g.json /tmp/s2_b.json
             echo "$s: grid == brute"
           done
+
+  perf:
+    name: Performance (M15 S5)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure (Release, BUILD_GAME=OFF)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_GAME=OFF
+
+      - name: Build battle_cli
+        run: cmake --build build --target battle_cli -j"$(nproc)"
+
+      - name: Run the perf ladder and gate (seed 42, 600 ticks)
+        run: |
+          set -e
+          # M15 S5: the performance gate. Every scenario in the ladder
+          # must clear its floor with the best of threads 1 / 4 (the
+          # worker pool sometimes loses to t1 — the m14 item 1
+          # observation on small cores — so the gate is "the engine
+          # reaches the floor", not a specific thread count). Floors sit
+          # well under the first measured medians to absorb
+          # runner-to-runner variance; the measured table lives in
+          # docs/milestone-15.md S5.
+          floor_for() {
+            case "$1" in
+              perf-5000) echo 40;;
+              perf-20000) echo 10;;
+              perf-20000-squads) echo 4;;
+              perf-100000) echo 2;;
+              *) echo 0;;
+            esac
+          }
+          results=/tmp/perf_results.txt
+          : > "$results"
+          for s in perf-5000 perf-20000 perf-20000-squads perf-100000; do
+            for th in 1 4; do
+              echo "== $s (threads $th)"
+              tps=$(./build/battle_cli --scenario "data/scenarios/$s.json" \
+                --seed 42 --ticks 600 --threads "$th" 2>&1 |
+                awk '/^Ticks per second:/ {print $4}')
+              test -n "$tps"
+              echo "$s $th $tps" >> "$results"
+            done
+          done
+          cat "$results"
+          fail=0
+          for s in perf-5000 perf-20000 perf-20000-squads perf-100000; do
+            best=$(awk -v s="$s" '$1 == s {print $3}' "$results" |
+              sort -g | tail -1)
+            floor=$(floor_for "$s")
+            status=PASS
+            if ! awk -v b="$best" -v f="$floor" 'BEGIN {exit !(b >= f)}'; then
+              status=BELOW-FLOOR
+              fail=1
+            fi
+            echo "$s: best $best t/s, floor $floor — $status"
+          done
+          exit $fail
+
+      - name: Job summary
+        if: always()
+        run: |
+          results=/tmp/perf_results.txt
+          if [ ! -f "$results" ]; then
+            echo "No perf results (earlier step did not run)." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Performance (M15 S5) — measured on this runner"
+            echo
+            echo "| scenario | threads 1 t/s | threads 4 t/s | floor |"
+            echo "| --- | --- | --- | --- |"
+            for s in perf-5000 perf-20000 perf-20000-squads perf-100000; do
+              t1=$(awk -v s="$s" '$1 == s && $2 == 1 {print $3}' "$results")
+              t4=$(awk -v s="$s" '$1 == s && $2 == 4 {print $3}' "$results")
+              case "$s" in
+                perf-5000) f=40;;
+                perf-20000) f=10;;
+                perf-20000-squads) f=4;;
+                perf-100000) f=2;;
+                *) f=0;;
+              esac
+              echo "| $s | ${t1:-n/a} | ${t4:-n/a} | $f |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
   game-build:
     name: Game window build (compile only)

@@ -374,6 +374,112 @@ TEST(SpatialHashPropertyTest, RadiusQueryExactUnderIncrementalMaintenance) {
 // Targeted edge cases.
 // ---------------------------------------------------------------------------
 
+TEST(SpatialHashEdgeTest, OccupancyBitmapStaysInLockstepWithBuckets) {
+  // M15 S5: radius_query and radius_query_faction skip (cell, faction)
+  // buckets the occupancy bitmap reports empty, so the bitmap must stay
+  // exactly in lockstep with bucket emptiness through build/update/
+  // remove/insert churn. A clear bit over a non-empty bucket would
+  // silently drop candidates from every query touching that cell.
+  // verify_contents (which the S1 checker runs every 30 ticks in test
+  // builds) pins the lockstep invariant; this test drives it through
+  // the churn directly and oracle-compares the queries at every stage.
+  sim::Rng rng(0x0CC0F1A5ULL);
+  const double world = 160.0;
+  const double cell = 8.0;  // 20x20 cells; faction 2 never has units
+  std::vector<sim::Unit> units;
+  for (std::uint32_t i = 0; i < 48; ++i) {
+    units.push_back(make_unit(
+        i + 1,
+        rng.next_uint32(2) == 0 ? sim::Faction::Red : sim::Faction::Blue,
+        rng.next_double() * world, rng.next_double() * world));
+  }
+  sim::SpatialHashGrid grid;
+  grid.configure(world, world, cell, 8, 3);
+  grid.build(units);
+
+  const auto brute = [&](double x, double y, double radius,
+                         std::vector<std::uint32_t>& expected) {
+    expected.clear();
+    const double radius_sq = radius * radius;
+    for (std::size_t i = 0; i < units.size(); ++i) {
+      if (!units[i].alive) {
+        continue;
+      }
+      const double dx = units[i].x - x;
+      const double dy = units[i].y - y;
+      if (dx * dx + dy * dy <= radius_sq) {
+        expected.push_back(static_cast<std::uint32_t>(i));
+      }
+    }
+    std::sort(expected.begin(), expected.end());
+  };
+
+  const double query_points[][2] = {
+      {80.0, 80.0}, {8.0, 152.0}, {155.0, 5.0}};
+  std::vector<std::uint32_t> found;
+  std::vector<std::uint32_t> expected;
+  std::vector<std::string> violations;
+  const auto check_stage = [&](const char* stage) {
+    violations.clear();
+    EXPECT_TRUE(grid.verify_contents(units, violations))
+        << stage << ": " << (violations.empty() ? "" : violations[0]);
+    for (const auto& point : query_points) {
+      for (double radius : {0.0, 8.0, 24.0, 160.0}) {
+        grid.radius_query(point[0], point[1], radius, found);
+        std::sort(found.begin(), found.end());
+        brute(point[0], point[1], radius, expected);
+        ASSERT_EQ(found, expected) << stage << " radius " << radius;
+        // The faction query stays the both-faction subsequence —
+        // including for faction 2, whose every bucket is empty.
+        for (std::size_t f = 0; f < 3; ++f) {
+          std::vector<std::uint32_t> both;
+          grid.radius_query(point[0], point[1], radius, both);
+          std::vector<std::uint32_t> subsequence;
+          for (std::uint32_t candidate : both) {
+            if (grid.shadow_of(candidate).faction == f) {
+              subsequence.push_back(candidate);
+            }
+          }
+          std::vector<std::uint32_t> one;
+          grid.radius_query_faction(point[0], point[1], radius,
+                                    static_cast<sim::Faction>(f), one);
+          ASSERT_EQ(one, subsequence)
+              << stage << " faction " << f << " radius " << radius;
+        }
+      }
+    }
+  };
+
+  check_stage("after build");
+  for (int step = 0; step < 200; ++step) {
+    const std::uint32_t index =
+        rng.next_uint32(static_cast<std::uint32_t>(units.size()));
+    const int op = static_cast<int>(rng.next_uint32(10));
+    if (op < 5) {
+      if (units[index].alive) {
+        sim::Unit& unit = units[index];
+        unit.x = std::clamp(unit.x + (rng.next_double() - 0.5) * 20.0, 0.0,
+                            world);
+        unit.y = std::clamp(unit.y + (rng.next_double() - 0.5) * 20.0, 0.0,
+                            world);
+        grid.update(units, index);
+      }
+    } else if (op < 8) {
+      if (units[index].alive) {
+        units[index].alive = false;
+        grid.remove(units, index);
+      }
+    } else if (!units[index].alive) {
+      units[index].alive = true;
+      grid.insert(units, index);
+    }
+    if (step % 25 == 24) {
+      check_stage("mid-churn");
+    }
+  }
+  check_stage("after churn");
+}
+
 TEST(SpatialHashEdgeTest, TieBreakGoesToLowestUnitId) {
   sim::SpatialHashGrid grid;
   grid.configure(100.0, 100.0, 10.0, 8);

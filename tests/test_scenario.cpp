@@ -2,6 +2,7 @@
 // M2 spec (malformed JSON, missing fields, invalid world/band/counts, empty
 // armies, unit-cap overflow, unknown fields), composition building, and the
 // committed scenario files.
+#include "sim/config.hpp"
 #include "sim/scenario.hpp"
 
 #include <fstream>
@@ -110,10 +111,10 @@ TEST(ScenarioTest, EmptyArmyIsRejected) {
 }
 
 TEST(ScenarioTest, UnitCapIsRejected) {
-  // M3 raised the cap to 20,000; these stay above it.
-  expect_reject(R"({"battlefield": {"width": 100.0, "height": 100.0}, "spawn_band_fraction": 0.15, "armies": {"red": {"infantry": 11000}, "blue": {"infantry": 11000}}})",
-                "exceeds the 20000-unit cap");
-  expect_reject(R"({"battlefield": {"width": 100.0, "height": 100.0}, "spawn_band_fraction": 0.15, "armies": {"red": {"infantry": 20001}, "blue": {"infantry": 1}}})",
+  // M3 raised the cap to 20,000, M15 S5 to 100,000; these stay above it.
+  expect_reject(R"({"battlefield": {"width": 100.0, "height": 100.0}, "spawn_band_fraction": 0.15, "armies": {"red": {"infantry": 55000}, "blue": {"infantry": 55000}}})",
+                "exceeds the 100000-unit cap");
+  expect_reject(R"({"battlefield": {"width": 100.0, "height": 100.0}, "spawn_band_fraction": 0.15, "armies": {"red": {"infantry": 100001}, "blue": {"infantry": 1}}})",
                 "exceeds the unit cap");
 }
 
@@ -245,6 +246,24 @@ TEST(ScenarioTest, CommittedScenarioFilesAreValid) {
       }
     }
     EXPECT_EQ(total, 500u);
+  }
+  {
+    // M15 S5: the 100k scale point of the perf ladder — exactly the
+    // raised cap, constant density with perf-20000.json (5600 = 2500 *
+    // sqrt(5) to four significant digits, so 2.5x the spawn band per
+    // side at the same units-per-area as the 20k scenario).
+    std::ifstream file(TEST_DATA_DIR "/scenarios/perf-100000.json");
+    ASSERT_TRUE(file.good());
+    const sim::Scenario scenario = sim::parse_scenario(file);
+    EXPECT_DOUBLE_EQ(scenario.battlefield_width, 5600.0);
+    EXPECT_DOUBLE_EQ(scenario.battlefield_height, 5600.0);
+    std::uint64_t total = 0;
+    for (const auto& army : scenario.armies) {
+      for (const sim::ScenarioEntry& entry : army) {
+        total += entry.count;
+      }
+    }
+    EXPECT_EQ(total, std::uint64_t{sim::kMaxUnits});
   }
 }
 
@@ -400,7 +419,7 @@ TEST(ScenarioBudgetTest, FillIsSeedIndependentAndCapped) {
     }
   }
   const sim::Scenario huge =
-      budget_scenario(R"({"budget": 25000, "mix": {"a": 1}})");
+      budget_scenario(R"({"budget": 120000, "mix": {"a": 1}})");
   try {
     static_cast<void>(sim::build_composition(huge, table, 42));
     FAIL() << "expected rejection";

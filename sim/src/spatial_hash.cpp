@@ -468,12 +468,23 @@ void SpatialHashGrid::radius_query(double x, double y, double radius,
   const std::int64_t y_to =
       std::min<std::int64_t>(cy + span, static_cast<std::int64_t>(rows_) - 1);
   const double radius_sq = radius * radius;
+  // M15 S5: skip (cell, faction) buckets the occupancy bitmap reports
+  // empty — an empty bucket appends nothing, and the bitmap bit is set
+  // exactly while the bucket is non-empty (insert_into_cell/remove/build
+  // maintain it under the same invariants this query relies on), so the
+  // appended sequence is unchanged while sparse regions stop paying the
+  // bucket-header cache miss per cell per faction.
   for (std::int64_t cell_x = x_from; cell_x <= x_to; ++cell_x) {
     for (std::int64_t cell_y = y_from; cell_y <= y_to; ++cell_y) {
-      const std::size_t cell = static_cast<std::size_t>(cell_x) * rows_ +
-                               static_cast<std::size_t>(cell_y);
       for (std::size_t f = 0; f < faction_count_; ++f) {
-        append_within_radius(bucket_of(cell, f), x, y, radius_sq, out);
+        if (!cell_has_units(static_cast<Faction>(f), cell_x, cell_y)) {
+          continue;
+        }
+        append_within_radius(
+            bucket_of(static_cast<std::size_t>(cell_x) * rows_ +
+                          static_cast<std::size_t>(cell_y),
+                      f),
+            x, y, radius_sq, out);
       }
     }
   }
@@ -506,6 +517,11 @@ void SpatialHashGrid::radius_query_faction(double x, double y, double radius,
   const std::size_t f = static_cast<std::size_t>(faction);
   for (std::int64_t cell_x = x_from; cell_x <= x_to; ++cell_x) {
     for (std::int64_t cell_y = y_from; cell_y <= y_to; ++cell_y) {
+      // M15 S5: the same occupancy skip as radius_query (the faction's
+      // bucket only) — identical appended sequence, fewer bucket headers.
+      if (!cell_has_units(faction, cell_x, cell_y)) {
+        continue;
+      }
       append_within_radius(
           bucket_of(static_cast<std::size_t>(cell_x) * rows_ +
                         static_cast<std::size_t>(cell_y),
@@ -591,8 +607,28 @@ bool SpatialHashGrid::verify_contents(
     }
   }
   std::size_t bucket_total = 0;
-  for (const std::vector<std::uint32_t>& bucket : buckets_) {
+  for (std::size_t index = 0; index < buckets_.size(); ++index) {
+    const std::vector<std::uint32_t>& bucket = buckets_[index];
     bucket_total += bucket.size();
+    // M15 S5: the occupancy skip in radius_query/_faction trusts the
+    // bitmap exactly — bit set iff the bucket holds units. A clear bit
+    // over a non-empty bucket would silently drop candidates from every
+    // query touching that cell; a set bit over an empty bucket is only
+    // wasted work. Check both directions so the checker-on test builds
+    // guard the skip's invariant every check interval. The message is
+    // built only when reporting (healthy checks must not allocate).
+    const bool has_units = cell_has_units(
+        static_cast<Faction>(index % faction_count_),
+        static_cast<std::int64_t>(index / faction_count_ / rows_),
+        static_cast<std::int64_t>(index / faction_count_ % rows_));
+    if (bucket.empty() == has_units) {
+      const std::size_t cell = index / faction_count_;
+      push("cell (col " + std::to_string(cell / rows_) + ", row " +
+           std::to_string(cell % rows_) + ") faction " +
+           std::to_string(index % faction_count_) +
+           ": occupancy bitmap disagrees with bucket emptiness");
+      ok = false;
+    }
   }
   if (bucket_total != tracked_count_) {
     push("bucket entries total " + std::to_string(bucket_total) +
