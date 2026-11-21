@@ -7,6 +7,14 @@ namespace sim {
 // --replay. Bump this whenever simulation-visible state or rules change
 // in a way old replays would not reproduce (terrain, morale, tactics,
 // events, ...). Format: major.minor where major = milestone.
+// 13.2 (m15): --flee-clamp on (default): every pending move clamps to
+// the battlefield at the move-apply choke point (the S1 finding —
+// routed units fled past the border); off reproduces 13.1
+// byte-for-byte and rides in replay setups. This bump also closes the
+// m14 gap: the item-0 counters change (v2-only behavior for listed
+// types) shipped while the version stayed 13.1, so same-version
+// pre-counters replays failed at checkpoint verify instead of a clean
+// version refusal — from 13.2 they are refused up front.
 // 13.1 (m13 item 3): --combat v2 (facing with flank/rear damage and
 // rear morale loss, cavalry charges, fatigue, experience, commander
 // auras, high-cohesion Hold defensive stance; data/combat.json). v1 is
@@ -18,6 +26,6 @@ namespace sim {
 // and --end v2 (a faction below max(5, 5% of initial) active for 60
 // ticks is routed). Both default to v2; v1 reproduces 11.2
 // byte-for-byte and is recorded in replay setups.
-inline constexpr const char* kSimVersion = "13.1";
+inline constexpr const char* kSimVersion = "13.2";
 
 }  // namespace sim

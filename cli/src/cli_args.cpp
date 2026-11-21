@@ -521,6 +521,21 @@ ParseOutcome parse_args(int argc, char** argv) {
       args.contact_seek_on = mode == "on";
       continue;
     }
+    if (flag == "--flee-clamp") {
+      const char* value = require_value("--flee-clamp");
+      if (value == nullptr) {
+        return outcome;
+      }
+      const std::string mode = value;
+      if (mode != "on" && mode != "off") {
+        outcome.ok = false;
+        outcome.error =
+            "--flee-clamp expects 'on' or 'off', got '" + mode + "'";
+        return outcome;
+      }
+      args.flee_clamp_on = mode == "on";
+      continue;
+    }
     if (flag == "--nav") {
       const char* value = require_value("--nav");
       if (value == nullptr) {
@@ -995,6 +1010,10 @@ void print_usage(std::ostream& out) {
       << "                         (bit-identical to the M4 AI)\n"
       << "  --morale-config <file>  Morale configuration in JSON\n"
       << "                         (default: data/morale.json)\n"
+      << "  --flee-clamp <mode>     'on' (default, M15: every move clamps\n"
+      << "                         to the battlefield — routed units no\n"
+      << "                         longer run past the border) or 'off'\n"
+      << "                         (bit-identical to 13.1)\n"
       << "  --squads <mode>         'on' (default, M6: squads, formations,\n"
       << "                         commander orders and succession; see\n"
       << "                         docs/squads.md) or 'off' (bit-identical to\n"

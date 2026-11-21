@@ -141,13 +141,22 @@ std::vector<InvariantViolation> Simulation::check_invariants() const {
 
     // Position: finite; alive units never inside an impassable cell
     // (movement wall-slides, spawn snaps; a dead unit's last cell is
-    // history and not checked). Bounds are NOT enforced yet — see the
-    // finding in docs/milestone-15.md: the Advance/Approach/Retreat
-    // move paths never clamp, so a fleeing unit can legitimately stand
-    // past the border until the move-clamp fix lands with its flag.
+    // history and not checked). Bounds are enforced strictly when the
+    // flee clamp is on (every move clamps to the battlefield, so an
+    // out-of-bounds alive unit is a real violation); with the clamp
+    // off the 13.1 behavior lets routed units run past the border, so
+    // the check stays silent — see the finding in
+    // docs/milestone-15.md.
     if (!finite(unit.x) || !finite(unit.y)) {
       add("position-finite", i,
           "position (" + at(unit.x) + ", " + at(unit.y) + ") is not finite");
+    } else if (config_.flee_clamp_enabled &&
+               (unit.x < 0.0 || unit.x > world_.width ||
+                unit.y < 0.0 || unit.y > world_.height)) {
+      add("position-bounds", i,
+          "position (" + at(unit.x) + ", " + at(unit.y) +
+              ") is outside the battlefield [0, " + at(world_.width) +
+              "] x [0, " + at(world_.height) + "]");
     } else if (unit.alive && terrain_ != nullptr &&
                !terrain_->passable_at(unit.x, unit.y)) {
       add("position-passable", i,

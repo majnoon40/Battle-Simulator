@@ -123,6 +123,7 @@ Arguments arguments_from_replay(const ReplayData& replay) {
   effective.variance_on = replay.variance == "on";
   effective.variance_explicit = true;
   effective.contact_seek_on = replay.contact_seek == "on";
+  effective.flee_clamp_on = replay.flee_clamp == "on";
   effective.squads_on = replay.squads == "on";
   effective.squads_explicit = true;
   effective.grid_mode = replay.neighbor == "grid";

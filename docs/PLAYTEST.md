@@ -104,3 +104,44 @@ report.
    docs/milestone-15.md S2). Over many seeds the wins split roughly
    evenly — the CI job pins seeds 1-50 both orientations at
    Red 49 / Blue 50 / draw 1.
+
+## m15 flee clamp — the S1 finding, fixed (PR #28)
+
+1. **The clamp keeps an edge battle inside (1 min).** A 200x100 field,
+   objectives near the top border — 13.1 left a unit 18.4 outside:
+
+   ```
+   ./build/battle_cli --scenario data/scenarios/default.json --seed 42 --ticks 300 > /dev/null
+   ```
+
+   Smoke only — the real check is the pinned edge scenario in
+   `tests/test_flee_clamp.cpp`; run `./build/battle_tests
+   --gtest_filter='FleeClampTest.*'` (should print 4 OK).
+
+2. **OFF reaches the previous release (1 min).**
+
+   ```
+   ./build/battle_cli --scenario default --seed 42 --ticks 300 --flee-clamp off --export-json off.json
+   ./build/battle_cli --scenario default --seed 42 --ticks 300 --export-json on.json
+   cmp off.json on.json && echo "no unit left the field in this battle"
+   ```
+
+   On default.json the two are identical (no unit leaves); on the
+   alps maps they differ — that is the clamp working:
+
+   ```
+   ./build/battle_cli --scenario earth-alps-innsbruck --seed 42 --ticks 300 --flee-clamp off --export-json off.json
+   ./build/battle_cli --scenario earth-alps-innsbruck --seed 42 --ticks 300 --export-json on.json
+   cmp off.json on.json || echo "the clamp changed this battle (expected)"
+   ```
+
+3. **Old replays are refused by version (30 s).**
+
+   ```
+   ./build/battle_cli --scenario default --seed 42 --ticks 100 --record r.replay
+   sed -i 's/^version 13.2/version 13.1/' r.replay
+   ./build/battle_cli --replay r.replay --verify; echo "exit=$?"
+   ```
+
+   What should happen: a version mismatch error, nonzero exit — the
+   clean refusal the kSimVersion bump buys.
