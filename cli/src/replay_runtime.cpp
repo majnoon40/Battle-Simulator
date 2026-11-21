@@ -129,6 +129,7 @@ Arguments arguments_from_replay(const ReplayData& replay) {
   effective.grid_mode = replay.neighbor == "grid";
   effective.neighbor_mode_explicit = true;
   effective.swap_sides = replay.swap_sides == "on";
+  effective.swap_mirror = replay.swap_sides == "mirror";
   effective.nav_v2 = replay.nav == "v2";
   effective.ai_avail_v2 = replay.ai_avail == "v2";
   effective.end_v2 = replay.end == "v2";

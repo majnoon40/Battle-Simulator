@@ -45,6 +45,7 @@ add_executable(battle_tests
   test_combat.cpp
   test_differential.cpp
   test_flee_clamp.cpp
+  test_swap_mirror.cpp
   test_output_failures.cpp
   test_thread_pool.cpp
   test_threads.cpp)

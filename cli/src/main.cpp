@@ -641,6 +641,26 @@ int run_with_replay(const cli::Arguments& args,
     }
   }
 
+  // --swap-sides mirror (M15, test-only): the mirror battle. The same
+  // whole-setup swap as translate, but the bands stay default and the
+  // explicit objectives mirror; config.mirror_spawns makes Blue spawn
+  // first with reflected draws (sim spawn_armies) so unit ids align
+  // with the plain run's roles (personalities key on the id). The
+  // mirror property is defined on symmetric scenarios; under nav v1
+  // the mirror still swaps compositions and plans but explicit
+  // objectives keep the M10 handling, so no symmetry is promised.
+  if (args.swap_mirror) {
+    if (args.nav_v2) {
+      cli::apply_mirror_swap(config);
+    } else {
+      config.composition[static_cast<std::size_t>(sim::Faction::Red)]
+          .swap(config.composition[static_cast<std::size_t>(sim::Faction::Blue)]);
+      config.squad_plans[static_cast<std::size_t>(sim::Faction::Red)]
+          .swap(config.squad_plans[static_cast<std::size_t>(sim::Faction::Blue)]);
+    }
+    config.mirror_spawns = true;
+  }
+
   // m13 item 4: resolve --threads. 0 = one worker per hardware core
   // (at least 1; hardware_concurrency is only a hint and may return 0).
   // 1 (default) runs every phase inline — byte-identical to the
@@ -1188,7 +1208,8 @@ int run_with_replay(const cli::Arguments& args,
       replay_data.flee_clamp = args.flee_clamp_on ? "on" : "off";
       replay_data.neighbor = args.grid_mode ? "grid" : "brute";
       replay_data.squads = args.squads_on ? "on" : "off";
-      replay_data.swap_sides = args.swap_sides ? "on" : "off";
+      replay_data.swap_sides = args.swap_mirror ? "mirror"
+                               : args.swap_sides ? "on" : "off";
       replay_data.nav = args.nav_v2 ? "v2" : "v1";
       replay_data.ai_avail = args.ai_avail_v2 ? "v2" : "v1";
       replay_data.end = args.end_v2 ? "v2" : "v1";
@@ -1349,7 +1370,8 @@ int run_with_replay(const cli::Arguments& args,
       failure_replay.flee_clamp = args.flee_clamp_on ? "on" : "off";
       failure_replay.neighbor = args.grid_mode ? "grid" : "brute";
       failure_replay.squads = args.squads_on ? "on" : "off";
-      failure_replay.swap_sides = args.swap_sides ? "on" : "off";
+      failure_replay.swap_sides = args.swap_mirror ? "mirror"
+                                   : args.swap_sides ? "on" : "off";
       failure_replay.nav = args.nav_v2 ? "v2" : "v1";
       failure_replay.ai_avail = args.ai_avail_v2 ? "v2" : "v1";
       failure_replay.end = args.end_v2 ? "v2" : "v1";
@@ -1872,6 +1894,7 @@ int main(int argc, char** argv) {
     effective.grid_mode = replay_data.neighbor == "grid";
     effective.neighbor_mode_explicit = true;
     effective.swap_sides = replay_data.swap_sides == "on";
+    effective.swap_mirror = replay_data.swap_sides == "mirror";
     effective.nav_v2 = replay_data.nav == "v2";
     effective.ai_avail_v2 = replay_data.ai_avail == "v2";
     effective.end_v2 = replay_data.end == "v2";

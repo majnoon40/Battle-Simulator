@@ -673,7 +673,22 @@ ParseOutcome parse_args(int argc, char** argv) {
       continue;
     }
     if (flag == "--swap-sides") {
-      args.swap_sides = true;
+      // M15: on|off|mirror (the bare flag stays 'on', the M10 form).
+      // 'mirror' is the test-only mode: the mirror battle on a
+      // symmetric scenario — the winner flips with the same end tick.
+      std::string mode = "on";
+      if (i + 1 < argc) {
+        const std::string next = argv[i + 1];
+        if (next == "on" || next == "off" || next == "mirror") {
+          mode = next;
+          ++i;
+        }
+      }
+      if (mode == "on") {
+        args.swap_sides = true;
+      } else if (mode == "mirror") {
+        args.swap_mirror = true;
+      }
       continue;
     }
     if (flag == "--tactic-scan") {
@@ -969,6 +984,35 @@ void apply_side_swap(sim::SimulationConfig& config) {
       config.spawn_patterns[static_cast<std::size_t>(sim::Faction::Blue)]);
 }
 
+void apply_mirror_swap(sim::SimulationConfig& config) {
+  // --swap-sides mirror (M15, test-only): the same whole-setup swap as
+  // apply_side_swap — compositions, squad plans, spawn patterns — but
+  // the bands stay default (Blue keeps the east, Red the west) and the
+  // explicit objectives swap AND mirror (x -> width - x), so each
+  // faction's objective is the mirror of its counterpart's. Together
+  // with config.mirror_spawns (Blue spawns first, reflected draws)
+  // this produces the mirror battle on symmetric scenarios: unit ids
+  // align with the roles (personalities key on the id), every
+  // index-ordered pass aligns, and each unit deploys at the mirror of
+  // its counterpart's position.
+  constexpr std::size_t red = static_cast<std::size_t>(sim::Faction::Red);
+  constexpr std::size_t blue = static_cast<std::size_t>(sim::Faction::Blue);
+  config.composition[red].swap(config.composition[blue]);
+  config.squad_plans[red].swap(config.squad_plans[blue]);
+  std::swap(config.spawn_patterns[red], config.spawn_patterns[blue]);
+  if (config.objectives[red].explicit_set ||
+      config.objectives[blue].explicit_set) {
+    const sim::ObjectivePoint red_objective = config.objectives[red];
+    const sim::ObjectivePoint blue_objective = config.objectives[blue];
+    config.objectives[blue] = sim::ObjectivePoint{
+        config.battlefield_width - red_objective.x, red_objective.y,
+        red_objective.explicit_set};
+    config.objectives[red] = sim::ObjectivePoint{
+        config.battlefield_width - blue_objective.x, blue_objective.y,
+        blue_objective.explicit_set};
+  }
+}
+
 void print_usage(std::ostream& out) {
   out << "autobattle — deterministic 2D autonomous battle simulation (M6)\n"
       << "\n"
@@ -1056,6 +1100,14 @@ void print_usage(std::ostream& out) {
       << "                         observation: the battle is unchanged\n"
       << "  --trace-interval <n>    Trace cadence in ticks [1, 100000]\n"
       << "                         (default 50; needs --trace)\n"
+      << "  --swap-sides [on|off|mirror]\n"
+      << "                         'on' (the bare M10 form): the armies\n"
+      << "                         trade sides (translated spawn bands).\n"
+      << "                         'mirror' (M15, test-only): the mirror\n"
+      << "                         battle — on a symmetric scenario the\n"
+      << "                         winner flips with the same end tick\n"
+      << "                         (Blue spawns first with reflected\n"
+      << "                         draws; see docs/milestone-15.md)\n"
       << "  --nav <v1|v2>           Navigation generation (m11a): v2\n"
       << "                         (default) marches formation members\n"
       << "                         along the flow field when far from\n"

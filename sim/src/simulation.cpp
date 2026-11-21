@@ -723,7 +723,14 @@ void Simulation::spawn_armies() {
   // composition mode each faction spawns its types in composition (file)
   // order; every unit draws x then y exactly like M1, so an infantry-only
   // composition reproduces M1 positions bit for bit.
-  for (std::size_t index = 0; index < faction_count_; ++index) {
+  // M15 mirror spawns: Blue spawns FIRST — taking the unit index and id
+  // space the plain run gave Red — so every index-ordered pass (spawn
+  // draws, personalities, combat collection, morale, events) aligns
+  // with its plain-run counterpart. Two factions only.
+  const bool mirror =
+      config_.mirror_spawns && faction_count_ == kFactionCount;
+  for (std::size_t step = 0; step < faction_count_; ++step) {
+    const std::size_t index = mirror ? faction_count_ - 1 - step : step;
     const Faction faction = static_cast<Faction>(index);
     const std::vector<TypeCount>& entries = config_.composition[index];
 
@@ -803,8 +810,29 @@ void Simulation::spawn_armies() {
       }
       const double band_span = band_hi - band_lo;
       if (pattern == SpawnPattern::Band) {
-        unit.x = band_lo + rng_.next_double() * band_span;
-        unit.y = y_lo + rng_.next_double() * (y_hi - y_lo);
+        const double draw_x = rng_.next_double();
+        const double draw_y = rng_.next_double();
+        if (mirror && !config_.spawn_anchors[index]) {
+          // M15 mirror spawns: the x draw maps REFLECTED through the
+          // counterpart's plain band, so this unit stands at
+          // width - (plain counterpart position) — bitwise, because
+          // the parenthesized expression is exactly the plain run's
+          // formula for that band (the un-anchored full-height band;
+          // anchors and non-Band patterns keep their normal math and
+          // the mirror property is undefined there). The role span is
+          // written the way the plain run computes it (the east span
+          // is width - (width - band), not band).
+          const bool west_band =
+              (faction == Faction::Red) != config_.swap_sides;
+          const double role_lo = west_band ? world_.width - band : 0.0;
+          const double role_span =
+              west_band ? world_.width - (world_.width - band) : band;
+          unit.x = world_.width -
+                   (role_lo + draw_x * role_span);
+        } else {
+          unit.x = band_lo + draw_x * band_span;
+        }
+        unit.y = y_lo + draw_y * (y_hi - y_lo);
       } else {
         // Deterministic pattern placement inside the band (docs/ai.md).
         const std::uint32_t n = to_spawn > 1 ? to_spawn : 1;

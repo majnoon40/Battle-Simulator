@@ -340,6 +340,10 @@ bool parse_replay(const std::string& path, ReplayData& out,
         } else if (name == "squads") {
           parsed.squads = value;
         } else if (name == "swap_sides") {
+          if (value != "on" && value != "off" && value != "mirror") {
+            error = "bad swap_sides flag value '" + value + "' in replay";
+            return false;
+          }
           parsed.swap_sides = value;
         } else if (name == "nav") {
           if (value != "v1" && value != "v2") {

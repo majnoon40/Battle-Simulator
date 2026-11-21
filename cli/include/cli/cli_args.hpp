@@ -41,6 +41,10 @@ struct Arguments {
   bool contact_seek_on = true;  // --contact-seek on (default) vs off
   bool flee_clamp_on = true;    // --flee-clamp on (default) vs off
   bool swap_sides = false;
+  // M15 test-only mode: --swap-sides mirror — the mirror battle (Blue
+  // spawns first with reflected draws; see sim mirror_spawns). Mutually
+  // exclusive with the plain translate swap above.
+  bool swap_mirror = false;
   // m11a navigation generation: --nav v2 (default; fixed explicit-objective
   // swap under --swap-sides, terrain-aware formation march) or v1 (the
   // exact M10 navigation — byte-identical to the M10 binary, including
@@ -172,5 +176,13 @@ void print_usage(std::ostream& out);
 // back: a swapped battle parked each army on the objective inside its
 // own spawn band; see docs/terrain.md). No-op without swap_sides.
 void apply_side_swap(sim::SimulationConfig& config);
+
+// M15: the --swap-sides mirror setup. The same whole-setup swap as
+// apply_side_swap, but the explicit objectives swap AND mirror
+// (x -> width - x) — the bands themselves stay default, so with
+// config.mirror_spawns (Blue spawns first, reflected draws) each
+// faction deploys at the mirror of its counterpart's positions with
+// the counterpart's index/id space.
+void apply_mirror_swap(sim::SimulationConfig& config);
 
 }  // namespace cli

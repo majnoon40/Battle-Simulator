@@ -316,3 +316,53 @@ documented 13.1 behavior).
   future move path added outside the pending-move pipeline would not
   be covered by the choke point (it would, however, be caught by this
   check the moment a unit crosses).
+
+## `--swap-sides mirror` (test-only) — the S2 follow-up, honestly short of its acceptance
+
+The S2 finding queued this mode: a `--swap-sides mirror` value that
+produces the mirror battle on a symmetric scenario. The design that
+shipped: **Blue spawns first** (taking the unit index and id space the
+plain run gave Red — so every index-ordered pass aligns: spawn draws,
+`personality_for(seed, id)` personalities, combat collection, morale,
+events, and id-based tie-breaking), and each band's x draws map
+**reflected** through the counterpart's plain band
+(`x = width - (role_lo + d * role_span)`, the role expressions written
+exactly as the plain run computes them), so Blue stands at
+mirror(plain Red) and Red at mirror(plain Blue). Bands stay default —
+objectives, HQ and formation axes align with the roles automatically.
+The CLI swaps compositions/squad plans (and mirrors explicit
+objectives) like translate; `swap_sides=mirror` rides in replays.
+
+### What is pinned, and what is not (measured, seeds 1-100)
+
+- **Spawn mirror: bitwise, 100/100.** For every unit id k, the
+  mirrored unit stands at `width - x` (memcmp-level), same y, same
+  type, same personality.
+- **Outcome mirror: 25/100.** Winner flips, same end tick, same
+  reason, casualties mirror exactly on 25 seeds (pinned on eight of
+  them). The other 75 diverge at a **single knife-edge late in the
+  battle** — one unit routes or dies one tick apart (first divergence
+  ticks 238-340; 21 of the 49 outcome failures differ by exactly one
+  end tick), after which outcomes drift by a tick or a few
+  casualties. Mirrored alive-counts match every tick before the
+  divergence point.
+- **Root cause: floating-point mirroring, not a logical asymmetry.**
+  Movement arithmetic is not associative — the mirrored unit computes
+  `(width - x) - t` while the ideal mirror is
+  `width - (x + t)`, a last-ulp difference — and libm `atan2` is not
+  antisymmetric, so the facing angles the combat arcs and rear-morale
+  rules classify against differ by ulps from the ideal mirror. A
+  battle runs within ~1 ulp of its ideal mirror until a morale or arc
+  threshold cuts a knife edge; everything after is chaos amplification.
+- **The 100/100 acceptance is not reachable inside the time-box.**
+  Fixing it means restructuring the core float math into
+  mirror-invariant forms (movement, facing, arcs, morale) — dozens of
+  sites, high regression risk, and it would change default bytes.
+  That is explicitly out of scope; the S2 aggregate-fairness pins
+  remain the practical guarantee.
+
+The mode stays opt-in and test-only: default battles and every
+existing baseline are untouched (the full suite passes on the stacked
+branch). `tests/test_swap_mirror.cpp` pins the bitwise spawn mirror
+(10 seeds), the id-space swap, the outcome mirror on the eight
+measured passing seeds, and the CLI/replay round-trip.
