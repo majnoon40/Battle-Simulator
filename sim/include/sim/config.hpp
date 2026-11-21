@@ -19,10 +19,11 @@ namespace sim {
 class EventRecorder;  // events.hpp (M10 Part 2a)
 struct CombatConfig;  // combat.hpp (m13 item 3)
 
-// Hard cap on the number of units in one battle (raised by M3 to 20,000;
+// Hard cap on the number of units in one battle (raised by M3 to 20,000,
+// by M15 S5 to 100,000 so the perf ladder reaches the 100k scale point;
 // the spatial hash keeps the neighbor search from dominating at scale).
 // Enforced for both the legacy total-units split and scenario compositions.
-inline constexpr std::uint32_t kMaxUnits = 20000;
+inline constexpr std::uint32_t kMaxUnits = 100000;
 
 // How decide_targets finds the nearest enemy. Grid is the default (M3);
 // Brute keeps the M1/M2 O(n) scan as a test oracle and CLI baseline.

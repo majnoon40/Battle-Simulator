@@ -96,9 +96,12 @@ units at x = 900 on 400-wide fields — the battles only worked because
 of the grid's clamping). That is input validation, not behavior, and
 is fixed here: the explicit-state constructor now rejects non-finite
 or out-of-bounds positions, and the three fixtures place their units
-inside the field.### The evidence
+inside the field.
 
-- **25 new tests** (`InvariantsTest.*`): checker-on default, zero
+### The evidence
+
+- **29 new tests** (`InvariantsTest.*`; the later flee-clamp PR added
+  2 more, 31 in the file today): checker-on default, zero
   interval rejected, healthy battles (plain and squads) clean through
   termination, interval independence (the same battle at N = 1, 7 and
   30 produces the identical state hash — the checks only read state),
@@ -366,3 +369,101 @@ existing baseline are untouched (the full suite passes on the stacked
 branch). `tests/test_swap_mirror.cpp` pins the bitwise spawn mirror
 (10 seeds), the id-space swap, the outcome mirror on the eight
 measured passing seeds, and the CLI/replay round-trip.
+
+## S5 — The performance gate: the 100k scale point, the t2 fix, and a CI floor
+
+Three pieces, one contract: **the ladder reaches 100,000 units, the
+known thread regression is fixed byte-identically, and CI now measures
+the ladder on every push against explicit floors.**
+
+### The scale point: `perf-100000.json` and the cap raise
+
+`kMaxUnits` rises 20,000 → 100,000 (M3 had raised it 500 → 20,000).
+The new `perf-100000.json` keeps the spawn-band density of
+`perf-20000.json` constant (5600 = 2500·√5 rounded up, so 2.5× the
+units per side at the same units-per-area): the ladder measures scale,
+not crowding. The cap raise is validation-only — every existing
+scenario was already under 20,000, so no existing battle changes (the
+35-pair byte-identity matrix below includes every shipped scenario).
+
+### The fix: occupancy-skip in the radius queries (byte-identical)
+
+m14 item 1 left an honest observation: at 20k units two threads ran
+*slower* than one (19.2 vs 22.6 t/s) — the worker pool paid
+bucket-header cache misses both workers contended for, and the
+parallelism could not pay for them. The fix shipped here:
+`radius_query` and `radius_query_faction` now skip any (cell, faction)
+bucket whose occupancy bitmap bit is clear. The bitmap is maintained
+exactly in lockstep with bucket emptiness (`insert_into_cell` sets the
+bit on empty → non-empty, `remove` clears it on empty, `build` resets
+both), so an empty bucket appends nothing either way — the appended
+sequence is unchanged **by construction**, and the 35-pair cross-binary
+byte-identity matrix confirms it (every shipped scenario at seed 42,
+plus the perf ladder at threads 1/2/3/4, plus output-neutral modes).
+
+The mechanism is exactly the m14 observation's mirror: the bit test
+lives in an L1-resident ~3 KB bitmap, while the skipped bucket-header
+load was a random access into a 1.2 MB (20k) or 5.9 MB (100k) bucket
+array — the memory two workers evict from each other's caches.
+
+**Measured (same protocol as the m14 table: single runs, seed 42, 600
+ticks, this 2-vCPU box, Release, before = main 2abaf7b):**
+
+| scenario | threads | t/s before | t/s after | gain |
+| --- | --- | --- | --- | --- |
+| perf-5000 | 1 | 81.8 | 80.6 | ~0 (noise) |
+| perf-5000 | 2 | 75.4 | 88.0 | **+17%** |
+| perf-20000 | 1 | 21.4 | 21.9 | ~0 (noise) |
+| perf-20000 | 2 | 17.9 | 22.3 | **+25%** |
+| perf-20000-squads | 1 | 5.50 | 5.56 | +1% |
+| perf-20000-squads | 2 | 7.79 | 7.96 | +2% |
+| perf-100000 | 1 | — (new) | 2.39 | — |
+| perf-100000 | 2 | — (new) | 2.84 | — |
+
+The t2 regression is gone: two threads beat one again at 20k (22.3 vs
+21.9) and at 100k (2.84 vs 2.39). t1 is unchanged within noise, as the
+mechanism predicts — a single worker's cache pressure is what the skip
+does not target. At 100k, perception is 390 of 418 ms/tick (93%) and
+peak memory is 262 MiB.
+
+### The gate: the CI perf job
+
+A new `Performance (M15 S5)` job runs the ladder (perf-5000,
+perf-20000, perf-20000-squads, perf-100000; seed 42, 600 ticks) at
+threads 1 and 4 on every push, gates each scenario on the **best** of
+the two thread counts (the pool sometimes loses to t1 on small cores —
+the same m14 observation), and writes the measured table into the job
+summary. Floors are set well under the first measured medians to
+absorb runner-to-runner variance; they are the honest gate — a number
+the maintainers can defend, not the fastest box ever seen.
+
+### The honest misses
+
+- **The m14-era targets (20k ≥ 60 t/s, 100k ≥ 10 t/s) are not met on
+  this 2-vCPU sandbox** (21.9 and 2.39 t/s). They were never measured
+  on CI hardware before this PR; the gate job is what makes the CI
+  numbers visible and enforced. The floors committed here are derived
+  from the first CI measurements on the PR, not from the targets.
+- **Perception is still 89-93% of every scale tick.** The next
+  byte-identical win would need layout work (SoA shadows, bucket
+  prefetch) or an algorithmic change (hierarchical grid) — the skip
+  here is the one that could not change bytes.
+- **Squads barely move** (+2% at t2): the squad/cohesion share of the
+  squads scenario is outside the perception path the skip targets.
+
+### Verification
+
+- **551/551 tests** (550 + the new occupancy lockstep test; the two
+  cap-pinning tests and the budget-fill rejection moved to the new
+  cap, and the checker-on default now validates the occupancy
+  invariant every 30 ticks of every test battle — the S1 checker's
+  `verify_contents` gained the bitmap⟺bucket check in both
+  directions).
+- **35/35 byte-identical** cross-binary pairs (before = main 2abaf7b
+  independently built; every shipped scenario at seed 42 × 300 ticks,
+  swapped orientations on default and earth-lebanon, the perf ladder
+  at threads 1/2/3/4, `--orders off` and `--ai-avail v1` runs).
+- **The new scale point works end-to-end**: the invariant checker at
+  100k costs ~2% (2.39 → 2.34 t/s at `--check-invariants=10`); a
+  60-tick 100k replay records to 352 bytes and verifies (3
+  checkpoints) — the differential job's sweep runs it at 60 ticks.

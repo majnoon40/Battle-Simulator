@@ -614,7 +614,8 @@ int main(int argc, char** argv) {
       if (stepped_type >= 0) {
         static_cast<void>(game::setup_step(
             setup_edit, edited_faction,
-            static_cast<std::size_t>(stepped_type), step_delta, 20000));
+            static_cast<std::size_t>(stepped_type), step_delta,
+            sim::kMaxUnits));
         for (render::ui::Widget& widget : app.setup.tree.widgets) {
           if (widget.id.rfind("count-", 0) == 0) {
             const int index = types.index_of(widget.id.substr(6));

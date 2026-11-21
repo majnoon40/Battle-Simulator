@@ -386,20 +386,20 @@ TEST(CompositionValidationTest, InvalidCompositionsAreRejected) {
   bad_index.composition[kRed][0].type_index = 99;
   EXPECT_THROW(sim::Simulation{bad_index}, std::invalid_argument);
 
-  // Over the unit cap (M3: 20,000) — 11,000 + 11,000.
+  // Over the unit cap (M15 S5: 100,000) — 55,000 + 55,000.
   sim::SimulationConfig over_cap;
   over_cap.unit_types = &types;
   over_cap.composition[kRed] = {
-      {static_cast<std::uint32_t>(types.index_of("infantry")), 11000}};
+      {static_cast<std::uint32_t>(types.index_of("infantry")), 55000}};
   over_cap.composition[kBlue] = {
-      {static_cast<std::uint32_t>(types.index_of("infantry")), 11000}};
+      {static_cast<std::uint32_t>(types.index_of("infantry")), 55000}};
   EXPECT_THROW(sim::Simulation{over_cap}, std::invalid_argument);
 
   // Legacy path: total above the cap.
   sim::SimulationConfig legacy_over = valid;
   legacy_over.composition[kRed].clear();
   legacy_over.composition[kBlue].clear();
-  legacy_over.total_units = 20001;
+  legacy_over.total_units = 100001;
   EXPECT_THROW(sim::Simulation{legacy_over}, std::invalid_argument);
 }
 
